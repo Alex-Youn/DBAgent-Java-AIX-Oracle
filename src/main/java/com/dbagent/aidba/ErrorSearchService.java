@@ -24,12 +24,14 @@ public class ErrorSearchService {
 
     public Map<String, Object> getErrorSolution(String rawCode) {
         String errorCode = Strings.strip(rawCode).toUpperCase(Locale.ROOT);
-        File dbFile = new File(errorsDbPath);
+        // H2 file DBs live on disk as <path>.mv.db; errorsDbPath itself has no extension.
+        File dbFile = new File(errorsDbPath + ".mv.db");
         if (!dbFile.exists()) {
-            return Maps.of("error", "DB 파일을 찾을 수 없습니다. oracle_errors.db 파일이 존재하는지 확인해주세요.");
+            return Maps.of("error", "DB 파일을 찾을 수 없습니다. oracle_errors.mv.db 파일이 존재하는지 확인해주세요.");
         }
+        String h2Base = new File(errorsDbPath).getAbsolutePath();
         String sql = "SELECT cause, action, query_or_log FROM error_dictionary WHERE error_code = ?";
-        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+        try (Connection conn = DriverManager.getConnection("jdbc:h2:file:" + h2Base, "sa", "");
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, errorCode);
             try (ResultSet rs = ps.executeQuery()) {

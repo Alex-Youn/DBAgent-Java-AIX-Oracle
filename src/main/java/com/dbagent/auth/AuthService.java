@@ -65,19 +65,13 @@ public class AuthService {
 
     @PostConstruct
     void init() {
-        jdbc.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, token TEXT)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS users (username VARCHAR PRIMARY KEY, password VARCHAR, token VARCHAR)");
 
-        List<String> existingColumns = jdbc.query("PRAGMA table_info(users)",
-                (rs, rowNum) -> rs.getString("name"));
-        if (existingColumns.stream().noneMatch("role"::equalsIgnoreCase)) {
-            jdbc.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
-        }
-        if (existingColumns.stream().noneMatch("hidden_menus"::equalsIgnoreCase)) {
-            jdbc.execute("ALTER TABLE users ADD COLUMN hidden_menus TEXT");
-        }
-        if (existingColumns.stream().noneMatch("hidden_dbs"::equalsIgnoreCase)) {
-            jdbc.execute("ALTER TABLE users ADD COLUMN hidden_dbs TEXT");
-        }
+        // H2 supports ADD COLUMN IF NOT EXISTS natively, unlike SQLite - no need for the old
+        // PRAGMA table_info() existence check this used to do.
+        jdbc.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR NOT NULL DEFAULT 'user'");
+        jdbc.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS hidden_menus VARCHAR");
+        jdbc.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS hidden_dbs VARCHAR");
 
         // Reset every session on server restart, same as the Python init_db().
         jdbc.update("UPDATE users SET token = NULL");
