@@ -1,0 +1,11 @@
+
+.venv/
+__pycache__/
+*.pyc
+.env
+
+jdk17/
+*.jar
+.gradle/
+build/
+bin/

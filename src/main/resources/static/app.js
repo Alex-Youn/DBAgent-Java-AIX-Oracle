@@ -1,0 +1,3662 @@
+
+// --- Auth Logic ---
+const API_BASE_AUTH = `/api`;
+
+async function checkAuth() {
+    const token = sessionStorage.getItem('dbagent_token');
+    if (!token) {
+        document.getElementById('login-overlay').style.display = 'flex';
+        return false;
+    }
+    try {
+        const res = await fetch(`${API_BASE_AUTH}/check-auth`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token })
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.authenticated) {
+                document.getElementById('login-overlay').style.display = 'none';
+                document.querySelector('.user-name').textContent = data.username;
+                sessionStorage.setItem('dbagent_role', data.role || 'user');
+                sessionStorage.setItem('dbagent_account_hidden_menus', JSON.stringify(data.hidden_menus || []));
+                sessionStorage.setItem('dbagent_account_hidden_dbs', JSON.stringify(data.hidden_dbs || []));
+                return true;
+            }
+        }
+    } catch (e) {
+        console.error('Auth check error', e);
+    }
+    document.getElementById('login-overlay').style.display = 'flex';
+    return false;
+}
+
+function isAdmin() {
+    return sessionStorage.getItem('dbagent_role') === 'admin';
+}
+
+function getToken() {
+    return sessionStorage.getItem('dbagent_token') || '';
+}
+
+// Auth event listeners moved to DOMContentLoaded
+// ----------------------
+
+;(async function initApp() {
+    try {
+        // Attach auth event listeners
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+            const errDiv = document.getElementById('login-error');
+            errDiv.style.display = 'none';
+        
+            try {
+                const res = await fetch(`${API_BASE_AUTH}/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    sessionStorage.setItem('dbagent_token', data.token);
+                    sessionStorage.setItem('dbagent_role', data.role || 'user');
+                    sessionStorage.setItem('dbagent_account_hidden_menus', JSON.stringify(data.hidden_menus || []));
+                    sessionStorage.setItem('dbagent_account_hidden_dbs', JSON.stringify(data.hidden_dbs || []));
+                    document.querySelector('.user-name').textContent = data.username;
+                    location.reload();
+                } else {
+                    errDiv.textContent = data.message || '로그인 실패';
+                    errDiv.style.display = 'block';
+                }
+            } catch (e) {
+                errDiv.textContent = '서버 연결 실패';
+                errDiv.style.display = 'block';
+            }
+        });
+        
+        document.getElementById('logout-btn')?.addEventListener('click', () => {
+            sessionStorage.removeItem('dbagent_token');
+            sessionStorage.removeItem('dbagent_role');
+            sessionStorage.removeItem('dbagent_account_hidden_menus');
+            sessionStorage.removeItem('dbagent_account_hidden_dbs');
+            location.reload();
+        });
+        
+        const pwdModal = document.getElementById('change-pwd-modal');
+        document.getElementById('change-pwd-trigger')?.addEventListener('click', () => {
+            pwdModal.style.display = 'flex';
+        });
+        document.getElementById('pwd-cancel-btn')?.addEventListener('click', () => {
+            pwdModal.style.display = 'none';
+            document.getElementById('change-pwd-form').reset();
+            document.getElementById('pwd-error').style.display = 'none';
+        });
+        
+        document.getElementById('change-pwd-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const current = document.getElementById('pwd-current').value;
+            const newPwd = document.getElementById('pwd-new').value;
+            const confirm = document.getElementById('pwd-confirm').value;
+            const errDiv = document.getElementById('pwd-error');
+            
+            if (newPwd !== confirm) {
+                errDiv.textContent = '새 비밀번호가 일치하지 않습니다.';
+                errDiv.style.display = 'block';
+                return;
+            }
+            
+            const token = sessionStorage.getItem('dbagent_token');
+            try {
+                const res = await fetch(`${API_BASE_AUTH}/change-password`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, current_password: current, new_password: newPwd })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    alert('비밀번호가 성공적으로 변경되었습니다. 다시 로그인해주세요.');
+                    sessionStorage.removeItem('dbagent_token');
+                    sessionStorage.removeItem('dbagent_role');
+                    sessionStorage.removeItem('dbagent_account_hidden_menus');
+                    sessionStorage.removeItem('dbagent_account_hidden_dbs');
+                    location.reload();
+                } else {
+                    errDiv.textContent = data.message || '변경 실패';
+                    errDiv.style.display = 'block';
+                }
+            } catch (e) {
+                errDiv.textContent = '서버 오류';
+                errDiv.style.display = 'block';
+            }
+        });
+
+        // --- Account management (admin only) ---
+        const acctModal = document.getElementById('account-mgmt-modal');
+        const acctError = document.getElementById('account-mgmt-error');
+        const userListEl = document.getElementById('user-list');
+        const acctListView = document.getElementById('account-mgmt-list-view');
+        const acctEditView = document.getElementById('account-mgmt-edit-view');
+        const editUserError = document.getElementById('edit-user-error');
+
+        function showAccountListView() {
+            acctEditView.style.display = 'none';
+            acctListView.style.display = 'block';
+        }
+
+        function showAccountEditView(user) {
+            acctListView.style.display = 'none';
+            acctEditView.style.display = 'block';
+            editUserError.style.display = 'none';
+            document.getElementById('edit-user-username').textContent = user.username;
+            document.getElementById('edit-user-is-admin').checked = user.role === 'admin';
+            renderMenuCheckboxes(document.getElementById('edit-user-menu-list'), new Set(user.hidden_menus || []));
+            renderDbCheckboxes(document.getElementById('edit-user-db-list'), new Set(user.hidden_dbs || []));
+            document.getElementById('edit-user-save-btn').dataset.username = user.username;
+        }
+
+        document.getElementById('edit-user-cancel-btn')?.addEventListener('click', showAccountListView);
+        document.getElementById('edit-user-save-btn')?.addEventListener('click', async (e) => {
+            const token = sessionStorage.getItem('dbagent_token');
+            const username = e.target.dataset.username;
+            const role = document.getElementById('edit-user-is-admin').checked ? 'admin' : 'user';
+            const hiddenMenus = collectHiddenFromCheckboxes(document.getElementById('edit-user-menu-list'));
+            const hiddenDbs = collectHiddenDbsFromCheckboxes(document.getElementById('edit-user-db-list'));
+            try {
+                const res = await fetch(`/api/users/${encodeURIComponent(username)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showAccountListView();
+                    loadUserList();
+                } else {
+                    editUserError.textContent = data.message || '수정 실패';
+                    editUserError.style.display = 'block';
+                }
+            } catch (e2) {
+                editUserError.textContent = '서버 오류';
+                editUserError.style.display = 'block';
+            }
+        });
+
+        async function loadUserList() {
+            const token = sessionStorage.getItem('dbagent_token');
+            userListEl.innerHTML = '<div style="color: var(--text-secondary); padding: 8px 0;">불러오는 중...</div>';
+            try {
+                const res = await fetch(`/api/users?token=${encodeURIComponent(token)}`);
+                const data = await res.json();
+                if (!res.ok) {
+                    userListEl.innerHTML = `<div style="color:#f87171;">${data.message || '목록 조회 실패'}</div>`;
+                    return;
+                }
+                userListEl.innerHTML = '';
+                (data.users || []).forEach(u => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--border-color);';
+                    const isProtected = u.username === 'admin';
+                    const actionsHtml = isProtected ? '' : `
+                        <div style="display:flex; gap:6px;">
+                            <button type="button" class="login-btn user-edit-btn" style="width:auto; margin-top:0; padding:6px 12px; font-size:0.85rem; background:#475569;">수정</button>
+                            <button type="button" class="login-btn user-delete-btn" style="width:auto; margin-top:0; padding:6px 12px; font-size:0.85rem; background:#dc2626;">삭제</button>
+                        </div>`;
+                    row.innerHTML = `<span>${u.username} <span style="color: var(--text-secondary); font-size: 0.85rem;">(${u.role})</span></span>${actionsHtml}`;
+                    userListEl.appendChild(row);
+
+                    if (isProtected) return;
+
+                    row.querySelector('.user-edit-btn').addEventListener('click', () => showAccountEditView(u));
+                    row.querySelector('.user-delete-btn').addEventListener('click', async () => {
+                        if (!confirm(`'${u.username}' 계정을 삭제하시겠습니까?`)) return;
+                        const delRes = await fetch(`/api/users/${encodeURIComponent(u.username)}?token=${encodeURIComponent(token)}`, { method: 'DELETE' });
+                        const delData = await delRes.json();
+                        if (!delRes.ok || !delData.success) {
+                            alert(delData.message || '삭제 실패');
+                        }
+                        loadUserList();
+                    });
+                });
+            } catch (e) {
+                userListEl.innerHTML = '<div style="color:#f87171;">서버 오류</div>';
+            }
+        }
+
+        const gearTrigger = document.getElementById('gear-trigger');
+        const gearDropdown = document.getElementById('gear-dropdown');
+        gearTrigger?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            gearDropdown.classList.toggle('open');
+        });
+        document.addEventListener('click', (e) => {
+            if (gearDropdown && gearDropdown.classList.contains('open')
+                && !gearDropdown.contains(e.target) && e.target !== gearTrigger) {
+                gearDropdown.classList.remove('open');
+            }
+        });
+
+        document.getElementById('open-account-mgmt-btn')?.addEventListener('click', () => {
+            gearDropdown.classList.remove('open');
+            acctError.style.display = 'none';
+            document.getElementById('new-user-is-admin').checked = false;
+            renderMenuCheckboxes(document.getElementById('new-user-menu-list'), new Set());
+            renderDbCheckboxes(document.getElementById('new-user-db-list'), new Set());
+            showAccountListView();
+            acctModal.style.display = 'flex';
+            loadUserList();
+        });
+        document.getElementById('account-mgmt-close-btn')?.addEventListener('click', () => {
+            acctModal.style.display = 'none';
+            document.getElementById('create-user-form').reset();
+            acctError.style.display = 'none';
+        });
+
+        document.getElementById('create-user-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const token = sessionStorage.getItem('dbagent_token');
+            const username = document.getElementById('new-user-username').value.trim();
+            const password = document.getElementById('new-user-password').value;
+            const confirmPwd = document.getElementById('new-user-password-confirm').value;
+
+            if (password !== confirmPwd) {
+                acctError.textContent = '비밀번호가 일치하지 않습니다.';
+                acctError.style.display = 'block';
+                return;
+            }
+            const role = document.getElementById('new-user-is-admin').checked ? 'admin' : 'user';
+            const hiddenMenus = collectHiddenFromCheckboxes(document.getElementById('new-user-menu-list'));
+            const hiddenDbs = collectHiddenDbsFromCheckboxes(document.getElementById('new-user-db-list'));
+            try {
+                const res = await fetch('/api/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, username, password, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    acctError.style.display = 'none';
+                    document.getElementById('create-user-form').reset();
+                    loadUserList();
+                } else {
+                    acctError.textContent = data.message || '계정 생성 실패';
+                    acctError.style.display = 'block';
+                }
+            } catch (e) {
+                acctError.textContent = '서버 오류';
+                acctError.style.display = 'block';
+            }
+        });
+
+        // --- Menu visibility settings (admin only) ---
+        // Reads the nav-items straight from the DOM (excluding Dashboard) so any menu added
+        // later just shows up here automatically - no code changes needed to stay in sync.
+        function getHiddenMenus() {
+            try {
+                return JSON.parse(localStorage.getItem('dbagent_hidden_menus') || '[]');
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function getAccountHiddenMenus() {
+            try {
+                return JSON.parse(sessionStorage.getItem('dbagent_account_hidden_menus') || '[]');
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function getAccountHiddenDbs() {
+            try {
+                return JSON.parse(sessionStorage.getItem('dbagent_account_hidden_dbs') || '[]');
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function applyMenuVisibility() {
+            // A menu is hidden if either the per-browser preference or the account's own
+            // configuration (set by an admin when the account was created) hides it.
+            const hidden = new Set([...getHiddenMenus(), ...getAccountHiddenMenus()]);
+            document.querySelectorAll('.top-nav .nav-item[data-target]').forEach(item => {
+                const target = item.getAttribute('data-target');
+                if (target === 'dashboard') return;
+                item.classList.toggle('menu-hidden', hidden.has(target));
+            });
+        }
+
+        // Shared by the browser-level "메뉴 표시 설정" panel and the per-account menu
+        // picker in the account creation form - both just need a checkbox per nav-item.
+        function renderMenuCheckboxes(container, hiddenSet) {
+            container.innerHTML = '';
+            document.querySelectorAll('.top-nav .nav-item[data-target]').forEach(item => {
+                const target = item.getAttribute('data-target');
+                if (target === 'dashboard') return;
+                const label = item.querySelector('span')?.innerText || target;
+                const row = document.createElement('label');
+                row.innerHTML = `<input type="checkbox" data-menu-target="${target}" ${hiddenSet.has(target) ? '' : 'checked'}><span>${label}</span>`;
+                container.appendChild(row);
+            });
+        }
+
+        function collectHiddenFromCheckboxes(container) {
+            const hidden = [];
+            container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                if (!cb.checked) hidden.push(cb.getAttribute('data-menu-target'));
+            });
+            return hidden;
+        }
+
+        // Same idea, but reads the DB instances already rendered into the sidebar (from
+        // databases.json via /api/config) - a new DB added there shows up here automatically too.
+        function renderDbCheckboxes(container, hiddenSet) {
+            container.innerHTML = '';
+            document.querySelectorAll('#db-groups-container .instance-item[data-db-id]').forEach(item => {
+                const dbId = item.getAttribute('data-db-id');
+                const label = item.querySelector('span')?.innerText || dbId;
+                const row = document.createElement('label');
+                row.innerHTML = `<input type="checkbox" data-db-target="${dbId}" ${hiddenSet.has(dbId) ? '' : 'checked'}><span>${label}</span>`;
+                container.appendChild(row);
+            });
+        }
+
+        function collectHiddenDbsFromCheckboxes(container) {
+            const hidden = [];
+            container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                if (!cb.checked) hidden.push(cb.getAttribute('data-db-target'));
+            });
+            return hidden;
+        }
+
+        document.getElementById('open-menu-visibility-btn')?.addEventListener('click', () => {
+            gearDropdown.classList.remove('open');
+            renderMenuCheckboxes(document.getElementById('menu-visibility-list'), new Set(getHiddenMenus()));
+            document.getElementById('menu-visibility-modal').style.display = 'flex';
+        });
+        document.getElementById('menu-visibility-close-btn')?.addEventListener('click', () => {
+            document.getElementById('menu-visibility-modal').style.display = 'none';
+        });
+        document.getElementById('menu-visibility-save-btn')?.addEventListener('click', () => {
+            const hidden = collectHiddenFromCheckboxes(document.getElementById('menu-visibility-list'));
+            localStorage.setItem('dbagent_hidden_menus', JSON.stringify(hidden));
+            applyMenuVisibility();
+            document.getElementById('menu-visibility-modal').style.display = 'none';
+        });
+
+        const authed = await checkAuth();
+        if (!authed) return;
+
+        if (!isAdmin()) {
+            document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
+        }
+        applyMenuVisibility();
+
+        window.currentDbId = "";
+        
+        // Load config and build tree
+        fetch(`/api/config`)
+            .then(res => res.json())
+            .then(data => {
+                const container = document.getElementById('db-groups-container');
+                if(!container) return;
+
+                let isFirstInstance = true;
+                // Admins always see every DB; other accounts don't see ones an admin restricted
+                // for them when the account was created (or later, via 계정 관리 > 수정).
+                const restrictedDbs = isAdmin() ? new Set() : new Set(getAccountHiddenDbs());
+
+                data.groups.forEach((group, gIdx) => {
+                    // If every instance in this group is restricted for the account, don't
+                    // show the group at all (no point showing an empty accordion header).
+                    if (!isAdmin() && group.instances.every(inst => restrictedDbs.has(inst.id))) {
+                        return;
+                    }
+
+                    const groupDiv = document.createElement('div');
+                    groupDiv.className = 'db-info-panel';
+                    groupDiv.style.padding = '15px 24px';
+                    groupDiv.style.borderBottom = '1px solid var(--border)';
+                    
+                    const groupHeader = document.createElement('div');
+                    groupHeader.style.display = 'flex';
+                    groupHeader.style.alignItems = 'center';
+                    groupHeader.style.justifyContent = 'space-between';
+                    groupHeader.style.cursor = 'pointer';
+                    groupHeader.style.color = 'var(--text-primary)';
+                    groupHeader.style.fontWeight = '600';
+                    
+                    groupHeader.innerHTML = `
+                        <span>${group.group_name}</span>
+                        <i data-lucide="chevron-right" style="width: 18px; height: 18px; transition: transform 0.3s ease;"></i>
+                    `;
+                    
+                    const instancesDiv = document.createElement('div');
+                    instancesDiv.style.display = 'none';
+                    instancesDiv.style.paddingTop = '10px';
+                    instancesDiv.style.paddingLeft = '10px';
+                    instancesDiv.style.borderLeft = '2px solid var(--border)';
+                    instancesDiv.style.marginTop = '5px';
+                    
+                    group.instances.forEach((inst, iIdx) => {
+                        const instLink = document.createElement('a');
+                        instLink.href = '#dashboard';
+                        instLink.className = 'instance-item';
+                        instLink.setAttribute('data-db-id', inst.id);
+                        const isRestricted = restrictedDbs.has(inst.id);
+                        instLink.style.display = isRestricted ? 'none' : 'flex';
+                        instLink.style.alignItems = 'center';
+                        instLink.style.gap = '8px';
+                        instLink.style.color = 'var(--text-muted)';
+                        instLink.style.textDecoration = 'none';
+                        instLink.style.padding = '5px';
+                        instLink.style.borderRadius = '4px';
+                        instLink.style.transition = 'background 0.2s';
+                        instLink.style.cursor = 'pointer';
+                        
+                        instLink.innerHTML = `
+                            <i data-lucide="database" style="width: 16px; height: 16px;"></i>
+                            <span style="font-weight: bold; font-size: 0.95rem;">${inst.name}</span>
+                        `;
+                        
+                        instLink.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            
+                            // Reset all links colors
+                            document.querySelectorAll('.instance-item').forEach(el => {
+                                el.style.color = 'var(--text-muted)';
+                                const svg = el.querySelector('svg');
+                                if(svg) svg.style.color = 'var(--text-muted)';
+                            });
+                            
+                            // Set active color
+                            instLink.style.color = 'var(--success)';
+                            const svg = instLink.querySelector('svg');
+                            if(svg) svg.style.color = 'var(--success)';
+                            
+                            window.currentDbId = inst.id;
+                            if (typeof resetAllDashboardWidgets === 'function') resetAllDashboardWidgets();
+                            switchTab('dashboard');
+                            fetchDashboard();
+                        });
+                        
+                        instancesDiv.appendChild(instLink);
+                        
+                        // Auto-select the first non-restricted instance across all groups
+                        if (isFirstInstance && !isRestricted) {
+                            isFirstInstance = false;
+                            setTimeout(() => {
+                                groupHeader.click();
+                                instLink.click();
+                            }, 100);
+                        }
+                    });
+                
+                groupHeader.addEventListener('click', () => {
+                    const icon = groupHeader.querySelector('svg') || groupHeader.querySelector('i');
+                    if (instancesDiv.style.display === 'none') {
+                        instancesDiv.style.display = 'block';
+                        icon.style.transform = 'rotate(90deg)';
+                    } else {
+                        instancesDiv.style.display = 'none';
+                        icon.style.transform = 'rotate(0deg)';
+                    }
+                });
+                
+                groupDiv.appendChild(groupHeader);
+                groupDiv.appendChild(instancesDiv);
+                container.appendChild(groupDiv);
+            });
+            
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+            
+            // Handle initial load after config is loaded and db is selected
+            const initialHash = window.location.hash.substring(1);
+            if (initialHash) {
+                switchTab(initialHash);
+            }
+        });
+
+    // Initialize Lucide icons
+    try {
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    } catch (e) {
+        console.error('Lucide icons failed to load:', e);
+    }
+
+
+
+    // Navigation Logic
+    const navItems = document.querySelectorAll('.nav-item');
+    const sections = document.querySelectorAll('.content-section');
+    const pageTitle = document.getElementById('page-title');
+
+
+
+    function switchTab(targetId) {
+        if (!targetId) return;
+        
+        // Find target item and section
+        const targetNav = document.querySelector(`.nav-item[data-target="${targetId}"]`);
+        const targetSection = document.getElementById(targetId);
+        
+        if (!targetNav || !targetSection) return;
+
+        // Remove active class from all nav items and sections
+        navItems.forEach(nav => nav.classList.remove('active'));
+        sections.forEach(section => section.classList.remove('active'));
+
+        // Add active class
+        targetNav.classList.add('active');
+        targetSection.classList.add('active');
+
+        // Update page title
+        const text = targetNav.querySelector('span').innerText;
+        pageTitle.innerText = text;
+
+        // Auto-fetch data if tablespace
+        if (targetId === 'tablespace') {
+            const btn = document.getElementById('tablespace-refresh-btn');
+            if (btn) {
+                // Ensure we don't spam clicks if already fetching
+                const icon = btn.querySelector('i');
+                if (!icon || !icon.classList.contains('spinning')) {
+                    btn.click();
+                }
+            }
+        }
+        
+        // Auto-fetch data if session
+        if (targetId === 'session') {
+            const toggleBtn = document.getElementById('session-toggle-btn');
+            if (toggleBtn && !isSessionAutoRefreshing) {
+                setTimeout(() => { toggleBtn.click(); }, 100);
+            }
+        }
+
+        // Populate the account dropdown for the currently selected DB
+        if (targetId === 'sqlrunner' && typeof window.loadSqlRunnerAccounts === 'function') {
+            window.loadSqlRunnerAccounts();
+        }
+
+        // Auto-fetch data if tmlock
+        if (targetId === 'tmlock') {
+            const btn = document.getElementById('tmlock-refresh-btn');
+            if (btn) {
+                const icon = btn.querySelector('i');
+                if (!icon || !icon.classList.contains('spinning')) {
+                    btn.click();
+                }
+            }
+        }
+
+        // Returning to dashboard: canvases were display:none while another menu was open,
+        // so Chart.js cached a stale (often 0) size. Force a resize before the next data
+        // update or the sparkline renders flat/squashed for one tick.
+        if (targetId === 'dashboard') {
+            [dashCpuChart, dashMemChart, dashFailChart, dashSessChart].forEach(c => c && c.resize());
+            fetchDashboard();
+        }
+    }
+
+    // Attach click events
+    navItems.forEach(item => {
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            const targetId = item.getAttribute('data-target');
+            // Update URL hash
+            if (window.location.hash !== `#${targetId}`) {
+                history.pushState(null, null, `#${targetId}`);
+            }
+            switchTab(targetId);
+        });
+    });
+
+    // Handle hash change events (like browser back/forward)
+    window.addEventListener('hashchange', () => {
+        const hash = window.location.hash.substring(1);
+        if (hash) switchTab(hash);
+    });
+
+
+
+    // Initialize Mermaid
+    if (typeof mermaid !== 'undefined') {
+        mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+    }
+
+    // ERD Logic
+    const erdSearchBtn = document.getElementById('erd-search-btn');
+    const erdSearchInput = document.getElementById('erd-search-input');
+    const erdEmptyState = document.getElementById('erd-empty-state');
+    const erdContainer = document.getElementById('erd-container');
+    const mermaidGraph = document.getElementById('mermaid-graph');
+
+    if (erdSearchBtn) {
+        erdSearchBtn.addEventListener('click', async () => {
+            const tableName = erdSearchInput.value.trim().toUpperCase();
+            if (!tableName) {
+                alert('테이블명을 입력해주세요.');
+                return;
+            }
+            
+            erdEmptyState.style.display = 'none';
+            erdContainer.style.display = 'flex';
+            mermaidGraph.innerHTML = '<p style="color: #666;">ERD 데이터를 불러오고 렌더링 중입니다...</p>';
+            
+            // Generate dynamic ERD considering Parent/Child relationships
+            let erdDefinition = `erDiagram\n`;
+            
+            if (tableName === 'EMPLOYEES') {
+                erdDefinition += `
+                    DEPARTMENTS ||--|{ EMPLOYEES : "has"
+                    EMPLOYEES ||--o{ EMPLOYEES : "manages"
+                    JOBS ||--|{ EMPLOYEES : "assigned_to"
+                    
+                    EMPLOYEES {
+                        NUMBER employee_id PK
+                        VARCHAR2 first_name
+                        VARCHAR2 last_name
+                        VARCHAR2 email
+                        DATE hire_date
+                        VARCHAR2 job_id FK
+                        NUMBER department_id FK
+                    }
+                    
+                    DEPARTMENTS {
+                        NUMBER department_id PK
+                        VARCHAR2 department_name
+                    }
+                    
+                    JOBS {
+                        VARCHAR2 job_id PK
+                        VARCHAR2 job_title
+                    }
+                `;
+            } else {
+                // Dynamic Parent/Child Generation
+                const parent1 = `${tableName}_GRP`;
+                const parent2 = `${tableName}_TYPE`;
+                const child1 = `${tableName}_DTL`;
+                const child2 = `${tableName}_HIST`;
+                
+                erdDefinition += `
+                    ${parent1} ||--o{ ${tableName} : "belongs_to"
+                    ${parent2} ||--o{ ${tableName} : "categorized_by"
+                    ${tableName} ||--o{ ${child1} : "has_details"
+                    ${tableName} ||--o{ ${child2} : "tracks_history"
+                    
+                    ${tableName} {
+                        NUMBER ID PK
+                        VARCHAR2 NAME
+                        VARCHAR2 STATUS
+                        NUMBER GRP_ID FK
+                        NUMBER TYPE_ID FK
+                        DATE REG_DATE
+                    }
+                    
+                    ${parent1} {
+                        NUMBER GRP_ID PK
+                        VARCHAR2 GRP_NAME
+                        VARCHAR2 USE_YN
+                    }
+                    
+                    ${parent2} {
+                        NUMBER TYPE_ID PK
+                        VARCHAR2 TYPE_NAME
+                        VARCHAR2 DESCRIPTION
+                    }
+                    
+                    ${child1} {
+                        NUMBER DTL_ID PK
+                        NUMBER ID FK
+                        NUMBER SEQ
+                        VARCHAR2 ITEM_VAL
+                        NUMBER AMOUNT
+                    }
+                    
+                    ${child2} {
+                        NUMBER HIST_ID PK
+                        NUMBER ID FK
+                        VARCHAR2 ACTION_CD
+                        DATE ACTION_DT
+                        VARCHAR2 REG_USER
+                    }
+                `;
+            }
+            
+            try {
+                const { svg } = await mermaid.render('mermaid-svg-' + Date.now(), erdDefinition);
+                mermaidGraph.innerHTML = svg;
+                const svgElement = mermaidGraph.querySelector('svg');
+                if (svgElement) {
+                    svgElement.style.maxWidth = '100%';
+                    svgElement.style.height = 'auto';
+                    svgElement.style.cursor = 'zoom-in';
+                    svgElement.addEventListener('click', () => {
+                        const modal = document.getElementById('image-modal');
+                        const modalContent = document.getElementById('modal-content');
+                        if(modal && modalContent) {
+                            modalContent.innerHTML = svgElement.outerHTML;
+                            const popupSvg = modalContent.querySelector('svg');
+                            if(popupSvg) {
+                                popupSvg.style.width = '100%';
+                                popupSvg.style.height = 'auto';
+                                popupSvg.style.maxWidth = 'none';
+                            }
+                            modal.style.display = 'block';
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error("Mermaid rendering error:", error);
+                mermaidGraph.innerHTML = `<p style="color:red">ERD 렌더링 중 오류가 발생했습니다.</p>`;
+            }
+        });
+        
+        erdSearchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                erdSearchBtn.click();
+            }
+        });
+        
+        // Domain ERD Logic
+        const domainBtns = document.querySelectorAll('.domain-btn');
+        
+        domainBtns.forEach(btn => {
+            btn.addEventListener('click', async () => {
+                // Remove active class from all
+                domainBtns.forEach(b => b.classList.remove('primary-btn'));
+                domainBtns.forEach(b => b.classList.add('secondary-btn'));
+                // Make this active
+                btn.classList.remove('secondary-btn');
+                btn.classList.add('primary-btn');
+                
+                const prefix = btn.getAttribute('data-prefix');
+                const ownerName = 'KIPOADM';
+                
+                erdEmptyState.style.display = 'none';
+                erdContainer.style.display = 'flex';
+                mermaidGraph.innerHTML = `<p style="color: #666;">${prefix} 업무 영역 데이터를 불러오는 중입니다...</p>`;
+                
+                try {
+                    const response = await fetch(`/api/erd/schema?owner=${ownerName}&prefix=${prefix}`);
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    if (!data.tables || data.tables.length === 0) {
+                        mermaidGraph.innerHTML = `<p style="color:red">해당 업무 영역(${prefix})에 테이블이 없습니다.</p>`;
+                        return;
+                    }
+                    
+                    mermaidGraph.innerHTML = '<p style="color: #666;">ERD를 청크(10개씩) 단위로 렌더링 중입니다...</p>';
+                    
+                    // Function to sanitize table names for Mermaid (only alphanumeric and underscores)
+                    const sanitize = (name) => name.replace(/[^a-zA-Z0-9_]/g, '_');
+                    
+                    const chunkSize = 10;
+                    mermaidGraph.innerHTML = ''; // Clear loading text
+                    
+                    // Loop through tables in chunks of 10
+                    for (let i = 0; i < data.tables.length; i += chunkSize) {
+                        const chunkTables = data.tables.slice(i, i + chunkSize);
+                        let erdDefinition = `erDiagram\n`;
+                        
+                        chunkTables.forEach(t => {
+                            erdDefinition += `    ${sanitize(t)} {\n    }\n`;
+                        });
+                        
+                        // Add relationships only if both tables are in the current chunk
+                        if (data.relationships && data.relationships.length > 0) {
+                            data.relationships.forEach(rel => {
+                                if (chunkTables.includes(rel.parent) && chunkTables.includes(rel.child)) {
+                                    erdDefinition += `    ${sanitize(rel.parent)} ||--o{ ${sanitize(rel.child)} : "FK"\n`;
+                                }
+                            });
+                        }
+                        
+                        // Create a wrapper for this chunk
+                        const chunkId = 'mermaid-chunk-' + i + '-' + Date.now();
+                        const chunkDiv = document.createElement('div');
+                        chunkDiv.style.marginBottom = '40px';
+                        chunkDiv.style.border = '1px solid #eee';
+                        chunkDiv.style.padding = '20px';
+                        chunkDiv.style.borderRadius = '8px';
+                        chunkDiv.style.background = '#fff';
+                        
+                        const title = document.createElement('h4');
+                        title.innerText = `${prefix} 업무 영역 Part ${Math.floor(i / chunkSize) + 1} (${i + 1} ~ ${Math.min(i + chunkSize, data.tables.length)} 테이블) ▾`;
+                        title.style.marginBottom = '15px';
+                        title.style.color = '#333';
+                        title.style.cursor = 'pointer';
+                        title.style.userSelect = 'none';
+                        title.style.padding = '10px';
+                        title.style.background = '#f8f9fa';
+                        title.style.borderRadius = '4px';
+                        chunkDiv.appendChild(title);
+                        
+                        const graphDiv = document.createElement('div');
+                        graphDiv.id = chunkId;
+                        graphDiv.className = 'erd-chunk-graph';
+                        
+                        // By default, show only the first part, hide the rest
+                        if (i === 0) {
+                            graphDiv.style.display = 'block';
+                            title.innerText = title.innerText.replace('▾', '▴');
+                        } else {
+                            graphDiv.style.display = 'none';
+                        }
+                        
+                        title.addEventListener('click', () => {
+                            // Hide all other graphs and reset their arrows
+                            const allGraphs = mermaidGraph.querySelectorAll('.erd-chunk-graph');
+                            const allTitles = mermaidGraph.querySelectorAll('h4');
+                            
+                            const isCurrentlyVisible = graphDiv.style.display === 'block';
+                            
+                            allGraphs.forEach(g => g.style.display = 'none');
+                            allTitles.forEach(t => {
+                                if(t.innerText.includes('▴')) t.innerText = t.innerText.replace('▴', '▾');
+                            });
+                            
+                            // Toggle current
+                            if (!isCurrentlyVisible) {
+                                graphDiv.style.display = 'block';
+                                title.innerText = title.innerText.replace('▾', '▴');
+                            }
+                        });
+                        
+                        chunkDiv.appendChild(graphDiv);
+                        
+                        mermaidGraph.appendChild(chunkDiv);
+                        
+                        try {
+                            const { svg } = await mermaid.render(chunkId + '-svg', erdDefinition);
+                            graphDiv.innerHTML = svg;
+                            const svgElement = graphDiv.querySelector('svg');
+                            if (svgElement) {
+                                svgElement.style.maxWidth = '100%';
+                                svgElement.style.height = 'auto';
+                                svgElement.style.cursor = 'zoom-in';
+                                svgElement.addEventListener('click', () => {
+                                    const modal = document.getElementById('image-modal');
+                                    const modalContent = document.getElementById('modal-content');
+                                    if(modal && modalContent) {
+                                        modalContent.innerHTML = svgElement.outerHTML;
+                                        const popupSvg = modalContent.querySelector('svg');
+                                        if(popupSvg) {
+                                            popupSvg.style.width = '100%';
+                                            popupSvg.style.height = 'auto';
+                                            popupSvg.style.maxWidth = 'none';
+                                        }
+                                        modal.style.display = 'block';
+                                    }
+                                });
+                            }
+                        } catch (error) {
+                            console.error(`Mermaid rendering error for chunk ${i}:`, error);
+                            graphDiv.innerHTML = `<p style="color:red">이 파트의 ERD 렌더링 중 오류가 발생했습니다.</p>`;
+                        }
+                    }
+                    
+                } catch (error) {
+                    console.error("Error fetching domain ERD:", error);
+                    mermaidGraph.innerHTML = `<p style="color:red">데이터를 불러오는 데 실패했습니다: ${error.message}</p>`;
+                }
+            });
+        });
+    }
+
+    // Relation Logic
+    const relationSearchBtn = document.getElementById('relation-search-btn');
+    const relationSearchInput = document.getElementById('relation-search-input');
+    const relationEmptyState = document.getElementById('relation-empty-state');
+    const relationContainer = document.getElementById('relation-container');
+
+    if (relationSearchBtn) {
+        relationSearchBtn.addEventListener('click', async () => {
+            const tableName = relationSearchInput.value.trim().toUpperCase();
+            if (!tableName) {
+                alert('테이블명을 입력해주세요.');
+                return;
+            }
+
+            relationEmptyState.style.display = 'none';
+            relationContainer.style.display = 'block';
+            relationContainer.innerHTML = '<div style="padding: 20px; text-align: center;">데이터 조회 중...</div>';
+
+            try {
+                const directionEl = document.querySelector('input[name="relation-direction"]:checked');
+                const direction = directionEl ? directionEl.value : 'bi';
+                const response = await fetch(`/api/relation?db_id=${window.currentDbId || ""}&table_name=${encodeURIComponent(tableName)}&direction=${direction}&token=${encodeURIComponent(getToken())}`);
+                if (!response.ok) throw new Error('Failed to fetch relation data');
+                const result = await response.json();
+                
+                if (result.error) {
+                    throw new Error(result.error);
+                }
+
+                
+                
+                const data = result.data;
+                
+                const parentRelations = data.filter(item => item.child_table.toUpperCase() === tableName);
+                const childRelations = data.filter(item => item.parent_table.toUpperCase() === tableName);
+                
+                let treeHTML = `<div class="tree-node" style="display: flex; flex-direction: column; align-items: center;">`;
+
+                let mermaidSyntax = "erDiagram\n";
+                let hasData = false;
+                const uniqueRelations = new Set();
+                
+                // Helper to clean table names for mermaid nodes
+                const cleanName = (name) => name.replace(/[^A-Za-z0-9_]/g, '_');
+
+                // 1. 내가 자식인 경우 (부모 테이블들)
+                if (parentRelations.length > 0) {
+                    hasData = true;
+                    treeHTML += `<div style="text-align: center; margin-bottom: 5px; font-weight: bold; color: var(--text-secondary);">내가 참조하는 부모 테이블들 (내가 자식)</div>`;
+                    treeHTML += `<div class="tree-children" style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 20px; width: 100%;">`;
+                    parentRelations.forEach(item => {
+                        treeHTML += `
+                            <div class="tree-card" style="cursor: pointer;" onclick="if(window.showTableInfoModal) window.showTableInfoModal('${item.parent_table}')">
+                                <div class="table-name"><i data-lucide="arrow-up-circle"></i> ${item.parent_table}</div>
+                                <div class="relation-type">Parent (FK: ${item.fk_name})</div>
+                                <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 5px;">
+                                    ${item.child_column} → ${item.parent_column}
+                                </div>
+                            </div>
+                        `;
+                        const relKey = `    ${cleanName(item.parent_table)} ||--o{ ${cleanName(tableName)} : "${item.fk_name}"
+`;
+                        if (!uniqueRelations.has(relKey)) {
+                            mermaidSyntax += relKey;
+                            uniqueRelations.add(relKey);
+                        }
+                    });
+                    treeHTML += `</div>`;
+                }
+
+                // 2. 검색 대상 테이블 (Root)
+                treeHTML += `
+                    <div class="tree-card root" style="border: 2px solid var(--primary-color); box-shadow: 0 0 10px rgba(52, 152, 219, 0.3); cursor: pointer;" onclick="if(window.showTableInfoModal) window.showTableInfoModal('${tableName}')">
+                        <div class="table-name"><i data-lucide="table"></i> ${tableName}</div>
+                        <div class="relation-type">Selected Table (검색 대상)</div>
+                    </div>
+                `;
+
+                // 3. 내가 부모인 경우 (자식 테이블들)
+                if (childRelations.length > 0) {
+                    hasData = true;
+                    treeHTML += `<div class="tree-children" style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 20px; width: 100%;">`;
+                    childRelations.forEach(item => {
+                        treeHTML += `
+                            <div class="tree-card" style="cursor: pointer;" onclick="if(window.showTableInfoModal) window.showTableInfoModal('${item.child_table}')">
+                                <div class="table-name"><i data-lucide="arrow-down-circle"></i> ${item.child_table}</div>
+                                <div class="relation-type">Child (FK: ${item.fk_name})</div>
+                                <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 5px;">
+                                    ${item.child_column} → ${item.parent_column}
+                                </div>
+                            </div>
+                        `;
+                        const relKey = `    ${cleanName(tableName)} ||--o{ ${cleanName(item.child_table)} : "${item.fk_name}"
+`;
+                        if (!uniqueRelations.has(relKey)) {
+                            mermaidSyntax += relKey;
+                            uniqueRelations.add(relKey);
+                        }
+                    });
+                    treeHTML += `</div>`;
+                    treeHTML += `<div style="text-align: center; margin-top: 5px; font-weight: bold; color: var(--text-secondary);">나를 참조하는 자식 테이블들 (내가 부모)</div>`;
+                }
+                
+                if (!hasData) {
+                    treeHTML += `
+                        <div style="margin-top: 20px; color: var(--text-secondary); text-align: center;">
+                            관계된 부모/자식 테이블이 없습니다.
+                        </div>
+                    `;
+                    mermaidSyntax += `    ${cleanName(tableName)}
+`;
+                }
+                
+                treeHTML += `</div>`;
+let layoutHTML = "";
+                if (direction === 'uni') {
+                    // 단방향: 좌우 분할 레이아웃
+                    layoutHTML = `
+                        <div style="display: flex; gap: 20px; align-items: flex-start;">
+                            <div style="flex: 1; min-width: 0;">
+                                <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1rem; color: var(--text-primary);">트리 형태</h3>
+                                ${treeHTML}
+                            </div>
+                            <div style="flex: 1; min-width: 0; border-left: 1px solid var(--border-color); padding-left: 20px; text-align: center;">
+                                <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1rem; color: var(--text-primary); text-align: left;">ERD 형태</h3>
+                                <div class="mermaid">
+                                    ${mermaidSyntax}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    // 양방향: 상하 분할 레이아웃 + 가로 스크롤
+                    layoutHTML = `
+                        <div style="display: flex; flex-direction: column; gap: 40px; align-items: stretch;">
+                            <div style="width: 100%;">
+                                <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1.2rem; color: var(--text-primary); text-align: center;">트리 형태</h3>
+                                ${treeHTML}
+                            </div>
+                            <div style="width: 100%; border-top: 2px solid var(--border-color); padding-top: 30px; text-align: center;">
+                                <h3 id="erd-popup-btn" style="margin-top: 0; margin-bottom: 15px; font-size: 1.2rem; color: var(--primary); text-align: center; cursor: pointer; text-decoration: underline;" title="클릭하면 팝업창에서 더 크게 볼 수 있습니다. (Ctrl+마우스 휠로 확대/축소 가능)"><i data-lucide="maximize-2" style="width: 18px; height: 18px; margin-right: 5px;"></i>ERD 형태 (크게 보기 - 클릭)</h3>
+                                <div style="width: 100%; overflow-x: auto; padding: 20px; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);">
+                                    <div class="mermaid" style="padding-bottom: 20px; text-align: center; display: flex; justify-content: center; min-width: 100%; width: max-content; margin: 0 auto;">
+                                        ${mermaidSyntax}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                relationContainer.innerHTML = layoutHTML;
+
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
+                
+                if (typeof mermaid !== 'undefined') {
+                    try {
+                        mermaid.init(undefined, document.querySelectorAll('#relation-container .mermaid'));
+                        
+                        setTimeout(() => {
+                            const svg = document.querySelector('#relation-container .mermaid svg');
+                            if (svg) {
+                                // Add pointer cursor specifically to boxes and text (not the whole SVG background)
+                                const clickableElements = svg.querySelectorAll('.entityBox, .node, text, span, foreignObject');
+                                clickableElements.forEach(el => {
+                                    const txt = el.textContent ? el.textContent.trim() : '';
+                                    if (txt && txt.length < 40 && /^[A-Za-z0-9_$]+$/.test(txt.replace(/[^A-Za-z0-9_$]/g, '')) && txt !== 'REFERENCES') {
+                                        el.style.cursor = 'pointer';
+                                    }
+                                });
+                                
+                                const popupBtn = document.getElementById('erd-popup-btn');
+                                if (popupBtn) {
+                                    popupBtn.addEventListener('click', () => {
+                                        const modal = document.getElementById('image-modal');
+                                        const modalContent = document.getElementById('modal-content');
+                                        if (modal && modalContent) {
+                                            modalContent.innerHTML = svg.outerHTML;
+                                            const popupSvg = modalContent.querySelector('svg');
+                                            if (popupSvg) {
+                                                // 자연스러운 원본 크기 유지
+                                                popupSvg.style.width = 'auto';
+                                                popupSvg.style.height = 'auto';
+                                                popupSvg.style.maxWidth = 'none';
+                                                popupSvg.style.minWidth = '0';
+                                                popupSvg.style.margin = 'auto';
+                                                popupSvg.style.display = 'block';
+                                                
+                                                // 마우스 휠 줌(확대/축소) 기능 추가 (Ctrl + Wheel)
+                                                let scale = 1;
+                                                popupSvg.style.transition = 'transform 0.1s ease';
+                                                popupSvg.style.transformOrigin = 'center center';
+                                                
+                                                modalContent.onwheel = (e) => {
+                                                    if (e.ctrlKey) {
+                                                        e.preventDefault();
+                                                        scale += e.deltaY * -0.001;
+                                                        scale = Math.min(Math.max(0.125, scale), 4);
+                                                        popupSvg.style.transform = `scale(${scale})`;
+                                                    }
+                                                };
+                                            }
+                                            
+                                            // 모달 컨텐츠 중앙 정렬 및 스크롤 영역 확보를 위한 스타일 추가
+                                            modalContent.style.display = 'flex';
+                                            modalContent.style.justifyContent = 'center';
+                                            modalContent.style.alignItems = 'center';
+                                            modalContent.style.overflow = 'auto';
+                                            modalContent.style.padding = '50px';
+                                            
+                                            modal.style.display = 'block';
+                                        }
+                                    });
+                                }
+                                
+                                svg.addEventListener('click', (e) => {
+                                    let current = e.target;
+                                    let clickedTableName = null;
+                                    
+                                    while (current && current !== svg) {
+                                        // 1. If we hit a known Mermaid node class
+                                        if (current.classList && (current.classList.contains('entityBox') || current.classList.contains('node'))) {
+                                            clickedTableName = current.textContent.trim();
+                                            break;
+                                        }
+                                        
+                                        // 2. Or if we directly clicked on text or span (foreignObject)
+                                        if (current.tagName && ['text', 'span'].includes(current.tagName.toLowerCase())) {
+                                            clickedTableName = current.textContent.trim();
+                                            break;
+                                        }
+                                        
+                                        current = current.parentNode;
+                                    }
+                                    
+                                    if (clickedTableName) {
+                                        // Extract alphanumeric table name
+                                        clickedTableName = clickedTableName.replace(/[^A-Za-z0-9_$]/g, '');
+                                        if (clickedTableName && clickedTableName !== 'REFERENCES' && clickedTableName.toLowerCase() !== 'has' && clickedTableName.toLowerCase() !== 'manages') {
+                                            if (typeof window.showTableInfoModal === 'function') {
+                                                window.showTableInfoModal(clickedTableName.toUpperCase());
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        }, 500);
+                        
+                    } catch (err) {
+                        console.error('Mermaid render error:', err);
+                    }
+                }
+
+            } catch (error) {
+                relationContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align: center;">오류 발생: ${error.message}</div>`;
+            }
+        });
+
+        relationSearchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                relationSearchBtn.click();
+            }
+        });
+    }
+
+    // Tablespace Logic (Mock Version)
+    const tsRefreshBtn = document.getElementById('tablespace-refresh-btn');
+    const tsTbody = document.getElementById('tablespace-tbody');
+
+    if (tsRefreshBtn && tsTbody) {
+        tsRefreshBtn.addEventListener('click', async () => {
+            const icon = tsRefreshBtn.querySelector('i');
+            if (icon) icon.classList.add('spinning');
+
+            const tsLoadingOverlay = document.getElementById('tablespace-loading-overlay');
+            if (tsLoadingOverlay) tsLoadingOverlay.style.display = 'flex';
+
+            tsTbody.innerHTML = '';
+
+            try {
+                const response = await fetch(`/api/tablespace?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.error) {
+                        tsTbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center; padding: 30px;">DB Error: ${data.error}</td></tr>`;
+                    } else if (data.length === 0) {
+                        tsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 30px;">테이블 스페이스 정보가 없습니다.</td></tr>';
+                    } else {
+                        tsTbody.innerHTML = '';
+                        data.forEach(ts => {
+                            const free = ts.free_mb;
+                            const numPct = Number(ts.used_pct);
+                            const displayPct = numPct.toFixed(1);
+                            let barClass = '';
+                            if (numPct >= 90) barClass = 'danger';
+                            else if (numPct >= 80) barClass = 'warning';
+                            
+                            let statusBadge = 'online';
+                            if (ts.status && ts.status.toUpperCase() !== 'ONLINE') {
+                                statusBadge = 'offline';
+                            }
+
+                            const row = `
+                                <tr>
+                                    <td>${ts.tablespace_name}</td>
+                                    <td><span class="status-badge ${statusBadge}">${ts.status}</span></td>
+                                    <td>${ts.total_mb.toLocaleString()}</td>
+                                    <td>${ts.used_mb.toLocaleString()}</td>
+                                    <td>${free.toLocaleString()}</td>
+                                    <td>
+                                        <div class="progress-bar-container">
+                                            <div class="progress-bar ${barClass}" style="width: ${numPct}%;"></div>
+                                            <span>${displayPct}%</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            `;
+                            tsTbody.insertAdjacentHTML('beforeend', row);
+                        });
+                    }
+                } else {
+                    tsTbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center; padding: 30px;">API 서버 오류가 발생했습니다.</td></tr>`;
+                }
+            } catch (error) {
+                console.error('Tablespace fetch error:', error);
+                tsTbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+            }
+            if (icon) icon.classList.remove('spinning');
+            if (tsLoadingOverlay) tsLoadingOverlay.style.display = 'none';
+        });
+    }
+
+    // TM LOCK Logic
+    const tmlockRefreshBtn = document.getElementById('tmlock-refresh-btn');
+    const tmlockToggleBtn = document.getElementById('tmlock-toggle-btn');
+    const tmlockIntervalInput = document.getElementById('tmlock-refresh-interval');
+    const tmlockTbody = document.getElementById('tmlock-tbody');
+    
+    let tmlockTimer = null;
+    let isAutoRefreshing = false;
+
+    async function fetchTMLocks() {
+        if (!tmlockTbody) return;
+        
+        try {
+            const icon = tmlockRefreshBtn.querySelector('i');
+            if (icon) icon.classList.add('spinning');
+            
+            const response = await fetch(`/api/tmlock?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`);
+            if (!response.ok) throw new Error('Network response was not ok');
+            const data = await response.json();
+            
+            if (!data || data.length === 0) {
+                tmlockTbody.innerHTML = `
+                    <tr>
+                        <td colspan="14" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+                            현재 감지된 TM LOCK 대상건이 없습니다. (정상)
+                        </td>
+                    </tr>
+                `;
+                if (icon) icon.classList.remove('spinning');
+                return;
+            }
+            
+            const formatDuration = (seconds) => {
+                if (seconds === null || seconds === undefined) return 'N/A';
+                if (seconds < 60) return `${seconds}초`;
+                const m = Math.floor(seconds / 60);
+                const s = seconds % 60;
+                if (m < 60) return `${m}분 ${s}초`;
+                const h = Math.floor(m / 60);
+                const rm = m % 60;
+                return `${h}시간 ${rm}분 ${s}초`;
+            };
+
+            let tableHtml = '';
+            
+            data.forEach(holder => {
+                // Add Holder
+                tableHtml += `
+                    <tr class="tmlock-row" data-sid="${holder.sid}" style="background-color: #ffebee; color: #000; cursor: pointer;">
+                        <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${holder.sid}" data-serial="${holder.serial}" onclick="event.stopPropagation();"></td>
+                        <td><strong><i data-lucide="lock" style="width: 16px; height: 16px; margin-right: 4px; vertical-align: middle;"></i>${holder.sid}</strong></td>
+                        <td>${holder.inst_id}</td>
+                        <td>${holder.serial}</td>
+                        <td>${holder.spid || ''}</td>
+                        <td>${holder.username}</td>
+                        <td>${holder.lock_type}</td>
+                        <td>${holder.mode}</td>
+                        <td>${holder.object_waiting || ''}</td>
+                        <td>${formatDuration(holder.time)}</td>
+                        <td>${holder.login || ''}</td>
+                        <td>${holder.status || ''}</td>
+                        <td>${holder.program || ''}</td>
+                        <td>${holder.machine || ''}</td>
+                    </tr>
+                `;
+
+                if (holder.waiters && holder.waiters.length > 0) {
+                    holder.waiters.forEach(waiter => {
+                        // Add Waiter
+                        tableHtml += `
+                            <tr class="tmlock-row" data-sid="${waiter.sid}" style="background-color: #fff3cd; color: #000; cursor: pointer;">
+                                <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${waiter.sid}" data-serial="${waiter.serial}" onclick="event.stopPropagation();"></td>
+                                <td style="padding-left: 20px;"><i data-lucide="corner-down-right" style="width: 16px; height: 16px; margin-right: 4px; vertical-align: middle;"></i>${waiter.sid}</td>
+                                <td>${waiter.inst_id}</td>
+                                <td>${waiter.serial}</td>
+                                <td>${waiter.spid || ''}</td>
+                                <td>${waiter.username}</td>
+                                <td>${waiter.lock_type}</td>
+                                <td>${waiter.mode}</td>
+                                <td>${waiter.object_waiting || ''}</td>
+                                <td>${formatDuration(waiter.time)}</td>
+                                <td>${waiter.login || ''}</td>
+                                <td>${waiter.status || ''}</td>
+                                <td>${waiter.program || ''}</td>
+                                <td>${waiter.machine || ''}</td>
+                            </tr>
+                        `;
+                    });
+                }
+            });
+            
+            const checkedTmlockSids = Array.from(document.querySelectorAll('.tmlock-checkbox:checked')).map(cb => cb.getAttribute('data-sid'));
+            tmlockTbody.innerHTML = tableHtml;
+            document.querySelectorAll('.tmlock-checkbox').forEach(cb => {
+                if (checkedTmlockSids.includes(cb.getAttribute('data-sid'))) {
+                    cb.checked = true;
+                }
+            });
+
+            // Re-attach select all event listener if it exists
+            const selectAllCb = document.getElementById('tmlock-select-all');
+            if (selectAllCb) {
+                // Remove old event listeners by replacing the element to prevent multiple bindings
+                const newSelectAllCb = selectAllCb.cloneNode(true);
+                selectAllCb.parentNode.replaceChild(newSelectAllCb, selectAllCb);
+                
+                newSelectAllCb.addEventListener('change', (e) => {
+                    const cbs = document.querySelectorAll('.tmlock-checkbox');
+                    cbs.forEach(cb => cb.checked = e.target.checked);
+                });
+            }
+
+            // Attach row click listeners for SQL Query
+            document.querySelectorAll('.tmlock-row').forEach(row => {
+                row.addEventListener('click', async (e) => {
+                    if (e.target.tagName.toLowerCase() === 'input') return;
+                    
+                    const sid = row.getAttribute('data-sid');
+                    if (!sid) return;
+                    
+                    const modal = document.getElementById('image-modal');
+                    const modalContent = document.getElementById('modal-content');
+                    if (!modal || !modalContent) return;
+                    
+                    modalContent.innerHTML = '<h3 style="color: var(--text-main); margin-top: 0;">SQL 조회 중...</h3>';
+                    modal.style.display = 'block';
+                    
+                    try {
+                        const response = await fetch(`/api/session_query?db_id=${window.currentDbId || ""}&sid=${sid}&token=${encodeURIComponent(getToken())}`);
+                        const result = await response.json();
+                        
+                        if (result.error) {
+                            modalContent.innerHTML = `<h3 style="color: var(--danger); margin-top: 0;">오류 발생</h3><p style="color: var(--text-main);">${result.error}</p>`;
+                            return;
+                        }
+                        let bindsHtml = '';
+                        if (result.binds && result.binds.length > 0) {
+                            bindsHtml = `
+                                <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+                                    <thead>
+                                        <tr style="background-color:var(--bg-hover); border-bottom:1px solid var(--border);">
+                                            <th style="padding:8px; text-align:left;">Name</th>
+                                            <th style="padding:8px; text-align:left;">Position</th>
+                                            <th style="padding:8px; text-align:left;">Type</th>
+                                            <th style="padding:8px; text-align:left;">Value</th>
+                                            <th style="padding:8px; text-align:left;">Captured At</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${result.binds.map(b => `
+                                            <tr style="border-bottom:1px solid var(--border);">
+                                                <td style="padding:8px;">${b.name || '-'}</td>
+                                                <td style="padding:8px;">${b.position || '-'}</td>
+                                                <td style="padding:8px;">${b.datatype || '-'}</td>
+                                                <td style="padding:8px; font-weight:bold; color:var(--primary);">${b.value || 'NULL'}</td>
+                                                <td style="padding:8px;">${b.last_captured || '-'}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            `;
+                        } else {
+                            bindsHtml = `<div style="padding:20px; text-align:center; color:var(--text-secondary);">바인드 변수 정보가 없습니다.</div>`;
+                        }
+
+                        modalContent.innerHTML = `
+                            <div style="color: var(--text-main); text-align: left; max-width: 900px; width: 100%;">
+                                <h3 style="margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 10px;">세션 상세정보 (SID: ${result.sid})</h3>
+                                <div style="margin-bottom: 15px;">
+                                    <strong style="color: var(--info);">SQL_ID:</strong> ${result.sql_id || '없음'}
+                                </div>
+                                
+                                <div class="tab-container" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
+                                    <div class="tab-headers" style="display: flex; background-color: var(--bg-card); border-bottom: 1px solid var(--border);">
+                                        <div class="tab-btn active" onclick="switchSessionTab('sql', this)" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold; background-color: var(--bg-hover); color: var(--primary);">SQL 텍스트</div>
+                                        <div class="tab-btn" onclick="switchSessionTab('plan', this)" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold;">실행 계획 (Plan)</div>
+                                        <div class="tab-btn" onclick="switchSessionTab('bind', this)" style="padding: 10px 20px; cursor: pointer; font-weight: bold;">바인드 변수 (Bind)</div>
+                                    </div>
+                                    <div class="tab-content" style="background-color: var(--bg-main); padding: 15px;">
+                                        <div id="tab-sql" class="sess-tab" style="display: block;">
+                                            <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; font-family: monospace; font-size: 14px; margin: 0;">${result.sql_fulltext || 'SQL 텍스트가 없습니다.'}</pre>
+                                        </div>
+                                        <div id="tab-plan" class="sess-tab" style="display: none;">
+                                            <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre; font-family: monospace; font-size: 13px; margin: 0; line-height: 1.2;">${result.plan_text || '실행 계획 정보가 없습니다.'}</pre>
+                                        </div>
+                                        <div id="tab-bind" class="sess-tab" style="display: none;">
+                                            ${bindsHtml}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+
+                        if (!window.switchSessionTab) {
+                            window.switchSessionTab = function(tabName, element) {
+                                document.querySelectorAll('.sess-tab').forEach(el => el.style.display = 'none');
+                                document.querySelectorAll('.tab-btn').forEach(el => {
+                                    el.style.backgroundColor = 'transparent';
+                                    el.style.color = 'inherit';
+                                });
+                                document.getElementById('tab-' + tabName).style.display = 'block';
+                                element.style.backgroundColor = 'var(--bg-hover)';
+                                element.style.color = 'var(--primary)';
+                            };
+                        }
+                    } catch (error) {
+                        modalContent.innerHTML = `<h3 style="color: var(--danger); margin-top: 0;">오류 발생</h3><p style="color: var(--text-main);">${error.message}</p>`;
+                    }
+                });
+            });
+
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+            
+            if (icon) icon.classList.remove('spinning');
+        } catch (error) {
+            tmlockTbody.innerHTML = `<tr><td colspan="14" style="color:var(--danger); padding:20px; text-align:center;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+        }
+    }
+
+    if (tmlockRefreshBtn) {
+        tmlockRefreshBtn.addEventListener('click', fetchTMLocks);
+    }
+
+    if (tmlockToggleBtn) {
+        tmlockToggleBtn.addEventListener('click', () => {
+            if (isAutoRefreshing) {
+                // Stop auto-refresh
+                clearTimeout(tmlockTimer);
+                isAutoRefreshing = false;
+                tmlockToggleBtn.textContent = '자동 갱신 시작';
+                tmlockToggleBtn.classList.remove('danger-btn');
+                tmlockToggleBtn.classList.add('primary-btn');
+                tmlockRefreshBtn.disabled = false;
+            } else {
+                // Start auto-refresh
+                isAutoRefreshing = true;
+                tmlockToggleBtn.textContent = '자동 갱신 중지';
+                tmlockToggleBtn.classList.remove('primary-btn');
+                tmlockToggleBtn.classList.add('danger-btn');
+                tmlockRefreshBtn.disabled = true;
+                
+                (async function loop() {
+                    if (!isAutoRefreshing) return;
+                    await fetchTMLocks();
+                    if (!isAutoRefreshing) return;
+                    const interval = Math.max(1, parseInt(tmlockIntervalInput.value) || 5);
+                    tmlockTimer = setTimeout(loop, interval * 1000);
+                })();
+            }
+        });
+    }
+
+    const tmlockKillBtn = document.getElementById('tmlock-kill-btn');
+    if (tmlockKillBtn) {
+        tmlockKillBtn.addEventListener('click', async () => {
+            const checkboxes = document.querySelectorAll('.tmlock-checkbox:checked');
+            if (checkboxes.length === 0) {
+                alert('Kill할 세션을 선택해주세요.');
+                return;
+            }
+            
+            if (!confirm(`선택한 ${checkboxes.length}개의 세션을 Kill 하시겠습니까?`)) {
+                return;
+            }
+            
+            const sessions = Array.from(checkboxes).map(cb => ({
+                sid: cb.getAttribute('data-sid'),
+                serial: cb.getAttribute('data-serial')
+            }));
+            
+            try {
+                const response = await fetch(`/api/kill_session?db_id=${window.currentDbId || ""}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessions, token: sessionStorage.getItem('dbagent_token') })
+                });
+
+                const data = await response.json();
+                if (data.error) throw new Error(data.error);
+                
+                let successCount = 0;
+                let failCount = 0;
+                data.results.forEach(r => {
+                    if (r.status === 'killed') successCount++;
+                    else failCount++;
+                });
+                
+                alert(`처리 결과:\n성공: ${successCount}건\n실패: ${failCount}건`);
+                fetchTMLocks(); // refresh
+            } catch (error) {
+                alert('세션 Kill 처리 중 오류가 발생했습니다: ' + error.message);
+            }
+        });
+    }
+
+    // Session Monitoring Logic
+    const sessionRefreshBtn = document.getElementById('session-refresh-btn');
+    const sessionToggleBtn = document.getElementById('session-toggle-btn');
+    const sessionIntervalInput = document.getElementById('session-refresh-interval');
+    const sessionTbody = document.getElementById('session-tbody');
+    
+    let sessionTimer = null;
+    let isSessionAutoRefreshing = false;
+    let sessionChart = null;
+    let sessionScatterChart = null;
+    let scatterDataPoints = [];
+    let isScatterBrushBound = false;
+    const maxDataPoints = 60; // Store last 60 data points (5 minutes at 5s interval)
+    const sessionHistory = {
+        labels: [],
+        active: [],
+        inactive: [],
+        activeTx: []
+    };
+
+    async function fetchSessions() {
+        if (!sessionTbody) return;
+        
+        try {
+            const icon = sessionRefreshBtn.querySelector('i');
+            if (icon) icon.classList.add('spinning');
+            
+            const response = await fetch(`/api/session?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`);
+            if (!response.ok) throw new Error('Network response was not ok');
+            const data = await response.json();
+            
+            if (data.error) throw new Error(data.error);
+            
+            let activeCount = 0;
+            let inactiveCount = 0;
+            let activeTxCount = 0;
+            const activeSessions = [];
+            
+            data.forEach(session => {
+                if (session.status.toUpperCase() === 'ACTIVE') {
+                    activeCount++;
+                    activeSessions.push(session);
+                } else {
+                    inactiveCount++;
+                }
+                if (session.has_transaction) {
+                    activeTxCount++;
+                }
+            });
+            
+            const now = new Date();
+            const nowTime = now.getTime();
+            sessionHistory.labels.push(nowTime);
+            sessionHistory.active.push(activeCount);
+            sessionHistory.inactive.push(inactiveCount);
+            sessionHistory.activeTx.push(activeTxCount);
+            
+            if (sessionHistory.labels.length > maxDataPoints) {
+                sessionHistory.labels.shift();
+                sessionHistory.active.shift();
+                sessionHistory.inactive.shift();
+                sessionHistory.activeTx.shift();
+            }
+            
+            const ctx = document.getElementById('session-chart');
+            if (ctx) {
+                if (!sessionChart) {
+                    sessionChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: sessionHistory.labels,
+                            datasets: [
+                                {
+                                    label: 'ACTIVE',
+                                    data: sessionHistory.active,
+                                    borderColor: '#10b981',
+                                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                    borderWidth: 1.5,
+                                    pointRadius: 1.5,
+                                    pointHoverRadius: 3,
+                                    fill: true,
+                                    tension: 0
+                                },
+                                {
+                                    label: 'INACTIVE',
+                                    data: sessionHistory.inactive,
+                                    borderColor: '#94a3b8',
+                                    backgroundColor: 'rgba(148, 163, 184, 0.1)',
+                                    borderWidth: 1.5,
+                                    pointRadius: 1.5,
+                                    pointHoverRadius: 3,
+                                    fill: true,
+                                    tension: 0
+                                },
+                                {
+                                    label: 'ACTIVE TRANSACTION',
+                                    data: sessionHistory.activeTx,
+                                    borderColor: '#f59e0b',
+                                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                                    borderWidth: 1.5,
+                                    pointRadius: 1.5,
+                                    pointHoverRadius: 3,
+                                    fill: true,
+                                    tension: 0
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: {
+                                duration: 0 // Disable animation for real-time updates
+                            },
+                            scales: {
+                                x: {
+                                    type: 'time',
+                                    time: {
+                                        tooltipFormat: 'HH:mm:ss',
+                                        displayFormats: {
+                                            millisecond: 'HH:mm:ss',
+                                            second: 'HH:mm:ss',
+                                            minute: 'HH:mm:ss',
+                                            hour: 'HH:mm:ss'
+                                        }
+                                    },
+                                    min: nowTime - (5 * 60 * 1000),
+                                    max: nowTime,
+                                    ticks: { color: 'rgba(255, 255, 255, 0.8)' },
+                                    grid: { 
+                                        drawOnChartArea: true,
+                                        color: 'rgba(255, 255, 255, 0.15)',
+                                        borderDash: [4, 4]
+                                    },
+                                    border: {
+                                        display: true,
+                                        color: 'rgba(255, 255, 255, 1)',
+                                        width: 2
+                                    }
+                                },
+                                y: {
+                                    beginAtZero: true,
+                                    min: 0,
+                                    max: 120,
+                                    ticks: { stepSize: 20, color: 'rgba(255, 255, 255, 0.8)' },
+                                    grid: { 
+                                        drawOnChartArea: true,
+                                        color: 'rgba(255, 255, 255, 0.15)',
+                                        borderDash: [4, 4]
+                                    },
+                                    border: {
+                                        display: true,
+                                        color: 'rgba(255, 255, 255, 1)',
+                                        width: 2
+                                    }
+                                }
+                            },
+                            plugins: {
+                                legend: {
+                                    position: 'top',
+                                },
+                                title: {
+                                    display: true,
+                                    text: '실시간 세션 추이'
+                                },
+                                subtitle: {
+                                    display: true,
+                                    text: 'Session Count',
+                                    align: 'start',
+                                    color: 'rgba(255, 255, 255, 0.8)',
+                                    padding: { bottom: 10 }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    sessionChart.options.scales.x.min = nowTime - (5 * 60 * 1000);
+                    sessionChart.options.scales.x.max = nowTime;
+                    sessionChart.update();
+                }
+            }
+
+            // Independent of sessionChart's init state above, so the Trace scatter chart is created on
+            // the very first fetch too instead of only starting from the second polling cycle.
+            const scatterNowTime = Date.now();
+            data.forEach(s => {
+                if (s && s.status && s.status.trim().toUpperCase() === 'ACTIVE' && s.duration_time !== null) {
+                    // Only add if not exactly identical recently
+                    const lastPoint = scatterDataPoints.length > 0 ? scatterDataPoints[scatterDataPoints.length - 1] : null;
+                    if (!lastPoint || lastPoint.session.sid !== s.sid || lastPoint.y !== Number(s.duration_time)) {
+                        scatterDataPoints.push({
+                            x: scatterNowTime,
+                            y: Number(s.duration_time),
+                            session: s
+                        });
+                    }
+                }
+            });
+            // Keep only last 10 minutes
+            scatterDataPoints = scatterDataPoints.filter(p => scatterNowTime - p.x <= 10 * 60 * 1000);
+
+            const scatterCtx = document.getElementById('session-scatter-chart');
+            if (scatterCtx) {
+                if (!sessionScatterChart) {
+                    sessionScatterChart = new Chart(scatterCtx, {
+                        type: 'scatter',
+                        data: {
+                            datasets: [{
+                                label: 'Active Sessions',
+                                data: scatterDataPoints,
+                                backgroundColor: '#ffcc00',
+                                borderColor: '#ffcc00',
+                                borderWidth: 2,
+                                pointRadius: 2,
+                                pointHoverRadius: 5,
+                                pointStyle: 'star'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: false,
+                            scales: {
+                                x: {
+                                    type: 'linear',
+                                    position: 'bottom',
+                                    border: {
+                                        display: true,
+                                        color: 'rgba(255, 255, 255, 1)',
+                                        width: 1
+                                    },
+                                    ticks: {
+                                        color: 'rgba(255, 255, 255, 1)',
+                                        maxRotation: 0,
+                                        callback: function(value) {
+                                            const d = new Date(value);
+                                            return d.getHours().toString().padStart(2, '0') + ':' + 
+                                                   d.getMinutes().toString().padStart(2, '0') + ':' + 
+                                                   d.getSeconds().toString().padStart(2, '0');
+                                        }
+                                    },
+                                    grid: { 
+                                        color: 'rgba(255, 255, 255, 0.1)',
+                                        borderColor: 'rgba(255, 255, 255, 1)',
+                                        tickColor: 'rgba(255, 255, 255, 1)'
+                                    },
+                                    title: { display: false }
+                                },
+                                y: {
+                                    title: { display: false },
+                                    min: 0,
+                                    max: 300,
+                                    border: {
+                                        display: true,
+                                        color: 'rgba(255, 255, 255, 1)',
+                                        width: 1
+                                    },
+                                    ticks: {
+                                        color: 'rgba(255, 255, 255, 1)',
+                                        stepSize: 100,
+                                        callback: function(value) {
+                                            return value;
+                                        }
+                                    },
+                                    grid: { 
+                                        color: 'rgba(255, 255, 255, 0.1)',
+                                        borderColor: 'rgba(255, 255, 255, 1)',
+                                        tickColor: 'rgba(255, 255, 255, 1)'
+                                    }
+                                }
+                            },
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: 'Trace(sec)',
+                                    align: 'start',
+                                    color: 'rgba(255, 255, 255, 0.7)',
+                                    font: { size: 12, weight: 'bold' },
+                                    padding: { top: 0, bottom: 5 }
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(ctx) {
+                                            const p = ctx.raw;
+                                            return `SID: ${p.session.sid}, Duration: ${p.y}s, Event: ${p.session.event_name || '-'}`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    sessionScatterChart.data.datasets[0].data = scatterDataPoints;
+                    const minX = scatterNowTime - 5 * 60 * 1000;
+                    sessionScatterChart.options.scales.x.min = minX;
+                    sessionScatterChart.options.scales.x.max = scatterNowTime;
+                    sessionScatterChart.update('none');
+                }
+                window.globalSessionScatterChart = sessionScatterChart;
+                window.globalScatterDataPoints = scatterDataPoints;
+            }
+
+            // Update Table (Only Active Sessions)
+            if (activeSessions.length === 0) {
+                sessionTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">현재 ACTIVE 상태인 세션이 없습니다.</td></tr>';
+            } else {
+                const maxDuration = activeSessions.reduce((max, s) => Math.max(max, Number(s.duration_time) || 0), 1);
+                let html = '';
+                activeSessions.forEach(session => {
+                    const statusClass = 'online';
+                    const durationVal = session.duration_time !== null ? Number(session.duration_time) : 0;
+                    const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
+                    const durationHtml = session.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--border-color); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3498db; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
+                    html += `
+                        <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${session.sid}" data-sql_id="${session.sql_id || ''}">
+                            <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="session-checkbox" data-sid="${session.sid}" data-serial="${session.serial}"></td>
+                            <td>${session.db_name || '-'}</td>
+                            <td><span class="status-badge ${statusClass}">${session.status}</span></td>
+                            <td>${session.sid}</td>
+                            <td>${session.serial}</td>
+                            <td>${session.server_pid || '-'}</td>
+                            <td>${durationHtml}</td>
+                            <td>${(() => {
+                                let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
+                                if (session.session_wait_pct && session.session_wait_pct.includes(',')) {
+                                    const [cpu, uio, sio, other] = session.session_wait_pct.split(',').map(Number);
+                                    if (cpu + uio + sio + other > 0) {
+                                        waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--border-color);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${other}%; background-color: #95a5a6;" title="Other: ${other}%"></div></div>`;
+                                    }
+                                }
+                                return waitHtml;
+                            })()}</td>
+                            <td>${session.sql_id || '-'}</td>
+                            <td>${session.event_name || '-'}</td>
+                            <td>${session.plan_hash_value || '-'}</td>
+                            <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${session.sql_text || ''}">${session.sql_text || '-'}</div></td>
+                            <td>${session.machine_name || '-'}</td>
+                            <td>${session.username || '-'}</td>
+                            <td>${session.program_name || '-'}</td>
+                        </tr>
+                    `;
+                });
+                const checkedSids = Array.from(document.querySelectorAll('.session-checkbox:checked')).map(cb => cb.getAttribute('data-sid'));
+                sessionTbody.innerHTML = html;
+                document.querySelectorAll('.session-checkbox').forEach(cb => {
+                    if (checkedSids.includes(cb.getAttribute('data-sid'))) {
+                        cb.checked = true;
+                    }
+                });
+            }
+            
+            if (icon) icon.classList.remove('spinning');
+        } catch (error) {
+            console.error('Error fetching sessions:', error);
+            sessionTbody.innerHTML = `<tr><td colspan="7" style="color:red; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+        }
+    }
+
+    if (sessionRefreshBtn) {
+        sessionRefreshBtn.addEventListener('click', fetchSessions);
+    }
+
+    if (sessionToggleBtn) {
+        sessionToggleBtn.addEventListener('click', () => {
+            if (isSessionAutoRefreshing) {
+                clearInterval(sessionTimer);
+                isSessionAutoRefreshing = false;
+                sessionToggleBtn.textContent = '자동 갱신 시작';
+                sessionToggleBtn.classList.remove('danger-btn');
+                sessionToggleBtn.classList.add('primary-btn');
+                sessionRefreshBtn.disabled = false;
+            } else {
+                const interval = parseInt(sessionIntervalInput.value) || 5;
+                fetchSessions(); // fetch immediately
+                sessionTimer = setInterval(fetchSessions, interval * 1000);
+                isSessionAutoRefreshing = true;
+                sessionToggleBtn.textContent = '자동 갱신 중지';
+                sessionToggleBtn.classList.remove('primary-btn');
+                sessionToggleBtn.classList.add('danger-btn');
+                sessionRefreshBtn.disabled = true;
+            }
+        });
+    }
+
+    // Dashboard Logic
+    const dashCpuVal = document.getElementById('dash-cpu-val');
+    const dashMemVal = document.getElementById('dash-mem-val');
+    const dashSessVal = document.getElementById('dash-sess-val');
+    
+    let dashCpuChart = null;
+    let dashMemChart = null;
+    let dashFailChart = null;
+    let dashSessChart = null;
+    
+    const dashHistory = {
+        labels: [],
+        cpu: [],
+        mem: [],
+        sess: []
+    };
+    
+    const maxDashPoints = 300; // 5 minutes at 1s interval
+    
+    function createSegmentedDoughnutChart(ctx, value, activeColor) {
+        const segments = 10;
+        const dataArr = Array(segments).fill(1);
+        const bgColors = Array(segments).fill('rgba(255, 255, 255, 0.1)'); // Faint white outline for off segments
+        
+        const activeSegments = Math.round((value / 100) * segments);
+        for(let i=0; i<activeSegments; i++) {
+            bgColors[i] = activeColor;
+        }
+
+        return new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: Array(segments).fill(''),
+                datasets: [{
+                    data: dataArr,
+                    backgroundColor: bgColors,
+                    borderWidth: 0, // No border needed
+                    spacing: 4 // Creates physical transparent gaps between segments
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: '65%',
+                animation: { duration: 0 },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { enabled: false }
+                }
+            }
+        });
+    }
+
+    function createSparkline(ctx, data, color, yMax = null) {
+        const nowTime = new Date().getTime();
+        const config = {
+            type: 'line',
+            data: {
+                labels: dashHistory.labels,
+                datasets: [{
+                    data: data,
+                    borderColor: color,
+                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                    borderWidth: 1.5,
+                    pointRadius: 1.5,
+                    pointHoverRadius: 3,
+                    fill: true,
+                    tension: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { enabled: false }
+                },
+                scales: {
+                    x: {
+                        display: true,
+                        type: 'time',
+                        time: {
+                            unit: 'minute',
+                            stepSize: 5,
+                            displayFormats: {
+                                minute: 'HH:mm'
+                            }
+                        },
+                        min: nowTime - (5 * 60 * 1000),
+                        max: nowTime,
+                        ticks: { display: true, color: 'rgba(255, 255, 255, 0.6)', font: { size: 10 } },
+                        grid: { drawOnChartArea: false },
+                        border: { display: true, color: 'rgba(255, 255, 255, 1)', width: 1 }
+                    },
+                    y: { 
+                        display: true,
+                        min: 0,
+                        max: 100,
+                        ticks: { 
+                            display: true, 
+                            stepSize: 20, 
+                            color: 'rgba(255, 255, 255, 0.6)', 
+                            font: { size: 10 } 
+                        },
+                        grid: { drawOnChartArea: false },
+                        border: { display: true, color: 'rgba(255, 255, 255, 1)', width: 1 }
+                    }
+                }
+            }
+        };
+        return new Chart(ctx, config);
+    }
+    
+    // Track which db_id each fetch is in flight for (not just a boolean): lets switching DB
+    // start a fresh request immediately instead of being blocked by the previous DB's slow one,
+    // and lets a late/stale response be discarded if the user has since switched DBs.
+    let fetchingBasicForDbId = null;
+    let fetchingHealthForDbId = null;
+    let fetchingLocksForDbId = null;
+    let fetchingSessionDataForDbId = null;
+    let fetchingEventsForDbId = null;
+
+    // Defined at this shared scope (not inside fetchDashboard) so the DB-switch click handler can
+    // also call them directly, wiping stale widgets the instant a new DB is selected rather than
+    // waiting on any in-flight fetch to resolve.
+    const resetBasic = () => {
+        const dashCpuVal = document.getElementById('dash-cpu-val');
+        const dashMemVal = document.getElementById('dash-mem-val');
+        const dashSessVal = document.getElementById('dash-sess-val');
+        if (dashCpuVal) { dashCpuVal.innerText = '-'; dashCpuVal.style.color = 'var(--text-main)'; }
+        if (dashMemVal) { dashMemVal.innerText = '-'; dashMemVal.style.color = 'var(--text-main)'; }
+        if (dashSessVal) dashSessVal.innerText = '-';
+    };
+
+    const resetHealth = () => {
+        const elInst = document.getElementById('mini-status-instance');
+        const elInstCirc = document.getElementById('mini-status-instance-circle');
+        if (elInst && elInstCirc) {
+            elInst.innerText = '-';
+            elInst.style.color = 'var(--text-main)';
+            elInstCirc.style.backgroundColor = 'var(--text-muted)';
+        }
+        const elList = document.getElementById('mini-status-listener');
+        const elListCirc = document.getElementById('mini-status-listener-circle');
+        if (elList && elListCirc) {
+            elList.innerText = '-';
+            elList.style.color = 'var(--text-main)';
+            elListCirc.style.backgroundColor = 'var(--text-muted)';
+        }
+    };
+
+    const resetSessionData = (message = 'DB에 연결할 수 없습니다.') => {
+        const tbody = document.getElementById('dash-sess-tbody');
+        if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;">${message}</td></tr>`;
+    };
+
+    const resetEvents = (message = 'DB에 연결할 수 없습니다.') => {
+        const tbody = document.getElementById('dash-event-tbody');
+        if (tbody) tbody.innerHTML = `<tr><td colspan="2" style="text-align:center;">${message}</td></tr>`;
+    };
+
+    // Called right when a DB is selected, before fetchDashboard() has had a chance to return -
+    // this is a loading state, not a real connection failure, so it must not use the error wording.
+    function resetAllDashboardWidgets() {
+        resetBasic();
+        resetHealth();
+        resetSessionData('접속 중...');
+        resetEvents('접속 중...');
+    }
+
+    async function fetchDashboard() {
+        if (!document.getElementById('dashboard').classList.contains('active')) return;
+
+        const host = window.location.hostname || '127.0.0.1';
+        const dbId = window.currentDbId || "";
+
+        const fetchBasic = async () => {
+            if (fetchingBasicForDbId === dbId) return;
+            fetchingBasicForDbId = dbId;
+            try {
+                const response = await fetch(`/api/dashboard?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+                if (dbId !== window.currentDbId) return; // stale: user switched DBs while this was in flight
+                if (!response.ok) { resetBasic(); return; }
+                const data = await response.json();
+                if (data.error) { resetBasic(); return; }
+
+                // Update texts
+                const dashCpuVal = document.getElementById('dash-cpu-val');
+                const dashMemVal = document.getElementById('dash-mem-val');
+                const dashSessVal = document.getElementById('dash-sess-val');
+                
+                if (dashCpuVal) {
+                    dashCpuVal.innerText = `${data.cpu}%`;
+                    if (data.cpu >= 90) dashCpuVal.style.color = '#ef4444';
+                    else if (data.cpu >= 80) dashCpuVal.style.color = '#f59e0b';
+                    else dashCpuVal.style.color = 'var(--text-main)';
+                }
+                if (dashMemVal) dashMemVal.innerText = `${data.memory}%`;
+                if (dashSessVal) dashSessVal.innerText = data.active_sessions;
+                
+                // Update Memory color based on usage
+                if (dashMemVal) {
+                    if (data.memory >= 90) dashMemVal.style.color = '#ef4444';
+                    else if (data.memory >= 80) dashMemVal.style.color = '#f59e0b';
+                    else dashMemVal.style.color = 'var(--text-main)';
+                }
+                
+                // Update charts
+                const nowTime = new Date().getTime();
+                dashHistory.labels.push(nowTime);
+                dashHistory.cpu.push(data.cpu);
+                dashHistory.mem.push(data.memory);
+                dashHistory.sess.push(data.active_sessions);
+                
+                if (dashHistory.labels.length > maxDashPoints) {
+                    dashHistory.labels.shift();
+                    dashHistory.cpu.shift();
+                    dashHistory.mem.shift();
+                    dashHistory.sess.shift();
+                }
+                
+                const cpuCtx = document.getElementById('dash-cpu-chart');
+                const memCtx = document.getElementById('dash-mem-chart');
+                const sessCtx = document.getElementById('dash-sess-chart');
+                
+                if (cpuCtx) {
+                    let cpuColor = '#3b82f6';
+                    if (data.cpu >= 90) cpuColor = '#ef4444';
+                    else if (data.cpu >= 80) cpuColor = '#f59e0b';
+                    
+                    const segments = 10;
+                    const activeSegments = Math.round((data.cpu / 100) * segments);
+                    const bgColors = Array(segments).fill('rgba(255, 255, 255, 0.1)');
+                    for(let i=0; i<activeSegments; i++) {
+                        bgColors[i] = cpuColor;
+                    }
+
+                    if (!dashCpuChart) {
+                        dashCpuChart = createSegmentedDoughnutChart(cpuCtx, data.cpu, cpuColor);
+                    } else {
+                        dashCpuChart.data.datasets[0].backgroundColor = bgColors;
+                        dashCpuChart.update();
+                    }
+                }
+                if (memCtx) {
+                    let memColor = '#3b82f6';
+                    if (data.memory >= 90) memColor = '#ef4444';
+                    else if (data.memory >= 80) memColor = '#f59e0b';
+                    
+                    const segments = 10;
+                    const activeSegments = Math.round((data.memory / 100) * segments);
+                    const bgColors = Array(segments).fill('rgba(255, 255, 255, 0.1)');
+                    for(let i=0; i<activeSegments; i++) {
+                        bgColors[i] = memColor;
+                    }
+
+                    if (!dashMemChart) {
+                        dashMemChart = createSegmentedDoughnutChart(memCtx, data.memory, memColor);
+                    } else {
+                        dashMemChart.data.datasets[0].backgroundColor = bgColors;
+                        dashMemChart.update();
+                    }
+                }
+                
+                if (sessCtx && !dashSessChart) dashSessChart = createSparkline(sessCtx, dashHistory.sess, '#10b981');
+                else if (dashSessChart) {
+                    dashSessChart.options.scales.x.min = nowTime - (5 * 60 * 1000);
+                    dashSessChart.options.scales.x.max = nowTime;
+                    dashSessChart.update();
+                }
+            } catch (error) {
+                console.error('Dashboard fetchBasic error:', error);
+                if (dbId === window.currentDbId) resetBasic();
+            } finally {
+                if (fetchingBasicForDbId === dbId) fetchingBasicForDbId = null;
+            }
+        };
+
+        const markHealthDown = () => {
+            const elInst = document.getElementById('mini-status-instance');
+            const elInstCirc = document.getElementById('mini-status-instance-circle');
+            if (elInst && elInstCirc) {
+                elInst.innerText = 'Not Alive';
+                elInst.style.color = '#ef4444';
+                elInstCirc.style.backgroundColor = '#ef4444';
+            }
+            const elList = document.getElementById('mini-status-listener');
+            const elListCirc = document.getElementById('mini-status-listener-circle');
+            if (elList && elListCirc) {
+                elList.innerText = 'Not Alive';
+                elList.style.color = '#ef4444';
+                elListCirc.style.backgroundColor = '#ef4444';
+            }
+        };
+
+        const fetchHealth = async () => {
+            if (fetchingHealthForDbId === dbId) return;
+            fetchingHealthForDbId = dbId;
+            try {
+                const hRes = await fetch(`/api/health?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+                if (dbId !== window.currentDbId) return; // stale: user switched DBs while this was in flight
+                if (hRes.ok) {
+                    const hData = await hRes.json();
+                    
+                    // 'Busy' = self-inflicted pool contention/cooldown, not a real outage - shown in
+                    // amber so it isn't mistaken for the DB actually being down.
+                    const statusColor = (status) => status === 'Alive' ? '#3b82f6' : (status === 'Busy' ? '#f59e0b' : '#ef4444');
+
+                    const elInst = document.getElementById('mini-status-instance');
+                    const elInstCirc = document.getElementById('mini-status-instance-circle');
+                    if (elInst && elInstCirc) {
+                        elInst.innerText = hData.instance_status;
+                        const c = statusColor(hData.instance_status);
+                        elInst.style.color = c;
+                        elInstCirc.style.backgroundColor = c;
+                    }
+
+                    const dbNameEl = document.getElementById('current-db-name');
+                    if (dbNameEl && hData.db_name) {
+                        dbNameEl.innerText = hData.db_name;
+                    }
+
+                    const elList = document.getElementById('mini-status-listener');
+                    const elListCirc = document.getElementById('mini-status-listener-circle');
+                    if (elList && elListCirc) {
+                        elList.innerText = hData.listener_status;
+                        const lc = statusColor(hData.listener_status);
+                        elList.style.color = lc;
+                        elListCirc.style.backgroundColor = lc;
+                    }
+                } else {
+                    markHealthDown();
+                }
+            } catch(e) {
+                if (dbId === window.currentDbId) markHealthDown();
+            } finally {
+                if (fetchingHealthForDbId === dbId) fetchingHealthForDbId = null;
+            }
+        };
+
+        const fetchLocks = async () => {
+            if (fetchingLocksForDbId === dbId) return;
+            fetchingLocksForDbId = dbId;
+            try {
+                const [tmResponse, failResponse] = await Promise.all([
+                    fetch(`/api/tmlock?db_id=${dbId}&token=${encodeURIComponent(getToken())}`),
+                    fetch(`/api/failure_prob?db_id=${dbId}&token=${encodeURIComponent(getToken())}`)
+                ]);
+                if (dbId !== window.currentDbId) return; // stale: user switched DBs while this was in flight
+
+                let tmLockCount = 0;
+                let txLockCount = 0;
+                if (tmResponse.ok) {
+                    const tmData = await tmResponse.json();
+                    if (tmData && !tmData.error) {
+                        tmData.forEach(h => {
+                            if (h.lock_type === 'TM') tmLockCount++;
+                            else if (h.lock_type === 'TX') txLockCount++;
+                            if (h.waiters) {
+                                h.waiters.forEach(w => {
+                                    if (w.lock_type === 'TM') tmLockCount++;
+                                    else if (w.lock_type === 'TX') txLockCount++;
+                                });
+                            }
+                        });
+                    }
+                }
+
+                let count = 0;
+                if (failResponse.ok) {
+                    const failData = await failResponse.json();
+                    if (failData && failData.count !== undefined) {
+                        count = failData.count;
+                    }
+                }
+                
+                let percentage = 0;
+                if (count === 1) percentage = 30;
+                else if (count === 2) percentage = 40;
+                else if (count === 3) percentage = 50;
+                else if (count === 4) percentage = 60;
+                else if (count === 5) percentage = 70;
+                else if (count === 6) percentage = 80;
+                else if (count >= 7) percentage = 90;
+                
+                const failCtx = document.getElementById('dash-fail-chart');
+                const failVal = document.getElementById('dash-fail-val');
+                const failCountLabel = document.getElementById('dash-fail-count');
+                
+                if (failCtx && failVal) {
+                    failVal.textContent = percentage + '%';
+                    if (failCountLabel) {
+                        failCountLabel.textContent = `(TM Lock: ${tmLockCount}건) (TX Lock: ${txLockCount}건)`;
+                    }
+                    if (percentage >= 80) document.body.classList.add('alert-blink');
+                    else document.body.classList.remove('alert-blink');
+
+                    const incidentBtn = document.getElementById('dash-incident-action-btn');
+                    if (incidentBtn) incidentBtn.style.display = (percentage >= 80 && isAdmin()) ? 'block' : 'none';
+
+
+                    let failColor = '#10b981';
+                    if (percentage >= 70) failColor = '#ef4444';
+                    else if (percentage >= 50) failColor = '#f59e0b';
+                    
+                    const segments = 10;
+                    const activeSegments = Math.round((percentage / 100) * segments);
+                    const bgColors = Array(segments).fill('rgba(255, 255, 255, 0.1)');
+                    for(let i=0; i<activeSegments; i++) bgColors[i] = failColor;
+                    
+                    if (!dashFailChart) {
+                        dashFailChart = createSegmentedDoughnutChart(failCtx, percentage, failColor);
+                    } else {
+                        dashFailChart.data.datasets[0].backgroundColor = bgColors;
+                        dashFailChart.update();
+                    }
+                }
+            } catch (e) {
+                console.error('Dashboard fetchLocks error:', e);
+            } finally {
+                if (fetchingLocksForDbId === dbId) fetchingLocksForDbId = null;
+            }
+        };
+
+        const fetchSessionData = async () => {
+            if (document.getElementById('dash-active-sess').style.display === 'none') return;
+            if (fetchingSessionDataForDbId === dbId) return;
+            fetchingSessionDataForDbId = dbId;
+            try {
+                const sessResponse = await fetch(`/api/session?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+                if (dbId !== window.currentDbId) return; // stale: user switched DBs while this was in flight
+                if (sessResponse.ok) {
+                    const sessData = await sessResponse.json();
+                    if (sessData.error) { resetSessionData(); }
+                    else {
+                        const activeSess = sessData.filter(s => s && s.status && s.status.trim().toUpperCase() === 'ACTIVE');
+                        const tbody = document.getElementById('dash-sess-tbody');
+                        if (tbody) {
+                            if (activeSess.length === 0) {
+                                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">ACTIVE 상태인 세션이 없습니다.</td></tr>';
+                            } else {
+                                const maxDuration = activeSess.reduce((max, s) => Math.max(max, Number(s.duration_time) || 0), 1);
+                                let html = '';
+                                activeSess.forEach(s => {
+                                    const durationVal = s.duration_time !== null ? Number(s.duration_time) : 0;
+                                    const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
+                                    const durationHtml = s.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--border-color); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3498db; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
+                                    html += `<tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
+                                        <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="dash-sess-checkbox" data-sid="${s.sid}" data-serial="${s.serial}"></td>
+                                        <td>${s.db_name || '-'}</td>
+                                        <td><span class="status-badge online">${s.status}</span></td>
+                                        <td>${s.sid}</td>
+                                        <td>${s.serial}</td>
+                                        <td>${s.server_pid || '-'}</td>
+                                        <td>${durationHtml}</td>
+                                        <td>${(() => {
+                                            let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
+                                            if (s.session_wait_pct && s.session_wait_pct.includes(',')) {
+                                                const [cpu, uio, sio, other] = s.session_wait_pct.split(',').map(Number);
+                                                if (cpu + uio + sio + other > 0) {
+                                                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--border-color);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${other}%; background-color: #95a5a6;" title="Other: ${other}%"></div></div>`;
+                                                }
+                                            }
+                                            return waitHtml;
+                                        })()}</td>
+                                        <td>${s.sql_id || '-'}</td>
+                                        <td>${s.event_name || '-'}</td>
+                                        <td>${s.plan_hash_value || '-'}</td>
+                                        <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${s.sql_text || ''}">${s.sql_text || '-'}</div></td>
+                                        <td>${s.machine_name || '-'}</td>
+                                        <td>${s.username || '-'}</td>
+                                        <td>${s.program_name || '-'}</td>
+                                    </tr>`;
+                                });
+                                const checkedSids = Array.from(document.querySelectorAll('.dash-sess-checkbox:checked')).map(cb => cb.getAttribute('data-sid'));
+                                tbody.innerHTML = html;
+                                document.querySelectorAll('.dash-sess-checkbox').forEach(cb => {
+                                    if (checkedSids.includes(cb.getAttribute('data-sid'))) {
+                                        cb.checked = true;
+                                    }
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    resetSessionData();
+                }
+            } catch (e) {
+                console.error('Dashboard fetchSession error:', e);
+                if (dbId === window.currentDbId) resetSessionData();
+            } finally {
+                if (fetchingSessionDataForDbId === dbId) fetchingSessionDataForDbId = null;
+            }
+        };
+
+        const fetchEvents = async () => {
+            if (document.getElementById('dash-top-event').style.display === 'none') return;
+            if (fetchingEventsForDbId === dbId) return;
+            fetchingEventsForDbId = dbId;
+            try {
+                const eventResponse = await fetch(`/api/top_events?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+                if (dbId !== window.currentDbId) return; // stale: user switched DBs while this was in flight
+                if (eventResponse.ok) {
+                    const eventData = await eventResponse.json();
+                    if (eventData.error) { resetEvents(); }
+                    else {
+                        const tbody = document.getElementById('dash-event-tbody');
+                        if (tbody) {
+                            if (eventData.length === 0) {
+                                tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;">이벤트 데이터가 없습니다.</td></tr>';
+                            } else {
+                                let html = '';
+                                eventData.forEach(e => {
+                                    html += `<tr>
+                                        <td>${e.event}</td>
+                                        <td>${e.count}</td>
+                                    </tr>`;
+                                });
+                                tbody.innerHTML = html;
+                            }
+                        }
+                    }
+                } else {
+                    resetEvents();
+                }
+            } catch (e) {
+                console.error('Dashboard fetchEvents error:', e);
+                if (dbId === window.currentDbId) resetEvents();
+            } finally {
+                if (fetchingEventsForDbId === dbId) fetchingEventsForDbId = null;
+            }
+        };
+
+        // Fire all independent fetches without awaiting so they run fully in parallel
+        fetchBasic();
+        fetchHealth();
+        fetchLocks();
+        fetchSessionData();
+        fetchEvents();
+    }
+    
+    // Start dashboard polling. Interval comes from application.properties (dbagent.ui.polling-interval-ms,
+    // default 2000) - 1000ms was tight enough that concurrent polling across widgets/tabs could exhaust
+    // the connection pool and misreport a healthy DB as down.
+    let dashboardPollingIntervalMs = 2000;
+    try {
+        const pollingRes = await fetch('/api/config');
+        if (pollingRes.ok) {
+            const pollingData = await pollingRes.json();
+            if (pollingData.polling_interval_ms) dashboardPollingIntervalMs = pollingData.polling_interval_ms;
+
+            // SQL Runner row-limit input: pre-fill with the server default and cap it at the
+            // server's hard ceiling, so the UI can't ask for more rows than the backend allows anyway.
+            const rowLimitInput = document.getElementById('sqlrunner-rowlimit-input');
+            const maxRowsLabel = document.getElementById('sqlrunner-maxrows');
+            const maxRowsLimitLabel = document.getElementById('sqlrunner-maxrows-limit');
+            if (pollingData.sql_runner_max_rows) {
+                if (rowLimitInput) rowLimitInput.value = pollingData.sql_runner_max_rows;
+                if (maxRowsLabel) maxRowsLabel.textContent = pollingData.sql_runner_max_rows;
+            }
+            if (pollingData.sql_runner_max_rows_limit) {
+                if (rowLimitInput) rowLimitInput.max = pollingData.sql_runner_max_rows_limit;
+                if (maxRowsLimitLabel) maxRowsLimitLabel.textContent = pollingData.sql_runner_max_rows_limit;
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load polling interval, using default:', e);
+    }
+    setInterval(fetchDashboard, dashboardPollingIntervalMs);
+    fetchDashboard();
+
+    // Dashboard Tabs
+    const dashTabBtns = document.querySelectorAll('.dash-tab-btn');
+    dashTabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            dashTabBtns.forEach(b => {
+                b.classList.remove('active');
+                b.style.borderBottom = 'none';
+                b.style.color = 'var(--text-muted)';
+                b.style.fontWeight = '500';
+            });
+            
+            btn.classList.add('active');
+            btn.style.borderBottom = '2px solid #3b82f6';
+            btn.style.color = '#3b82f6';
+            btn.style.fontWeight = '600';
+            
+            const targetId = btn.getAttribute('data-dash-tab');
+            document.querySelectorAll('.dash-tab-content').forEach(content => {
+                content.style.display = 'none';
+            });
+            document.getElementById(targetId).style.display = 'block';
+            
+            fetchDashboard(); // Fetch immediately on tab switch
+        });
+    });
+
+    // Session Kill Logic
+    async function killSessions(checkboxClass) {
+        const checkboxes = document.querySelectorAll(`.${checkboxClass}:checked`);
+        if (checkboxes.length === 0) {
+            alert('Kill 할 세션을 선택하세요.');
+            return;
+        }
+        
+        if (!confirm(`선택한 ${checkboxes.length}개의 세션을 Kill 하시겠습니까?`)) {
+            return;
+        }
+        
+        const sessionsToKill = Array.from(checkboxes).map(cb => ({
+            sid: cb.getAttribute('data-sid'),
+            serial: cb.getAttribute('data-serial')
+        }));
+        
+        try {
+            const res = await fetch(`/api/kill_session?db_id=${window.currentDbId || ""}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessions: sessionsToKill, token: sessionStorage.getItem('dbagent_token') })
+            });
+            const data = await res.json();
+            if (data.error) {
+                alert(`에러 발생: ${data.error}`);
+            } else {
+                alert('세션 Kill 명령이 성공적으로 전송되었습니다.');
+                if (checkboxClass === 'session-checkbox') {
+                    const btn = document.getElementById('session-refresh-btn');
+                    if (btn) btn.click();
+                } else {
+                    fetchDashboard();
+                }
+            }
+        } catch (e) {
+            alert(`요청 실패: ${e}`);
+        }
+    }
+    
+    document.getElementById('dash-kill-btn')?.addEventListener('click', () => killSessions('dash-sess-checkbox'));
+    document.getElementById('session-kill-btn')?.addEventListener('click', () => killSessions('session-checkbox'));
+
+    document.getElementById('dash-incident-action-btn')?.addEventListener('click', async () => {
+        const dbId = window.currentDbId || "";
+        try {
+            const tmResponse = await fetch(`/api/tmlock?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            const tmData = await tmResponse.json();
+            if (!tmResponse.ok || !tmData || tmData.error) {
+                alert('TM Lock 정보를 가져오지 못했습니다.');
+                return;
+            }
+
+            // TX(행 잠금) holder는 자동 kill 대상에서 절대 제외한다: 정상적인 트랜잭션 진행 중
+            // 잠깐의 행 경합일 뿐인 경우가 대부분이라, 장애발생 가능성(failure_prob)도 TM 락
+            // blocking만으로 계산된다 - 그 기준과 동일하게 TM 락 holder만 자동조치 대상으로 삼는다.
+            const holders = tmData
+                .filter(h => h.sid != null && h.serial != null && h.lock_type === 'TM')
+                .map(h => ({ sid: h.sid, serial: h.serial }));
+
+            if (holders.length === 0) {
+                alert('현재 Kill할 TM Lock Holder 세션이 없습니다. (TX 락은 자동조치 대상이 아닙니다)');
+                return;
+            }
+
+            if (!confirm(`Blocking 중인 TM Lock Holder 세션 ${holders.length}건을 즉시 Kill 하시겠습니까?`)) {
+                return;
+            }
+
+            const res = await fetch(`/api/kill_session?db_id=${dbId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessions: holders, token: sessionStorage.getItem('dbagent_token') })
+            });
+            const data = await res.json();
+            if (data.error) {
+                alert(`장애조치 중 오류: ${data.error}`);
+                return;
+            }
+
+            let successCount = 0, failCount = 0;
+            data.results.forEach(r => (r.status === 'killed' ? successCount++ : failCount++));
+            alert(`장애조치 완료:\n성공: ${successCount}건\n실패: ${failCount}건`);
+            fetchDashboard();
+        } catch (e) {
+            alert(`장애조치 처리 중 오류가 발생했습니다: ${e.message}`);
+        }
+    });
+    
+    document.getElementById('dash-select-all-sess')?.addEventListener('change', (e) => {
+        document.querySelectorAll('.dash-sess-checkbox').forEach(cb => cb.checked = e.target.checked);
+    });
+    
+    document.getElementById('session-select-all')?.addEventListener('change', (e) => {
+        document.querySelectorAll('.session-checkbox').forEach(cb => cb.checked = e.target.checked);
+    });
+
+    // Modal Global Listeners
+    const modal = document.getElementById('image-modal');
+    const closeBtn = document.querySelector('.close-modal');
+
+    if (modal && closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+
+        window.addEventListener('click', (event) => {
+            if (event.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+
+    // --- Table Info Modal Logic ---
+    window.showTableInfoModal = async function(tableName) {
+        if (!tableName) return;
+        const modal = document.getElementById('table-info-modal');
+        const title = document.getElementById('table-info-title');
+        const commentDiv = document.getElementById('table-info-comment');
+        const colsTbody = document.getElementById('table-info-cols');
+        const idxsTbody = document.getElementById('table-info-idxs');
+        
+        if (!modal) return;
+        
+        title.textContent = `${tableName} 상세정보 조회중...`;
+        commentDiv.textContent = '데이터를 불러오는 중입니다...';
+        colsTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">조회중...</td></tr>';
+        idxsTbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">조회중...</td></tr>';
+        modal.style.display = 'block';
+        
+        try {
+            const response = await fetch(`/api/table_info?db_id=${window.currentDbId || ""}&table_name=${tableName}&token=${encodeURIComponent(getToken())}`);
+            if (!response.ok) throw new Error('API fetch failed');
+            const data = await response.json();
+            
+            if (data.error) throw new Error(data.error);
+            
+            title.textContent = `${data.table_name} 상세정보`;
+            commentDiv.textContent = data.table_comment ? `📝 ${data.table_comment}` : '등록된 테이블 코멘트가 없습니다.';
+            
+            // Render Columns
+            if (data.columns && data.columns.length > 0) {
+                colsTbody.innerHTML = '';
+                data.columns.forEach(c => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td style="font-weight: 500; color: var(--primary-color);">${c.column_name}</td>
+                        <td>${c.data_type}</td>
+                        <td>${c.data_length || '-'}</td>
+                        <td>${c.nullable === 'Y' ? '<span style="color:#ef4444; font-weight:bold;">Y</span>' : 'N'}</td>
+                        <td style="color: var(--text-secondary); font-size: 0.9em;">${c.comments || '-'}</td>
+                    `;
+                    colsTbody.appendChild(tr);
+                });
+            } else {
+                colsTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">컬럼 정보가 없습니다.</td></tr>';
+            }
+            
+            // Render Indexes
+            if (data.indexes && data.indexes.length > 0) {
+                idxsTbody.innerHTML = '';
+                data.indexes.forEach(i => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${i.index_name}</td>
+                        <td>${i.index_type}</td>
+                        <td>${i.column_name}</td>
+                        <td>${i.is_pk ? '<span style="background:#10b981; color:white; padding: 2px 6px; border-radius:4px; font-size:0.8em; font-weight:bold;">PK</span>' : '-'}</td>
+                    `;
+                    idxsTbody.appendChild(tr);
+                });
+            } else {
+                idxsTbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">인덱스 정보가 없습니다.</td></tr>';
+            }
+            
+        } catch (e) {
+            title.textContent = '조회 오류';
+            commentDiv.textContent = `오류 발생: ${e.message}`;
+            colsTbody.innerHTML = '';
+            idxsTbody.innerHTML = '';
+        }
+    };
+    
+    // Close Table Info Modal
+    const tableInfoModal = document.getElementById('table-info-modal');
+    const closeTableInfoBtn = document.getElementById('close-table-info');
+    if (closeTableInfoBtn && tableInfoModal) {
+        closeTableInfoBtn.addEventListener('click', () => {
+            tableInfoModal.style.display = 'none';
+        });
+        window.addEventListener('click', (event) => {
+            if (event.target === tableInfoModal) {
+                tableInfoModal.style.display = 'none';
+            }
+        });
+    }
+        
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && modal.style.display === 'block') {
+                modal.style.display = 'none';
+            }
+        });
+    }
+
+
+// Global delegate for clickable session rows
+document.addEventListener('click', async (e) => {
+    const row = e.target.closest('.clickable-session-row');
+    if (row && !e.target.closest('input[type="checkbox"]')) {
+        const sid = row.getAttribute('data-sid');
+        const sql_id = row.getAttribute('data-sql_id') || '';
+        if (!sid && !sql_id) return;
+        
+        const modal = document.getElementById('image-modal');
+        const modalContent = document.getElementById('modal-content');
+        if (!modal || !modalContent) return;
+        
+        modalContent.innerHTML = '<h3 style="color: var(--text-main); margin-top: 0;">로딩 중...</h3>';
+        modal.style.display = 'block';
+        
+        try {
+            const response = await fetch(`/api/session_query?db_id=${window.currentDbId || ""}&sid=${sid || ""}&sql_id=${sql_id}&token=${encodeURIComponent(getToken())}`);
+            const result = await response.json();
+            
+            if (result.error) {
+                modalContent.innerHTML = `<h3 style="color: var(--danger); margin-top: 0;">오류 발생</h3><p style="color: var(--text-main);">${result.error}</p>`;
+                return;
+            }
+            
+            const showSessionDetail = () => {
+                        let bindsHtml = '';
+                        if (result.binds && result.binds.length > 0) {
+                            bindsHtml = `
+                                <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+                                    <thead>
+                                        <tr style="background-color:var(--bg-hover); border-bottom:1px solid var(--border);">
+                                            <th style="padding:8px; text-align:left;">Name</th>
+                                            <th style="padding:8px; text-align:left;">Position</th>
+                                            <th style="padding:8px; text-align:left;">Type</th>
+                                            <th style="padding:8px; text-align:left;">Value</th>
+                                            <th style="padding:8px; text-align:left;">Captured At</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${result.binds.map(b => `
+                                            <tr style="border-bottom:1px solid var(--border);">
+                                                <td style="padding:8px;">${b.name || '-'}</td>
+                                                <td style="padding:8px;">${b.position || '-'}</td>
+                                                <td style="padding:8px;">${b.datatype || '-'}</td>
+                                                <td style="padding:8px; font-weight:bold; color:var(--primary);">${b.value || 'NULL'}</td>
+                                                <td style="padding:8px;">${b.last_captured || '-'}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            `;
+                        } else {
+                            bindsHtml = `<div style="padding:20px; text-align:center; color:var(--text-secondary);">바인드 변수 정보가 없습니다.</div>`;
+                        }
+
+                        modalContent.innerHTML = `
+                            <div style="color: var(--text-main); text-align: left; max-width: 900px; width: 100%;">
+                                <h3 style="margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 10px;">세션 상세정보 (SID: ${result.sid})</h3>
+                                <div style="margin-bottom: 15px;">
+                                    <strong style="color: var(--info);">SQL_ID:</strong> ${result.sql_id || '없음'}
+                                </div>
+                                
+                                <div class="tab-container" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
+                                    <div class="tab-headers" style="display: flex; background-color: var(--bg-card); border-bottom: 1px solid var(--border);">
+                                        <div class="tab-btn active" onclick="switchSessionTab('sql', this)" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold; background-color: var(--bg-hover); color: var(--primary);">SQL 텍스트</div>
+                                        <div class="tab-btn" onclick="switchSessionTab('plan', this)" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold;">실행 계획 (Plan)</div>
+                                        <div class="tab-btn" onclick="switchSessionTab('bind', this)" style="padding: 10px 20px; cursor: pointer; font-weight: bold;">바인드 변수 (Bind)</div>
+                                    </div>
+                                    <div class="tab-content" style="background-color: var(--bg-main); padding: 15px;">
+                                        <div id="tab-sql" class="sess-tab" style="display: block;">
+                                            <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; font-family: monospace; font-size: 14px; margin: 0;">${result.sql_fulltext || 'SQL 텍스트가 없습니다.'}</pre>
+                                        </div>
+                                        <div id="tab-plan" class="sess-tab" style="display: none;">
+                                            <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre; font-family: monospace; font-size: 13px; margin: 0; line-height: 1.2;">${result.plan_text || '실행 계획 정보가 없습니다.'}</pre>
+                                        </div>
+                                        <div id="tab-bind" class="sess-tab" style="display: none;">
+                                            ${bindsHtml}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+
+                        if (!window.switchSessionTab) {
+                            window.switchSessionTab = function(tabName, element) {
+                                document.querySelectorAll('.sess-tab').forEach(el => el.style.display = 'none');
+                                document.querySelectorAll('.tab-btn').forEach(el => {
+                                    el.style.backgroundColor = 'transparent';
+                                    el.style.color = 'inherit';
+                                });
+                                document.getElementById('tab-' + tabName).style.display = 'block';
+                                element.style.backgroundColor = 'var(--bg-hover)';
+                                element.style.color = 'var(--primary)';
+                            };
+                        }
+            };
+            showSessionDetail();
+            
+        } catch (error) {
+            modalContent.innerHTML = `<h3 style="color: var(--danger); margin-top: 0;">오류 발생</h3><p style="color: var(--text-main);">${error.message}</p>`;
+        }
+    }
+});
+
+
+// Scatter Brush Selection Logic
+(function initScatterBrush() {
+    const scatterContainer = document.getElementById('scatter-container');
+    const selectionBox = document.getElementById('scatter-selection-box');
+    let isDragging = false;
+    let startX, startY;
+
+    if (scatterContainer && selectionBox && !window.isScatterBrushBound) {
+        window.isScatterBrushBound = true;
+        
+        scatterContainer.addEventListener('mousedown', (e) => {
+            if (e.target.id !== 'session-scatter-chart') return;
+            isDragging = true;
+            const rect = scatterContainer.getBoundingClientRect();
+            startX = e.clientX - rect.left;
+            startY = e.clientY - rect.top;
+            
+            selectionBox.style.left = startX + 'px';
+            selectionBox.style.top = startY + 'px';
+            selectionBox.style.width = '0px';
+            selectionBox.style.height = '0px';
+            selectionBox.style.display = 'block';
+        });
+        
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const rect = scatterContainer.getBoundingClientRect();
+            let currentX = e.clientX - rect.left;
+            let currentY = e.clientY - rect.top;
+            
+            currentX = Math.max(0, Math.min(currentX, rect.width));
+            currentY = Math.max(0, Math.min(currentY, rect.height));
+            
+            const left = Math.min(startX, currentX);
+            const top = Math.min(startY, currentY);
+            const width = Math.abs(currentX - startX);
+            const height = Math.abs(currentY - startY);
+            
+            selectionBox.style.left = left + 'px';
+            selectionBox.style.top = top + 'px';
+            selectionBox.style.width = width + 'px';
+            selectionBox.style.height = height + 'px';
+        });
+        
+        window.addEventListener('mouseup', (e) => {
+            if (!isDragging) return;
+            isDragging = false;
+            selectionBox.style.display = 'none';
+            
+            if (!window.globalSessionScatterChart) return;
+            
+            const rect = scatterContainer.getBoundingClientRect();
+            let endX = e.clientX - rect.left;
+            let endY = e.clientY - rect.top;
+            
+            endX = Math.max(0, Math.min(endX, rect.width));
+            endY = Math.max(0, Math.min(endY, rect.height));
+            
+            if (Math.abs(endX - startX) < 5 && Math.abs(endY - startY) < 5) return;
+            
+            const left = Math.min(startX, endX);
+            const right = Math.max(startX, endX);
+            const top = Math.min(startY, endY);
+            const bottom = Math.max(startY, endY);
+            
+            try {
+                const xAxis = window.globalSessionScatterChart.scales.x;
+                const yAxis = window.globalSessionScatterChart.scales.y;
+                
+                const valX1 = xAxis.getValueForPixel(left);
+                const valX2 = xAxis.getValueForPixel(right);
+                const valY1 = yAxis.getValueForPixel(bottom); 
+                const valY2 = yAxis.getValueForPixel(top);    
+                
+                const minX = Math.min(valX1, valX2);
+                const maxX = Math.max(valX1, valX2);
+                const minY = Math.min(valY1, valY2);
+                const maxY = Math.max(valY1, valY2);
+                
+                if (!window.globalScatterDataPoints) return;
+                
+                const selectedPoints = (window.globalScatterDataPoints || []).filter(p => 
+                    p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
+                );
+                
+                // Deduplicate by SID (to show latest for each SID in the box)
+                const uniqueSessions = {};
+                selectedPoints.forEach(p => {
+                    uniqueSessions[p.session.sid] = p.session;
+                });
+                
+                const finalSessions = Object.values(uniqueSessions);
+                
+                if (finalSessions.length > 0) {
+                    showSelectedSessionsPopup(finalSessions);
+                }
+            } catch(err) {
+                console.error("Brush selection error", err);
+            }
+        });
+    }
+})();
+
+function showSelectedSessionsPopup(sessions) {
+    const modal = document.getElementById('image-modal');
+    const modalContent = document.getElementById('modal-content');
+    if (!modal || !modalContent) return;
+    
+    let tableHtml = `
+    <h3 style="color:var(--text-main); margin-top:0;">선택된 세션 리스트 (${sessions.length}건)</h3>
+    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:15px;">행을 클릭하시면 SQL 텍스트, DBMS Plan, 바인드 변수 탭이 열립니다.</p>
+    <div style="max-height:400px; overflow-y:auto; border:1px solid var(--border); border-radius:4px;">
+        <table style="width:100%; border-collapse:collapse; color:var(--text-main); white-space: nowrap;">
+            <thead style="background:var(--bg-hover); position:sticky; top:0;">
+                <tr>
+                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Database Name</th>
+                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">종료시간</th>
+                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">SID</th>
+                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">SERIAL#</th>
+                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">SQL_ID</th>
+                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Command</th>
+                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Elapse Time(sec)</th>
+                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Program</th>
+                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">OS USER</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${sessions.map(s => {
+                    const cmdMap = {2: 'INSERT', 3: 'SELECT', 6: 'UPDATE', 7: 'DELETE'};
+                    const cmdText = s.command !== undefined ? (cmdMap[s.command] || s.command) : '-';
+                    return `
+                    <tr class="clickable-session-row" style="cursor:pointer; border-bottom:1px solid var(--border);" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
+                        <td style="padding:10px;">${s.db_name || '-'}</td>
+                        <td style="padding:10px;">${s.capture_time || '-'}</td>
+                        <td style="padding:10px;">${s.sid}</td>
+                        <td style="padding:10px;">${s.serial || '-'}</td>
+                        <td style="padding:10px;">${s.sql_id || '-'}</td>
+                        <td style="padding:10px;">${cmdText}</td>
+                        <td style="padding:10px; color:var(--danger); font-weight:bold;">${s.duration_time}s</td>
+                        <td style="padding:10px;">${s.program_name || '-'}</td>
+                        <td style="padding:10px;">${s.osuser || '-'}</td>
+                    </tr>`;
+                }).join('')}
+            </tbody>
+        </table>
+    </div>
+    `;
+    
+    modalContent.innerHTML = tableHtml;
+    modal.style.display = 'block';
+}
+
+let historyScatterChart = null;
+let historyDataCache = [];
+
+    const endInput = document.getElementById('history-end-time');
+    const startInput = document.getElementById('history-start-time');
+    if (endInput && startInput) {
+        const now = new Date();
+        const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+        const formatDateTime = (date) => {
+            const pad = (n) => n.toString().padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        };
+        endInput.value = formatDateTime(now);
+        startInput.value = formatDateTime(oneHourAgo);
+    }
+
+    const historySearchBtn = document.getElementById('history-search-btn');
+    if (historySearchBtn) {
+        historySearchBtn.addEventListener('click', async () => {
+            const startTime = document.getElementById('history-start-time').value;
+            const endTime = document.getElementById('history-end-time').value;
+            const userSelect = document.getElementById('history-users');
+            const selectedUsers = userSelect ? Array.from(userSelect.selectedOptions).map(o => o.value).join(',') : '';
+            const targetDb = window.currentDbId || "";
+            
+            if (!startTime || !endTime) {
+                alert("시작 시간과 종료 시간을 모두 입력해주세요.");
+                return;
+            }
+            
+            const tbody = document.getElementById('history-tbody');
+            tbody.innerHTML = '';
+
+            const loadingOverlay = document.getElementById('history-loading-overlay');
+            if (loadingOverlay) loadingOverlay.style.display = 'flex';
+
+            try {
+                const response = await fetch(`/api/history_sessions?db_id=${encodeURIComponent(targetDb)}&start_time=${encodeURIComponent(startTime)}&end_time=${encodeURIComponent(endTime)}&users=${encodeURIComponent(selectedUsers)}&token=${encodeURIComponent(getToken())}`);
+                const data = await response.json();
+
+                if (data.error) {
+                    alert('오류 발생: ' + data.error);
+                    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding: 30px;">조회 중 오류가 발생했습니다.</td></tr>';
+                    return;
+                }
+
+                historyDataCache = data;
+                updateHistoryUI(data);
+
+            } catch (error) {
+                console.error('Error fetching history:', error);
+                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding: 30px;">서버와의 통신에 실패했습니다.</td></tr>';
+            } finally {
+                if (loadingOverlay) loadingOverlay.style.display = 'none';
+            }
+        });
+    }
+    
+    // 2. Setup drag-to-select for history chart
+    const historyContainer = document.getElementById('history-scatter-container');
+    const historySelectionBox = document.getElementById('history-scatter-selection-box');
+    let hIsDragging = false;
+    let hStartX, hStartY;
+    
+    if (historyContainer && historySelectionBox) {
+        historyContainer.addEventListener('mousedown', (e) => {
+            if (e.target.id !== 'history-scatter-chart') return;
+            hIsDragging = true;
+            const rect = historyContainer.getBoundingClientRect();
+            hStartX = e.clientX - rect.left;
+            hStartY = e.clientY - rect.top;
+            
+            historySelectionBox.style.left = hStartX + 'px';
+            historySelectionBox.style.top = hStartY + 'px';
+            historySelectionBox.style.width = '0px';
+            historySelectionBox.style.height = '0px';
+            historySelectionBox.style.display = 'block';
+        });
+        
+        window.addEventListener('mousemove', (e) => {
+            if (!hIsDragging) return;
+            const rect = historyContainer.getBoundingClientRect();
+            let currentX = e.clientX - rect.left;
+            let currentY = e.clientY - rect.top;
+            
+            currentX = Math.max(0, Math.min(currentX, rect.width));
+            currentY = Math.max(0, Math.min(currentY, rect.height));
+            
+            const left = Math.min(hStartX, currentX);
+            const top = Math.min(hStartY, currentY);
+            const width = Math.abs(currentX - hStartX);
+            const height = Math.abs(currentY - hStartY);
+            
+            historySelectionBox.style.left = left + 'px';
+            historySelectionBox.style.top = top + 'px';
+            historySelectionBox.style.width = width + 'px';
+            historySelectionBox.style.height = height + 'px';
+        });
+        
+        window.addEventListener('mouseup', (e) => {
+            if (!hIsDragging) return;
+            hIsDragging = false;
+            historySelectionBox.style.display = 'none';
+            
+            const rect = historyContainer.getBoundingClientRect();
+            let endX = e.clientX - rect.left;
+            let endY = e.clientY - rect.top;
+            
+            endX = Math.max(0, Math.min(endX, rect.width));
+            endY = Math.max(0, Math.min(endY, rect.height));
+            
+            const left = Math.min(hStartX, endX);
+            const right = Math.max(hStartX, endX);
+            const top = Math.min(hStartY, endY);
+            const bottom = Math.max(hStartY, endY);
+            
+            if (Math.abs(right - left) < 5 && Math.abs(bottom - top) < 5) return;
+            
+            if (!historyScatterChart) return;
+            
+            const xAxis = historyScatterChart.scales.x;
+            const yAxis = historyScatterChart.scales.y;
+            
+            const valLeft = xAxis.getValueForPixel(left);
+            const valRight = xAxis.getValueForPixel(right);
+            const valTop = yAxis.getValueForPixel(top);
+            const valBottom = yAxis.getValueForPixel(bottom);
+            
+            const xMin = Math.min(valLeft, valRight);
+            const xMax = Math.max(valLeft, valRight);
+            const yMin = Math.min(valTop, valBottom);
+            const yMax = Math.max(valTop, valBottom);
+            
+            const selectedPoints = historyDataCache.filter(point => {
+                const pDate = new Date(point.capture_time).getTime();
+                return pDate >= xMin && pDate <= xMax &&
+                       point.duration_time >= yMin && point.duration_time <= yMax;
+            });
+            
+            if (selectedPoints.length > 0) {
+                showSelectedSessionsPopup(selectedPoints);
+            }
+        });
+    }
+
+function updateHistoryUI(data) {
+    const scatterCtx = document.getElementById('history-scatter-chart');
+    if (!scatterCtx) return;
+    
+    const chartData = data.map(s => ({
+        x: new Date(s.capture_time).getTime(),
+        y: s.duration_time,
+        raw: s
+    }));
+    
+    if (historyScatterChart) {
+        historyScatterChart.data.datasets[0].data = chartData;
+        historyScatterChart.update();
+    } else {
+        historyScatterChart = new Chart(scatterCtx, {
+            type: 'scatter',
+            data: {
+                datasets: [{
+                    label: 'Active Sessions (History)',
+                    data: chartData,
+                    backgroundColor: '#ffcc00',
+                    borderColor: '#ffcc00',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    pointHoverRadius: 5,
+                    pointStyle: 'star'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            displayFormats: {
+                                millisecond: 'HH:mm:ss',
+                                second: 'HH:mm:ss',
+                                minute: 'HH:mm',
+                                hour: 'HH:mm'
+                            },
+                            tooltipFormat: 'yyyy-MM-dd HH:mm:ss'
+                        },
+                        title: { display: true, text: 'Sample Time' },
+                        grid: { color: 'rgba(255,255,255,0.05)' }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: 'Duration (sec)' },
+                        grid: { color: 'rgba(255,255,255,0.05)' }
+                    }
+                },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: (context) => {
+                                const p = context.raw.raw;
+                                return `SID:${p.sid} | Dur:${p.duration_time}s | SQL:${p.sql_id||'None'}`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    const tbody = document.getElementById('history-tbody');
+    if (data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding: 30px;">해당 시간 범위에 데이터가 없습니다.</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = data.map(s => `
+        <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
+            <td>${s.capture_time}</td>
+            <td>${s.sid}</td>
+            <td>${s.serial}</td>
+            <td style="color:var(--danger); font-weight:bold;">${s.duration_time}s</td>
+            <td>${s.event_name}</td>
+            <td style="color:var(--text-info); text-decoration:underline;">${s.sql_id || '-'}</td>
+            <td>${s.plan_hash_value || '-'}</td>
+            <td>${s.program_name || '-'}</td>
+            <td>${s.osuser || '-'}</td>
+        </tr>
+    `).join('');
+}
+
+
+        // Top 100 History Logic
+        const historyTopSearchBtn = document.getElementById('history-top-search-btn');
+        if (historyTopSearchBtn) {
+            historyTopSearchBtn.addEventListener('click', async () => {
+                const startTime = document.getElementById('history-top-start-time').value;
+                const endTime = document.getElementById('history-top-end-time').value;
+                const userSelect = document.getElementById('history-top-users');
+                const selectedUsers = userSelect ? Array.from(userSelect.selectedOptions).map(o => o.value).join(',') : '';
+                const targetDb = window.currentDbId || "";
+                
+                if (!startTime || !endTime) {
+                    alert("시작 시간과 종료 시간을 모두 입력해주세요.");
+                    return;
+                }
+                
+                const tbody = document.getElementById('history-top-tbody');
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">조회 중입니다... (과거 이력 조회 시 최대 수십 초가 소요될 수 있습니다)</td></tr>';
+                
+                try {
+                    const response = await fetch(`/api/history_top_sessions?db_id=${encodeURIComponent(targetDb)}&start_time=${encodeURIComponent(startTime)}&end_time=${encodeURIComponent(endTime)}&users=${encodeURIComponent(selectedUsers)}&token=${encodeURIComponent(getToken())}`);
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        alert('오류 발생: ' + data.error);
+                        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">조회 중 오류가 발생했습니다.</td></tr>';
+                        return;
+                    }
+                    
+                    if (!data || data.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">해당 기간에 5초 이상 수행된 악성 세션이 없습니다.</td></tr>';
+                        return;
+                    }
+                    
+                    historyTopDataCache = data;
+                    renderTopHistory(historyTopDataCache);
+                } catch (error) {
+                    console.error('Error fetching top history:', error);
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">데이터를 불러오는 중 오류가 발생했습니다.</td></tr>';
+                }
+            });
+            
+            // Set default time to last 1 hour
+            const now = new Date();
+            const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+            
+            const formatForInput = (date) => {
+                const pad = (n) => n.toString().padStart(2, '0');
+                return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+            };
+            
+            document.getElementById('history-top-start-time').value = formatForInput(oneHourAgo);
+            document.getElementById('history-top-end-time').value = formatForInput(now);
+        }
+
+
+    // Sorting logic
+    let historyTopDataCache = [];
+    let currentSort = { col: null, asc: true };
+    
+    function sortData(data, col, asc) {
+        return data.sort((a, b) => {
+            let valA = a[col];
+            let valB = b[col];
+            
+            if (valA == null) valA = '';
+            if (valB == null) valB = '';
+            
+            if (typeof valA === 'string') valA = valA.toLowerCase();
+            if (typeof valB === 'string') valB = valB.toLowerCase();
+            
+            if (valA < valB) return asc ? -1 : 1;
+            if (valA > valB) return asc ? 1 : -1;
+            return 0;
+        });
+    }
+
+    function renderTopHistory(data) {
+        const tbody = document.getElementById('history-top-tbody');
+        tbody.innerHTML = '';
+        if (data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding: 30px;">데이터가 없습니다.</td></tr>';
+            return;
+        }
+        
+        data.forEach(session => {
+            const tr = document.createElement('tr');
+            tr.style.cursor = 'pointer';
+            tr.innerHTML = `
+                <td>${session.capture_time || ''}</td>
+                <td><span class="badge badge-primary">${session.sql_id || ''}</span></td>
+                <td style="color: blue; font-weight: bold;">${session.exec_count || 0}</td>
+                <td style="color: red; font-weight: bold;">${session.duration_time || 0}</td>
+                <td>${session.event_name || ''}</td>
+                <td>${session.program_name || ''}</td>
+                <td>${session.osuser || ''}</td>
+            `;
+            tr.addEventListener('click', () => {
+                if (session.sql_id) {
+                    showSqlPopup(session.sid, session.sql_id);
+                }
+            });
+            tbody.appendChild(tr);
+        });
+    }
+    
+    // Attach sort events
+    document.querySelectorAll('#history-top th[data-sort]').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.getAttribute('data-sort');
+            currentSort.asc = (currentSort.col === col) ? !currentSort.asc : false; // Default desc for new col
+            currentSort.col = col;
+            historyTopDataCache = sortData(historyTopDataCache, col, currentSort.asc);
+            renderTopHistory(historyTopDataCache);
+        });
+    });
+    
+    document.querySelectorAll('#history th[data-sort]').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.getAttribute('data-sort');
+            currentSort.asc = (currentSort.col === col) ? !currentSort.asc : false;
+            currentSort.col = col;
+            historyDataCache = sortData(historyDataCache, col, currentSort.asc);
+            updateHistoryUI(historyDataCache);
+        });
+    });
+
+
+// Global DB Users loader
+let dbUsersLoaded = false;
+async function loadDbUsers(targetDb) {
+    if (!targetDb) return;
+    try {
+        const response = await fetch(`/api/db_users?db_id=${encodeURIComponent(targetDb)}&token=${encodeURIComponent(getToken())}`);
+        let users = await response.json();
+        
+        const hSelect = document.getElementById('history-users');
+        const htSelect = document.getElementById('history-top-users');
+        
+        if (hSelect) {
+            hSelect.style.display = 'inline-block';
+            if (Array.isArray(users) && users.length > 0) {
+                hSelect.innerHTML = `<option value="">전체 계정(All)</option>` + users.map(u => `<option value="${u}">${u}</option>`).join('');
+            } else {
+                hSelect.innerHTML = `<option value="">계정 없음 ` + JSON.stringify(users) + `</option>`;
+            }
+        }
+        
+        if (htSelect) {
+            htSelect.style.display = 'inline-block';
+            if (Array.isArray(users) && users.length > 0) {
+                htSelect.innerHTML = `<option value="">전체 계정(All)</option>` + users.map(u => `<option value="${u}">${u}</option>`).join('');
+            } else {
+                htSelect.innerHTML = `<option value="">계정 없음</option>`;
+            }
+        }
+        dbUsersLoaded = true;
+    } catch(e) {
+        console.error("Failed to load db users", e);
+        const hSelect = document.getElementById('history-users');
+        if (hSelect) {
+            hSelect.innerHTML = `<option value="">Error: ${e.message}</option>`;
+            hSelect.style.display = 'inline-block';
+        }
+    }
+}
+
+// Hook into db select change (Safe)
+const dbSelectElem = document.getElementById('db-select');
+if (dbSelectElem) {
+    dbSelectElem.addEventListener('change', (e) => {
+        dbUsersLoaded = false; // reset when db changes
+        if(document.getElementById('history').style.display !== 'none' || document.getElementById('history-top').style.display !== 'none') {
+            loadDbUsers(e.target.value);
+        }
+    });
+}
+
+// Hook into navigation
+document.querySelectorAll('.sidebar .nav-link').forEach(link => {
+    link.addEventListener('click', (e) => {
+        const targetId = link.getAttribute('data-target');
+        if (targetId === 'history' || targetId === 'history-top') {
+            if (window.currentDbId) {
+                loadDbUsers(window.currentDbId);
+            }
+        }
+    });
+});
+
+
+// Aggressive DB Users loader
+setInterval(() => {
+    if (window.currentDbId && (!dbUsersLoaded || (document.getElementById("history-users") && document.getElementById("history-users").options && document.getElementById("history-users").options.length <= 1))) {
+        const histDisplay = document.getElementById('history') ? document.getElementById('history').style.display : 'none';
+        const topDisplay = document.getElementById('history-top') ? document.getElementById('history-top').style.display : 'none';
+        
+        // Always try to load if we have a currentDbId, regardless of tab, so it's ready!
+        loadDbUsers(window.currentDbId);
+    }
+}, 1000);
+
+// History table sorting logic
+let historySortCol = 'capture_time';
+let historySortAsc = true;
+
+
+
+
+    setTimeout(() => {
+        document.querySelectorAll('#history-thead th').forEach(th => {
+            th.addEventListener('click', () => {
+                const sortKey = th.getAttribute('data-sort');
+                if (!sortKey) return;
+                
+                if (historySortCol === sortKey) {
+                    historySortAsc = !historySortAsc;
+                } else {
+                    historySortCol = sortKey;
+                    historySortAsc = true;
+                }
+                
+                if (historyDataCache && historyDataCache.length > 0) {
+                    historyDataCache.sort((a, b) => {
+                        let valA = a[sortKey];
+                        let valB = b[sortKey];
+                        if (valA == null) valA = '';
+                        if (valB == null) valB = '';
+                        if (typeof valA === 'string' && typeof valB === 'string') {
+                            return historySortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                        }
+                        return historySortAsc ? (valA > valB ? 1 : -1) : (valB > valA ? 1 : -1);
+                    });
+                    
+                    // Re-render table only
+                    const tbody = document.getElementById('history-tbody');
+                    if(tbody) {
+                        tbody.innerHTML = historyDataCache.map(s => {
+                            return `<tr>
+                                <td>${s.capture_time}</td>
+                                <td>${s.sid}</td>
+                                <td>${s.serial}</td>
+                                <td>${s.exec_count}</td>
+                                <td>${s.duration_time}</td>
+                                <td>${s.event_name}</td>
+                                <td>${s.sql_id}</td>
+                                <td>${s.plan_hash_value || ''}</td>
+                                <td>${s.program_name || ''}</td>
+                                <td>${s.osuser || ''}</td>
+                            </tr>`;
+                        }).join('');
+                    }
+                }
+            });
+        });
+    }, 1000);
+
+// AI DBA Tabs & Error Search Logic
+
+
+
+    // Tab switching
+    const tabBtns = document.querySelectorAll('.aidba-tab-btn');
+    const tabContents = document.querySelectorAll('.aidba-tab-content');
+
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            tabBtns.forEach(b => {
+                b.classList.remove('active');
+                b.style.color = 'var(--text-secondary)';
+                b.style.borderBottomColor = 'transparent';
+            });
+            tabContents.forEach(c => c.style.display = 'none');
+
+            btn.classList.add('active');
+            btn.style.color = 'var(--primary)';
+            btn.style.borderBottomColor = 'var(--primary)';
+            
+            const targetId = btn.getAttribute('data-tab');
+            document.getElementById(targetId).style.display = 'flex';
+        });
+    });
+
+    // Error Search
+    const errorCodeInput = document.getElementById('error-code-input');
+    const errorSearchBtn = document.getElementById('error-search-btn');
+    const errorSearchResult = document.getElementById('error-search-result');
+
+    if (errorSearchBtn && errorCodeInput && errorSearchResult) {
+        const doErrorSearch = async () => {
+            const code = errorCodeInput.value.trim();
+            if (!code) return;
+
+            errorSearchResult.innerHTML = '<div style="text-align: center; margin-top: 50px;">검색 중...</div>';
+            
+            try {
+                const response = await fetch(`/api/aidba/error_search?code=${encodeURIComponent(code)}`);
+                const data = await response.json();
+
+                if (data.found) {
+                    errorSearchResult.innerHTML = `
+                        <h3 style="margin-top: 0; color: var(--primary);">${data.error_code}</h3>
+                        <div style="margin-bottom: 15px;">
+                            <strong style="color: var(--text-primary);">■ 발생 원인:</strong>
+                            <p style="white-space: pre-wrap; margin-top: 5px; color: var(--text-secondary); line-height: 1.5;">${data.cause}</p>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <strong style="color: var(--text-primary);">■ 조치 방안:</strong>
+                            <p style="white-space: pre-wrap; margin-top: 5px; color: var(--text-secondary); line-height: 1.5;">${data.action}</p>
+                        </div>
+                        <div style="margin-bottom: 0;">
+                            <strong style="color: var(--text-primary);">■ 관련 쿼리 및 로그 위치:</strong>
+                            <p style="white-space: pre-wrap; margin-top: 5px; color: var(--text-secondary); line-height: 1.5;">${data.query_or_log}</p>
+                        </div>
+                    `;
+                } else if (data.error) {
+                    errorSearchResult.innerHTML = `<div style="color: red; text-align: center; margin-top: 50px;">오류: ${data.error}</div>`;
+                } else {
+                    errorSearchResult.innerHTML = `<div style="color: var(--text-secondary); text-align: center; margin-top: 50px;">${data.message || '결과를 찾을 수 없습니다.'}</div>`;
+                }
+            } catch (err) {
+                errorSearchResult.innerHTML = `<div style="color: red; text-align: center; margin-top: 50px;">서버 통신 오류가 발생했습니다.</div>`;
+            }
+        };
+
+        errorSearchBtn.addEventListener('click', doErrorSearch);
+        errorCodeInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') doErrorSearch();
+        });
+    }
+
+// SQL Runner Logic
+
+    const sqlRunnerInput = document.getElementById('sqlrunner-input');
+    const sqlRunnerBtn = document.getElementById('sqlrunner-run-btn');
+    const sqlRunnerResult = document.getElementById('sqlrunner-result');
+    const sqlRunnerStatus = document.getElementById('sqlrunner-status');
+    const sqlRunnerRowLimitInput = document.getElementById('sqlrunner-rowlimit-input');
+    const sqlRunnerAccountSelect = document.getElementById('sqlrunner-account-select');
+
+    // Populates the account dropdown for the currently selected DB. Re-run whenever the SQL Runner
+    // tab is opened (see switchTab) so it stays in sync with the sidebar's DB selection.
+    window.loadSqlRunnerAccounts = async function () {
+        if (!sqlRunnerAccountSelect) return;
+        const dbId = window.currentDbId || '';
+        try {
+            const res = await fetch(`/api/query/accounts?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`);
+            const data = await res.json();
+            const accounts = data.accounts || [];
+            const previous = sqlRunnerAccountSelect.value;
+            sqlRunnerAccountSelect.innerHTML = accounts.map(a => `<option value="${a}">${a}</option>`).join('');
+            if (accounts.includes(previous)) {
+                sqlRunnerAccountSelect.value = previous;
+            }
+        } catch (e) {
+            console.error('Failed to load SQL runner accounts:', e);
+        }
+    };
+
+    if (sqlRunnerInput && sqlRunnerBtn && sqlRunnerResult) {
+        const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+        const runSql = async () => {
+            const sql = sqlRunnerInput.value.trim();
+            if (!sql) return;
+
+            const account = sqlRunnerAccountSelect ? sqlRunnerAccountSelect.value : '';
+            const rowLimit = sqlRunnerRowLimitInput ? parseInt(sqlRunnerRowLimitInput.value, 10) : null;
+
+            sqlRunnerBtn.disabled = true;
+            sqlRunnerStatus.textContent = '실행 중...';
+            sqlRunnerResult.innerHTML = '<div style="text-align:center; margin-top:30px; color: var(--text-secondary);">실행 중입니다...</div>';
+
+            try {
+                const res = await fetch('/api/query/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ db_id: window.currentDbId || '', sql, max_rows: (rowLimit && rowLimit > 0) ? rowLimit : null, account, token: sessionStorage.getItem('dbagent_token') })
+                });
+                const data = await res.json();
+
+                if (!data.success) {
+                    sqlRunnerStatus.textContent = '';
+                    sqlRunnerResult.innerHTML = `<div style="color: #ef4444; padding: 15px; background: var(--bg-card); border-radius: 6px; white-space: pre-wrap;">오류: ${escapeHtml(data.message || '알 수 없는 오류')}</div>`;
+                    return;
+                }
+
+                sqlRunnerStatus.textContent = `${data.elapsed_ms}ms`;
+
+                if (data.type === 'update') {
+                    sqlRunnerResult.innerHTML = `<div style="color: var(--success); padding: 15px; background: var(--bg-card); border-radius: 6px;">${data.affected_rows}건 처리되었습니다.</div>`;
+                    return;
+                }
+
+                const columns = data.columns || [];
+                const rows = data.rows || [];
+                if (rows.length === 0) {
+                    sqlRunnerResult.innerHTML = '<div style="color: var(--text-secondary); text-align:center; margin-top:30px;">조회 결과가 없습니다.</div>';
+                    return;
+                }
+
+                let html = `<div style="margin-bottom:8px; font-size:0.85rem; color: var(--text-secondary);">${data.row_count}건${data.truncated ? ` (조회 건수 상한 ${data.max_rows}건 도달 - 상위 결과만 표시됨. 더 보려면 조회 건수를 늘려서 다시 실행하세요)` : ''}</div>`;
+                html += '<div class="table-container" style="max-height: 500px; overflow: auto;"><table class="data-table sql-result-table"><thead><tr>';
+                columns.forEach(c => { html += `<th>${escapeHtml(c)}</th>`; });
+                html += '</tr></thead><tbody>';
+                rows.forEach(row => {
+                    html += '<tr>';
+                    row.forEach(v => {
+                        html += (v === null || v === undefined)
+                            ? '<td><span style="color: var(--text-muted);">NULL</span></td>'
+                            : `<td>${escapeHtml(v)}</td>`;
+                    });
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+                sqlRunnerResult.innerHTML = html;
+            } catch (err) {
+                sqlRunnerStatus.textContent = '';
+                sqlRunnerResult.innerHTML = '<div style="color: #ef4444; text-align:center; margin-top:30px;">서버 통신 오류가 발생했습니다.</div>';
+            } finally {
+                sqlRunnerBtn.disabled = false;
+            }
+        };
+
+        sqlRunnerBtn.addEventListener('click', runSql);
+        sqlRunnerInput.addEventListener('keydown', (e) => {
+            // Enter runs the query; Shift+Enter still inserts a newline for multi-line SQL.
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                runSql();
+            }
+        });
+    }
+
+    } catch (e) {
+        alert("JS Error: " + e.message);
+    }
+})();
