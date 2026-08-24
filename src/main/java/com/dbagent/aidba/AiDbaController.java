@@ -12,9 +12,11 @@ import java.util.Map;
 public class AiDbaController {
 
     private final ErrorSearchService errorSearchService;
+    private final OllamaChatService ollamaChatService;
 
-    public AiDbaController(ErrorSearchService errorSearchService) {
+    public AiDbaController(ErrorSearchService errorSearchService, OllamaChatService ollamaChatService) {
         this.errorSearchService = errorSearchService;
+        this.ollamaChatService = ollamaChatService;
     }
 
     @GetMapping("/error_search")
@@ -24,5 +26,10 @@ public class AiDbaController {
             return ResponseEntity.badRequest().body(Maps.of("error", "No error code provided"));
         }
         return ResponseEntity.ok(errorSearchService.getErrorSolution(code));
+    }
+
+    @PostMapping("/chat")
+    public ResponseEntity<Map<String, Object>> chat(@RequestBody ChatRequest request) {
+        return ResponseEntity.ok(ollamaChatService.chat(request.message()));
     }
 }

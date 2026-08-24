@@ -11,6 +11,13 @@ PID_FILE="$SCRIPT_DIR/dbagent-java.pid"
 OUT_LOG="$SCRIPT_DIR/dbagent-java.out.log"
 ERR_LOG="$SCRIPT_DIR/dbagent-java.err.log"
 
+# This server's $TMPDIR (e.g. /goracle/tmp) is a shared Oracle-owned path this app's account may not
+# have write access to - embedded Tomcat fails to boot ("Unable to create tempDir") if it can't create
+# a subdir there. Same isolation principle as the bundled JDK: give it its own tmp dir instead of
+# depending on a shared system path.
+TMP_DIR="$SCRIPT_DIR/tmp"
+mkdir -p "$TMP_DIR"
+
 # Reads server.port from application.properties next to this script (same file Spring Boot itself
 # reads), so changing the port there doesn't also require editing this script by hand. Falls back to
 # Spring Boot's own default (8005, see src/main/resources/application.properties) if missing.
@@ -26,14 +33,14 @@ fi
 # Bundled JDK (this folder) always wins, same reasoning as start.ps1's Get-JavaExe: this server
 # already has several other Javas in play (Oracle client's bundled JDK, NetBackup's JRE, etc.) and
 # this app must never touch those - it only ever launches its own co-located JDK 8.
-JAVA_EXE="$SCRIPT_DIR/jdk8/bin/java"
+JAVA_EXE="$SCRIPT_DIR/java8/bin/java"
 if [ ! -x "$JAVA_EXE" ]; then
     if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-        echo "WARNING: bundled jdk8/ not found, falling back to \$JAVA_HOME ($JAVA_HOME) - verify it is Java 8."
+        echo "WARNING: bundled java8/ not found, falling back to \$JAVA_HOME ($JAVA_HOME) - verify it is Java 8."
         JAVA_EXE="$JAVA_HOME/bin/java"
     elif command -v java >/dev/null 2>&1; then
         JAVA_EXE=$(command -v java)
-        echo "WARNING: bundled jdk8/ not found, falling back to PATH java ($JAVA_EXE) - verify it is Java 8."
+        echo "WARNING: bundled java8/ not found, falling back to PATH java ($JAVA_EXE) - verify it is Java 8."
     else
         echo "ERROR: java not found. Expected a bundled JDK at $JAVA_EXE."
         exit 1
@@ -55,7 +62,7 @@ if [ ! -f "$JAR" ]; then
 fi
 
 echo "Starting DBAgent-Java (port $PORT) using $JAVA_EXE ..."
-nohup "$JAVA_EXE" -jar "$JAR" >"$OUT_LOG" 2>"$ERR_LOG" &
+nohup "$JAVA_EXE" "-Djava.io.tmpdir=$TMP_DIR" -jar "$JAR" >"$OUT_LOG" 2>"$ERR_LOG" &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"
 echo "Started with PID $NEW_PID. Waiting for port $PORT to open..."

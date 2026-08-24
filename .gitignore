@@ -5,7 +5,13 @@ __pycache__/
 .env
 
 jdk17/
+java8/
+dist-aix/
 *.jar
 .gradle/
 build/
 bin/
+
+*.tar.gz
+*.zip
+*.tar

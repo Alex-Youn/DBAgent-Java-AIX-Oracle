@@ -3553,6 +3553,71 @@ let historySortAsc = true;
         });
     }
 
+    // AI Chatbot (Ollama)
+    const chatInput = document.getElementById('chat-input');
+    const chatSendBtn = document.getElementById('chat-send-btn');
+    const chatLog = document.getElementById('chat-log');
+
+    if (chatInput && chatSendBtn && chatLog) {
+        const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+
+        const appendChatMessage = (role, text) => {
+            const placeholder = chatLog.querySelector('div[style*="text-align: center"]');
+            if (placeholder) placeholder.remove();
+
+            const isUser = role === 'user';
+            const bubble = document.createElement('div');
+            bubble.style.cssText = `margin-bottom: 12px; display: flex; ${isUser ? 'justify-content: flex-end;' : 'justify-content: flex-start;'}`;
+            bubble.innerHTML = `
+                <div style="max-width: 80%; padding: 10px 14px; border-radius: 10px; white-space: pre-wrap; word-break: break-word;
+                            background: ${isUser ? 'var(--primary)' : 'var(--bg-card)'};
+                            color: ${isUser ? '#fff' : 'var(--text-primary)'};
+                            border: ${isUser ? 'none' : '1px solid var(--border-color)'};">
+                    ${escapeHtml(text)}
+                </div>`;
+            chatLog.appendChild(bubble);
+            chatLog.scrollTop = chatLog.scrollHeight;
+            return bubble;
+        };
+
+        const doChatSend = async () => {
+            const message = chatInput.value.trim();
+            if (!message) return;
+
+            chatInput.value = '';
+            chatSendBtn.disabled = true;
+            appendChatMessage('user', message);
+            const pending = appendChatMessage('assistant', '생각 중...');
+
+            try {
+                const response = await fetch('/api/aidba/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+                const data = await response.json();
+                const textDiv = pending.querySelector('div');
+                if (data.error) {
+                    textDiv.textContent = `오류: ${data.error}`;
+                } else {
+                    textDiv.textContent = data.answer || '(빈 응답)';
+                }
+            } catch (err) {
+                pending.querySelector('div').textContent = '서버 통신 오류가 발생했습니다.';
+            } finally {
+                chatSendBtn.disabled = false;
+                chatInput.focus();
+            }
+        };
+
+        chatSendBtn.addEventListener('click', doChatSend);
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') doChatSend();
+        });
+    }
+
 // SQL Runner Logic
 
     const sqlRunnerInput = document.getElementById('sqlrunner-input');
