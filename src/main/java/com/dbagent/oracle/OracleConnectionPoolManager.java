@@ -33,6 +33,16 @@ public class OracleConnectionPoolManager {
     @Value("${dbagent.oracle.connect-timeout-ms:500}")
     private int connectTimeoutMs;
 
+    // Separate from connectTimeoutMs on purpose (사용자 피드백: SQL 정합성/튜닝 매뉴가 폐쇄망에서
+    // 전부 타임아웃) - oracle.net.READ_TIMEOUT bounds how long the driver waits for the NEXT byte of
+    // a query's response while a connection is already established, not connection setup. Reusing the
+    // short dead-DB-detection value here meant any query that legitimately took longer than that
+    // (AWR/ASH history, SQL tuning analysis, or just a slower network) got killed as if the DB were
+    // unreachable. Kept generous since a real query has no natural upper bound the way a TCP connect
+    // does.
+    @Value("${dbagent.oracle.read-timeout-ms:60000}")
+    private int readTimeoutMs;
+
     // Global defaults, used when an instance in databases.json doesn't set its own pool_min_idle/pool_max_size.
     @Value("${dbagent.oracle.pool.min-idle:2}")
     private int defaultPoolMinIdle;
@@ -160,7 +170,7 @@ public class OracleConnectionPoolManager {
         // Oracle-driver-level bounds: without these, a firewalled/black-holed host can hang far
         // longer than connectTimeoutMs on the raw TCP connect, ignoring Hikari's own timeout.
         cfg.addDataSourceProperty("oracle.net.CONNECT_TIMEOUT", String.valueOf(connectTimeoutMs));
-        cfg.addDataSourceProperty("oracle.net.READ_TIMEOUT", String.valueOf(connectTimeoutMs));
+        cfg.addDataSourceProperty("oracle.net.READ_TIMEOUT", String.valueOf(readTimeoutMs));
         if (sysdba) {
             // Thin-driver SYSDBA login, equivalent to oracledb.AUTH_MODE_SYSDBA in Python.
             cfg.addDataSourceProperty("internal_logon", "sysdba");

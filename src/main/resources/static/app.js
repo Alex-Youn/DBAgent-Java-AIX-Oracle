@@ -131,11 +131,25 @@ function getToken() {
             window.location.href = 'fleet-overview-test-blue.html';
         });
 
-        document.getElementById('logout-btn')?.addEventListener('click', () => {
+        document.getElementById('logout-btn')?.addEventListener('click', async () => {
+            const token = getToken();
+            // Only invalidates this device's own session - other concurrent logins to the same
+            // account (같은 계정 동시 로그인 허용, see AuthService) are untouched.
+            try {
+                await fetch(`${API_BASE_AUTH}/logout`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token })
+                });
+            } catch (e) {
+                console.error('Logout request failed', e);
+            }
             sessionStorage.removeItem('dbagent_token');
             sessionStorage.removeItem('dbagent_role');
             sessionStorage.removeItem('dbagent_account_hidden_menus');
             sessionStorage.removeItem('dbagent_account_hidden_dbs');
+            sessionStorage.removeItem('dbagent_fleet_overview');
+            sessionStorage.removeItem('dbagent_fleet_overview_auto_redirect');
             location.reload();
         });
 

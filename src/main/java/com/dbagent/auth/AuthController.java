@@ -65,6 +65,18 @@ public class AuthController {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Maps.of("authenticated", false));
     }
 
+    // Invalidates only the calling device's own token - concurrent sessions from other
+    // devices/browsers for the same account (이제 허용됨, see AuthService.init()'s sessions table
+    // comment) are untouched. Always reports success even for an already-invalid token, since the end
+    // state ("this token no longer works") is the same either way.
+    @PostMapping("/api/logout")
+    public ResponseEntity<Map<String, Object>> logout(@RequestBody TokenRequest req) {
+        if (req.token() != null && !Strings.isBlank(req.token())) {
+            authService.logout(req.token());
+        }
+        return ResponseEntity.ok(Maps.of("success", true));
+    }
+
     // Self-service - any account (including admin, who can't use the username-targeted /api/users
     // endpoints) flips their own "jump to Fleet Overview on login" preference here.
     @PostMapping("/api/me/fleet_overview_auto_redirect")
