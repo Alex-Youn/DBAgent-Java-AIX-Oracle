@@ -4,13 +4,16 @@ __pycache__/
 *.pyc
 .env
 
-jdk17/
-java8/
-dist-aix/
-*.jar
+/jdk17/
+/java8/
+/dist-aix/
+/maven39/bin/
+/maven39/boot/*.jar
+/maven39/lib/*.jar
+/target/*.jar
+/dist/*.jar
 .gradle/
 build/
-bin/
 
 *.tar.gz
 *.zip
