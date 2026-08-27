@@ -10,8 +10,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api")
@@ -107,6 +110,27 @@ public class MonitorController {
         } catch (SQLException e) {
             return dbError(e);
         }
+    }
+
+    // Fleet Overview (fleet-overview-test-blue.html): one status snapshot per configured instance.
+    // Checked concurrently, not in a loop - a single down/slow DB would otherwise stall every
+    // instance queued after it. Respects the same per-account DB visibility as everywhere else
+    // (canAccessDb) - an instance the caller can't see just doesn't appear in the response, same as
+    // it wouldn't in the sidebar.
+    @GetMapping("/fleet_status")
+    public ResponseEntity<Object> fleetStatus(@RequestParam(required = false) String token) {
+        if (!authService.canAccessFleetOverview(token)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Maps.of("error", "Fleet Overview 접근 권한이 없습니다."));
+        }
+        List<CompletableFuture<Map<String, Object>>> futures = configService.listAllInstances().stream()
+                .filter(inst -> authService.canAccessDb(token, inst.id()))
+                .map(inst -> CompletableFuture.supplyAsync(() -> monitorService.getFleetStatus(inst)))
+                .collect(Collectors.toList());
+        List<Map<String, Object>> results = new ArrayList<>(futures.size());
+        for (CompletableFuture<Map<String, Object>> f : futures) {
+            results.add(f.join());
+        }
+        return ResponseEntity.ok(results);
     }
 
     @GetMapping("/top_events")

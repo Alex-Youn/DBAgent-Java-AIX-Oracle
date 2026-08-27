@@ -792,6 +792,115 @@ public class MonitorService {
         return null;
     }
 
+    /**
+     * A short, DBA-facing reason instead of HikariCP's raw pool-timeout wording (사용자 피드백: the
+     * "Connection is not available, request timed out after 5001ms (total=0, active=0, idle=0,
+     * waiting=0)" text showing up on the Fleet Overview card was noise, not useful). Surfaces the
+     * Oracle ORA- code when the failure actually got far enough to have one (genuinely useful to a
+     * DBA), otherwise falls back to a plain connection-failure message - never the pool/HikariCP
+     * internals.
+     */
+    private String friendlyDownMessage(Exception e) {
+        if (e instanceof SQLException) {
+            SQLException se = (SQLException) e;
+            if (isSelfInflicted(se)) {
+                return "일시적으로 응답이 지연되고 있습니다.";
+            }
+            String oraMessage = findOraMessage(se);
+            if (oraMessage != null) {
+                int newline = oraMessage.indexOf('\n');
+                return (newline > 0 ? oraMessage.substring(0, newline) : oraMessage).trim();
+            }
+        }
+        return "DB에 연결할 수 없습니다.";
+    }
+
+    // ------------------------------------------------------- fleet_status
+    // Feeds the "Fleet Overview" landing page (fleet-overview-test-blue.html): one compact status
+    // snapshot per configured instance, everything in a single connection/round of queries to keep
+    // the fan-out across possibly many DBs cheap. MonitorController runs one of these per instance
+    // concurrently (see its fleetStatus()) rather than looping sequentially, since a slow/down DB
+    // would otherwise stall every DB after it - the "전체 DB 동시 폴링으로 인한 커넥션 풀 부하" concern
+    // the design doc itself flagged as unresolved is mitigated this way (bounded by the per-instance
+    // connect timeout, not by N times it).
+    //
+    // Uptime is NOT a measured historical availability percentage - Oracle doesn't track that, and
+    // this app has no time-series log of past health checks to compute one from. Instead it's derived
+    // from v$instance.startup_time: an instance continuously up for UPTIME_FULL_DAYS or more reads as
+    // 100%, scaled linearly below that. A DB that was rock-solid for a year but restarted 2 days ago
+    // reads the same as one that has only ever run for 2 days - it's "how stable right now", not "how
+    // reliable historically". Documented here and to the user so it doesn't get mistaken for the
+    // former.
+    private static final double UPTIME_FULL_DAYS = 30.0;
+
+    public Map<String, Object> getFleetStatus(TargetDbConfig target) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("id", target.id());
+        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+            String instanceStatus = "down";
+            double uptimeDays = 0;
+            try (ResultSet rs = st.executeQuery("SELECT status, (SYSDATE - startup_time) AS uptime_days FROM v$instance")) {
+                if (rs.next()) {
+                    instanceStatus = "OPEN".equals(rs.getString("status")) ? "alive" : "down";
+                    uptimeDays = rs.getDouble("uptime_days");
+                }
+            }
+            if (!"alive".equals(instanceStatus)) {
+                result.put("status", "down");
+                result.put("errorMessage", "인스턴스가 OPEN 상태가 아닙니다.");
+                return result;
+            }
+
+            double numCpus = 1;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
+                if (rs.next()) numCpus = rs.getDouble(1);
+            }
+            double cpuUsage = 0;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'CPU Usage Per Sec'")) {
+                if (rs.next()) cpuUsage = rs.getDouble(1);
+            }
+            double cpuPct = numCpus > 0 ? Math.round((cpuUsage / numCpus) * 100.0) / 100.0 : 0;
+
+            double sgaBytes = 0;
+            try (ResultSet rs = st.executeQuery("SELECT sum(bytes) FROM v$sgastat")) {
+                if (rs.next()) sgaBytes = rs.getDouble(1);
+            }
+            double pgaBytes = 0;
+            try (ResultSet rs = st.executeQuery("SELECT sum(value) FROM v$pgastat WHERE name = 'total PGA allocated'")) {
+                if (rs.next()) pgaBytes = rs.getDouble(1);
+            }
+            double totalMem = 1;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'PHYSICAL_MEMORY_BYTES'")) {
+                if (rs.next()) totalMem = rs.getDouble(1);
+            }
+            double memPct = totalMem > 0 ? Math.round(((sgaBytes + pgaBytes) / totalMem) * 10000.0) / 100.0 : 0;
+
+            int activeSessions = 0;
+            try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND'")) {
+                if (rs.next()) activeSessions = rs.getInt(1);
+            }
+
+            int lockWait = queryLockWaitCount(conn);
+            double uptimePct = Math.min(100.0, Math.round((uptimeDays / UPTIME_FULL_DAYS) * 10000.0) / 100.0);
+
+            // v1 threshold: CPU high, memory high, or any lock waiter at all reads as "경고" - same
+            // spirit as the dashboard's own CPU/MEM mini-bar coloring (60%/80% breakpoints), just
+            // rolled up into one status instead of per-metric.
+            boolean warning = cpuPct >= 60 || memPct >= 80 || lockWait > 0;
+
+            result.put("status", warning ? "degraded" : "alive");
+            result.put("cpuPct", cpuPct);
+            result.put("memPct", memPct);
+            result.put("activeSession", activeSessions);
+            result.put("lockWait", lockWait);
+            result.put("uptimePct", uptimePct);
+        } catch (Exception e) {
+            result.put("status", "down");
+            result.put("errorMessage", friendlyDownMessage(e));
+        }
+        return result;
+    }
+
     // ------------------------------------------------------- history_sessions
     public List<Map<String, Object>> getHistorySessions(TargetDbConfig target, String startTime, String endTime, String users) throws SQLException {
         String userFilter = buildUserFilter(users);

@@ -85,6 +85,12 @@
                         <span>관리자(Admin) 권한 부여</span>
                     </label>
                 </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-main); font-size: 0.95rem;">
+                        <input type="checkbox" id="${prefix}-fleet-overview" style="width: auto; accent-color: var(--primary);">
+                        <span>Fleet Overview 접근 허용 (관리자는 항상 접근 가능)</span>
+                    </label>
+                </div>
                 <div class="field-row">
                     <div style="text-align: left;">
                         <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">표시할 메뉴</label>
@@ -248,13 +254,14 @@
                     return;
                 }
                 const role = document.getElementById('new-user-is-admin').checked ? 'admin' : 'user';
+                const fleetOverview = document.getElementById('new-user-fleet-overview').checked;
                 const hiddenMenus = collectHidden(document.getElementById('new-user-menu-list'), 'data-menu-target');
                 const hiddenDbs = collectHidden(document.getElementById('new-user-db-list'), 'data-db-target');
                 try {
                     const res = await fetch('/api/users', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ token, username, password, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs })
+                        body: JSON.stringify({ token, username, password, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs, fleet_overview: fleetOverview })
                     });
                     const data = await res.json();
                     if (res.ok && data.success) {
@@ -273,6 +280,7 @@
             function showEditView(user) {
                 document.getElementById('edit-user-username').textContent = user.username;
                 document.getElementById('edit-user-is-admin').checked = user.role === 'admin';
+                document.getElementById('edit-user-fleet-overview').checked = !!user.fleet_overview;
                 renderMenuCheckboxes(document.getElementById('edit-user-menu-list'), new Set(user.hidden_menus || []));
                 renderDbCheckboxes(document.getElementById('edit-user-db-list'), new Set(user.hidden_dbs || []));
                 document.getElementById('edit-user-error').style.display = 'none';
@@ -284,13 +292,14 @@
             document.getElementById('edit-user-save-btn').addEventListener('click', async (e) => {
                 const username = e.target.dataset.username;
                 const role = document.getElementById('edit-user-is-admin').checked ? 'admin' : 'user';
+                const fleetOverview = document.getElementById('edit-user-fleet-overview').checked;
                 const hiddenMenus = collectHidden(document.getElementById('edit-user-menu-list'), 'data-menu-target');
                 const hiddenDbs = collectHidden(document.getElementById('edit-user-db-list'), 'data-db-target');
                 try {
                     const res = await fetch(`/api/users/${encodeURIComponent(username)}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ token, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs })
+                        body: JSON.stringify({ token, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs, fleet_overview: fleetOverview })
                     });
                     const data = await res.json();
                     if (res.ok && data.success) {

@@ -32,6 +32,13 @@ public class AuthController {
             body.put("role", session.get().role());
             body.put("hidden_menus", session.get().hiddenMenus());
             body.put("hidden_dbs", session.get().hiddenDbs());
+            // Effective permission (admin implicitly included), not the raw stored column - the
+            // frontend just needs "can this account use Fleet Overview", not to re-derive it from role.
+            body.put("fleet_overview", "admin".equals(session.get().role()) || session.get().fleetOverview());
+            // Raw preference, not merged with role - unlike fleet_overview above this isn't a
+            // permission (admin doesn't implicitly get "true" here), just "should login jump straight
+            // to Fleet Overview" for whichever account this is.
+            body.put("fleet_overview_auto_redirect", session.get().fleetOverviewAutoRedirect());
             return ResponseEntity.ok(body);
         }
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
@@ -51,9 +58,22 @@ public class AuthController {
             body.put("role", session.get().role());
             body.put("hidden_menus", session.get().hiddenMenus());
             body.put("hidden_dbs", session.get().hiddenDbs());
+            body.put("fleet_overview", "admin".equals(session.get().role()) || session.get().fleetOverview());
+            body.put("fleet_overview_auto_redirect", session.get().fleetOverviewAutoRedirect());
             return ResponseEntity.ok(body);
         }
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Maps.of("authenticated", false));
+    }
+
+    // Self-service - any account (including admin, who can't use the username-targeted /api/users
+    // endpoints) flips their own "jump to Fleet Overview on login" preference here.
+    @PostMapping("/api/me/fleet_overview_auto_redirect")
+    public ResponseEntity<Map<String, Object>> setFleetOverviewAutoRedirect(@RequestBody SetFleetOverviewAutoRedirectRequest req) {
+        Map<String, Object> result = authService.setFleetOverviewAutoRedirect(req.token(), req.autoRedirect());
+        if (Boolean.TRUE.equals(result.get("success"))) {
+            return ResponseEntity.ok(result);
+        }
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(result);
     }
 
     @PostMapping("/api/change-password")

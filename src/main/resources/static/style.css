@@ -211,6 +211,45 @@ body {
     color: var(--text-main);
 }
 
+/* Entry point back into the Fleet Overview landing page (사용자 요청: "들어가는 입구가 없네") - text
+   label instead of a lucide icon since there's no existing glyph for it, so it needs its own
+   padding/border/radius to read as a button rather than bare text next to the icon-only buttons. */
+.fo-btn {
+    font-family: inherit;
+    font-weight: 800;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    padding: 6px 10px;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px;
+    background: var(--bg-panel);
+}
+
+.fo-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--primary) !important;
+    color: var(--primary);
+}
+
+/* Personal "로그인 시 자동 이동" preference next to the FO button (사용자 요청: "admin 권한도 진입
+   옵션 선택할 수 있나") - same visibility rule as the FO button itself (hidden entirely for accounts
+   without Fleet Overview access, toggled by app.js). */
+.fo-auto-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.fo-auto-toggle input {
+    width: auto;
+    accent-color: var(--primary);
+    cursor: pointer;
+}
+
 .gear-dropdown {
     display: none;
     position: absolute;

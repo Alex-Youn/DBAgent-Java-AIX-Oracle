@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fleet Overview (Test)</title>
+<!--
+  Design-review prototype for the "로그인 후 첫 화면" redesign - see db_모니터링_첫화면_설계안_1.md
+  (project-specific spec: layout/색상/정렬 규칙, authoritative for this app) and 콘솔 spec.md.md
+  (generic "PULSE" template: card/toolbar component structure, typography, borrowed for layout ideas
+  only - its cyan/green brand and PostgreSQL/Redis sample data don't apply here).
+
+  사용자가 색상 버전은 fleet-overview-test-blue.html(색감1.jpg 기반)로 선택해 그쪽을 먼저 실 데이터/
+  네비게이션 연동 경로로 삼았지만, 이후 "이 violet 버전에도 blue에 적용된 기능 넣어줘" 요청에 따라
+  이 파일도 동일한 기능(아래 참고)을 갖췄다 - 색상 팔레트만 색감2.jpg 기반으로 다를 뿐, 기능은
+  fleet-overview-test-blue.html과 완전히 동일하다.
+
+  Card/row clicks navigate to index.html?db_id=<id>, and app.js's "Load config and build tree" step
+  reads that query param to auto-select the matching instance (falls back to its old "first instance"
+  default when the param is absent) - see the jumpToDbId comment there.
+
+  Status/CPU/MEM/ActiveSession/LockWait/Uptime are now real, not simulated: loadDbs() joins the
+  existing public GET /api/config (DB list) with the new GET /api/fleet_status (MonitorService.
+  getFleetStatus via MonitorController.fleetStatus, checked concurrently per instance so one down DB
+  doesn't stall the rest - the "동시 폴링 부하" concern the design doc flagged). fleet_status needs a
+  valid token (same canAccessDb per-account visibility as everywhere else); without one every
+  instance just falls back to a "상태 조회 실패" down-looking card instead of failing the whole page.
+  Uptime% specifically is NOT a measured historical availability number (Oracle doesn't track that,
+  and this app has no time-series health log) - it's derived from v$instance.startup_time, scaled to
+  100% once an instance has been continuously up for 30 days. See getFleetStatus's own comment for
+  the full reasoning.
+
+  Still NOT linked from index.html's nav/login flow and NOT the post-login landing page - only
+  reachable by opening this URL directly, so it can't affect the existing app.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+    :root {
+        /* Palette lifted from 색감2.jpg (deep violet SaaS dashboard reference) - card bg sits one
+           step lighter than page bg with a soft border-glow rather than a hard 1px line, and the
+           brand accent is a violet->teal->sky gradient used on buttons/active states/rings, matching
+           that reference's "Quarterly Overview" donut. Page background itself is DBAgent's own
+           --bg-main/--bg-panel (style.css) instead of a custom violet-black, so this screen sits on
+           the same base tone as the rest of the app (사용자 요청) - only the accent glow/cards/brand
+           stay violet-themed on top of it. */
+        --bg-page: #0f172a;
+        --bg-page-2: #1e293b;
+        --bg-card: #201933;
+        --bg-hover: #2a2140;
+        --border: rgba(255,255,255,0.08);
+        --border-strong: rgba(255,255,255,0.18);
+        --text-primary: #f5f3fa;
+        --text-secondary: #b6adc9;
+        --text-muted: #877d9c;
+
+        --brand: #8b5cf6;
+        --brand-hover: #7c4fe0;
+        --brand-teal: #2dd4bf;
+        --brand-sky: #38bdf8;
+        --brand-gradient: linear-gradient(135deg, var(--brand-teal), var(--brand), var(--brand-sky));
+
+        /* Status colors are reserved exclusively for DB health, per the design doc's explicit
+           rule - never reused for metric-category coloring elsewhere on this page. Tuned a shade
+           brighter than the doc's original hex so they still read clearly against this darker
+           violet background instead of the original navy. */
+        --status-good: #22c55e;
+        --status-warning: #fbbf24;
+        --status-critical: #f4506b;
+
+        --font-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+        --font-body: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+        --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+        /* Frame/card backgrounds get a subtle top-lighter-to-base diagonal gradient instead of a
+           flat fill (사용자 피드백: "각 프레임들을 약간 밝은 톤으로 그라데이션 처리"). */
+        --card-gradient: linear-gradient(160deg, #453a72 0%, var(--bg-card) 60%);
+
+        --radius-card: 20px;
+        --radius-pill: 999px;
+        --radius-sm: 10px;
+        --radius-md: 12px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+        margin: 0;
+        background:
+            radial-gradient(720px 420px at 18% -10%, rgba(139,92,246,0.16), transparent 60%),
+            radial-gradient(600px 380px at 100% 0%, rgba(45,212,191,0.09), transparent 55%),
+            var(--bg-page);
+        color: var(--text-primary);
+        font-family: var(--font-body);
+        -webkit-font-smoothing: antialiased;
+    }
+
+    .test-banner {
+        background: linear-gradient(90deg, rgba(139,92,246,0.2), rgba(139,92,246,0.05));
+        border-bottom: 1px solid var(--border);
+        color: var(--text-secondary);
+        font-size: 12.5px;
+        padding: 8px calc(clamp(24px, 3vw, 64px) + 1cm);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .test-banner strong { color: var(--text-primary); }
+
+    .page {
+        /* No max-width - fills the actual browser window instead of leaving large empty gutters on
+           wide monitors (사용자 피드백: "양쪽 여백이 너무 많이 남는다"). Side padding scales gently
+           with viewport width via clamp() instead of a fixed px value, so it still looks
+           intentional rather than edge-to-edge on very wide/ultrawide screens. */
+        padding: 28px calc(clamp(24px, 3vw, 64px) + 1cm) 48px;
+    }
+
+    /* ---------- Header ---------- */
+    header.top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 24px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-icon {
+        width: 34px; height: 34px;
+        border-radius: var(--radius-sm);
+        background: rgba(139,92,246,0.14);
+        border: 1px solid rgba(139,92,246,0.35);
+        display: flex; align-items: center; justify-content: center;
+        color: var(--brand);
+    }
+    .brand-name {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 17px;
+        letter-spacing: 0.02em;
+    }
+    .header-divider { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+    .page-title { font-family: var(--font-display); font-weight: 600; font-size: 16px; color: var(--text-primary); }
+    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .icon-btn {
+        width: 36px; height: 36px; border-radius: var(--radius-sm);
+        background: var(--bg-card); border: 1px solid var(--border);
+        color: var(--text-secondary); cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .avatar {
+        width: 40px; height: 40px; border-radius: 50%;
+        background: #ffffff;
+        color: #dc2626; font-weight: 800; font-size: 13px; font-style: italic;
+        display: flex; align-items: center; justify-content: center;
+        font-family: var(--font-display);
+        transform: rotate(-12deg);
+    }
+
+    /* ---------- Summary bar ---------- */
+    .summary-bar {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+        margin-bottom: 22px;
+    }
+    .summary-tile {
+        background: var(--card-gradient);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 16px 18px;
+        /* Deeper shadow + a 1px inset highlight along the top edge (사용자 요청: "판넬을 입체감 있게")
+           reads as light catching the panel's top edge, on top of the existing diagonal card-gradient
+           fill rather than replacing it. */
+        box-shadow: 0 18px 34px -16px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.09);
+    }
+    .summary-tile .label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+    .summary-tile .value { font-family: var(--font-mono); font-weight: 700; font-size: 26px; }
+    .summary-tile.good .value { color: var(--status-good); }
+    .summary-tile.warning .value { color: var(--status-warning); }
+    .summary-tile.critical .value { color: var(--status-critical); }
+
+    /* ---------- Layout: list column + insight column, independently top-aligned ---------- */
+    .layout {
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        gap: 18px;
+        align-items: start;
+    }
+
+    /* ---------- Toolbar ---------- */
+    .toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 16px;
+    }
+    .toolbar-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .search-box {
+        display: flex; align-items: center; gap: 8px;
+        width: 260px; height: 38px; padding: 0 12px;
+        background: var(--card-gradient); border: 1px solid var(--border); border-radius: var(--radius-md);
+        color: var(--text-secondary);
+    }
+    .search-box input {
+        border: none; background: transparent; outline: none; color: var(--text-primary);
+        font-family: var(--font-body); font-size: 13px; width: 100%;
+    }
+    .search-box input::placeholder { color: var(--text-muted); }
+
+    .chip {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 7px 13px; border-radius: var(--radius-pill);
+        font-size: 12.5px; font-weight: 500; cursor: pointer;
+        border: 1px solid var(--border); color: var(--text-secondary); background: transparent;
+        white-space: nowrap;
+    }
+    .chip .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .chip.active { background: var(--brand-gradient); border-color: transparent; color: #170f26; font-weight: 600; }
+    .chip.active .dot { background: #170f26; }
+    .chip[data-status="alive"] .dot { background: var(--status-good); }
+    .chip[data-status="degraded"] .dot { background: var(--status-warning); }
+    .chip[data-status="down"] .dot { background: var(--status-critical); }
+
+    .view-toggle { display: flex; border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+    .view-toggle button {
+        border: none; background: var(--bg-card); color: var(--text-secondary);
+        padding: 8px 14px; font-size: 12.5px; cursor: pointer; font-family: var(--font-body);
+    }
+    .view-toggle button.active { background: var(--brand-gradient); color: #170f26; font-weight: 600; }
+
+    /* ---------- Card grid ---------- */
+    .card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 16px;
+    }
+    .db-card {
+        background: var(--card-gradient);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--status-good);
+        border-radius: var(--radius-card);
+        padding: 18px 20px;
+        cursor: pointer;
+        /* Deeper shadow + a 1px inset top highlight (사용자 요청: "판넬을 입체감 있게") on top of the
+           existing diagonal card-gradient fill, so the panel reads as catching light along its top
+           edge rather than a flat tinted rectangle. */
+        box-shadow: 0 22px 38px -18px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.09);
+        transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+    .db-card:hover {
+        transform: translateY(-2px);
+        /* Longhand on purpose (not the border-color shorthand) so hover never touches
+           border-left-color, which carries the status accent strip instead. */
+        border-top-color: var(--border-strong);
+        border-right-color: var(--border-strong);
+        border-bottom-color: var(--border-strong);
+        box-shadow: 0 26px 46px -16px rgba(0,0,0,0.85), inset 0 1px 0 rgba(255,255,255,0.12);
+    }
+    .db-card.status-degraded { border-left-color: var(--status-warning); }
+    .db-card.status-down { border-left-color: var(--status-critical); }
+
+    .db-card .card-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 12px; }
+    .card-head-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .engine-icon {
+        width: 30px; height: 30px; border-radius: var(--radius-sm); flex: none;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(139,92,246,0.16); color: var(--brand);
+    }
+    .db-card.status-down .engine-icon { background: rgba(135,125,156,0.14); color: var(--text-muted); }
+    .card-name-block { min-width: 0; display: flex; align-items: center; height: 30px; }
+    .db-name { font-family: var(--font-mono); font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .group-badge {
+        font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em;
+        padding: 3px 9px; border-radius: var(--radius-pill); flex: none;
+        background: rgba(139,92,246,0.14); color: var(--text-secondary); border: 1px solid var(--border);
+    }
+
+    .status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .status-dot.pulse { animation: statusPulse 2.2s ease-in-out infinite; }
+    @keyframes statusPulse {
+        0% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+        70% { box-shadow: 0 0 0 6px transparent; opacity: 0.35; }
+        100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+    }
+    .status-label { font-family: var(--font-display); font-weight: 700; font-size: 12.5px; letter-spacing: 0.03em; }
+    .status-note { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+
+    .uptime-row { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+    .uptime-ring { flex: none; }
+    .uptime-label { font-size: 10.5px; color: var(--text-muted); margin-bottom: 4px; }
+    .uptime-value { font-family: var(--font-mono); font-weight: 700; font-size: 21px; color: var(--text-primary); }
+
+    .stat-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 14px; }
+    .stat-cell .stat-label { font-size: 10.5px; color: var(--text-muted); margin-bottom: 3px; }
+    .stat-cell .stat-value { font-family: var(--font-mono); font-weight: 700; font-size: 15px; color: var(--text-primary); }
+    .stat-cell .stat-value.muted { color: var(--text-muted); font-weight: 500; }
+    .stat-cell .stat-value.warn { color: var(--status-warning); }
+    .stat-cell .stat-value.crit { color: var(--status-critical); }
+
+    .mini-bar-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .mini-bar-row .mb-label { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); width: 30px; flex: none; }
+    .mini-bar-track { flex: 1; height: 5px; border-radius: var(--radius-pill); background: rgba(182,173,201,0.14); overflow: hidden; }
+    .mini-bar-fill { height: 100%; border-radius: var(--radius-pill); }
+    .mini-bar-row .mb-pct { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); width: 34px; text-align: right; flex: none; }
+
+    .down-banner {
+        display: flex; align-items: flex-start; gap: 8px;
+        background: rgba(244,80,107,0.1); color: var(--status-critical);
+        border-radius: var(--radius-sm); padding: 9px 10px; font-size: 11.5px; line-height: 1.4; margin-top: 6px;
+    }
+    .down-banner svg { flex: none; margin-top: 1px; }
+
+    /* Shown on a card/row while its fleet_status result hasn't arrived yet (사용자 요청: 판넬을 먼저
+       뿌리고 접속중 문구+회전 원 효과) - the DB list itself (name/group) comes from the fast, public
+       /api/config and renders immediately; only the live status/metrics wait on this. */
+    .loading-row { display: flex; align-items: center; gap: 10px; padding: 22px 0; color: var(--text-muted); font-size: 13px; }
+    .spinner {
+        width: 18px; height: 18px; flex: none;
+        border: 2.5px solid rgba(255,255,255,0.15);
+        border-top-color: var(--brand);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ---------- Table view ---------- */
+    .db-table-wrap {
+        background: var(--card-gradient); border: 1px solid var(--border); border-radius: var(--radius-card); overflow: hidden; display: none;
+        box-shadow: 0 18px 34px -16px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.09);
+    }
+    table.db-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.db-table th {
+        text-align: left; padding: 12px 16px; font-size: 11px; color: var(--text-muted);
+        text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid var(--border);
+        background: rgba(182,173,201,0.05);
+    }
+    table.db-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    table.db-table tbody tr { cursor: pointer; }
+    table.db-table tbody tr:hover { background: var(--bg-hover); }
+    table.db-table tbody tr:last-child td { border-bottom: none; }
+    .table-name { font-family: var(--font-mono); font-weight: 600; }
+    .table-status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; }
+
+    /* ---------- Empty state ---------- */
+    .empty-state {
+        grid-column: 1 / -1;
+        text-align: center; padding: 60px 20px; color: var(--text-muted);
+        border: 1px dashed var(--border); border-radius: var(--radius-card);
+    }
+
+    /* ---------- Top 5 insight panel ---------- */
+    .insight-panel {
+        background: var(--card-gradient); border: 1px solid var(--border); border-radius: var(--radius-card);
+        padding: 18px;
+        box-shadow: 0 18px 34px -16px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.09);
+    }
+    .insight-panel h3 {
+        margin: 0 0 4px; font-family: var(--font-display); font-size: 14px; font-weight: 600;
+    }
+    .insight-panel .insight-sub { font-size: 11px; color: var(--text-muted); margin-bottom: 14px; }
+    .rank-row {
+        display: flex; align-items: center; gap: 10px; padding: 9px 0;
+        border-bottom: 1px solid var(--border); cursor: pointer;
+    }
+    .rank-row:last-child { border-bottom: none; }
+    .rank-num {
+        width: 20px; height: 20px; border-radius: 50%; flex: none;
+        display: flex; align-items: center; justify-content: center;
+        font-family: var(--font-mono); font-size: 10.5px; font-weight: 700;
+        background: rgba(182,173,201,0.14); color: var(--text-secondary);
+    }
+    .rank-info { min-width: 0; flex: 1; }
+    .rank-name { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rank-sub { font-size: 10.5px; color: var(--text-muted); }
+    .rank-cpu { font-family: var(--font-mono); font-weight: 700; font-size: 13px; flex: none; }
+
+    /* ---------- Responsive ---------- */
+    @media (max-width: 1180px) {
+        .layout { grid-template-columns: 1fr; }
+        .summary-bar { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 720px) {
+        .page { padding: 20px; }
+        .card-grid { grid-template-columns: 1fr; }
+        .summary-bar { grid-template-columns: 1fr; }
+    }
+</style>
+</head>
+<body>
+    <div class="test-banner">
+        <span>🧪</span>
+        <span><strong>디자인 검토용 테스트 화면</strong> - 로그인 흐름에는 아직 연결되지 않았지만, 카드/행 클릭 시 실제 대시보드(index.html)의 해당 DB로 이동합니다. DB 목록·상태·CPU/MEM/세션/Lock Wait은 전부 실제 조회값입니다 (Uptime%는 실측 이력이 아니라 마지막 재기동 이후 경과일 기준 근사치 - 상세는 서버 코드 주석 참고).</span>
+    </div>
+    <!-- Shown only when this tab has no dbagent_token yet - GET /api/fleet_status needs one (same
+         canAccessDb gate as everywhere else) or every instance falls back to a "조회 실패" card, which
+         read as "모든 DB가 죽었다" rather than "로그인이 안 돼 있다" (사용자 피드백). -->
+    <div class="test-banner" id="login-warning-banner" style="display:none; background: linear-gradient(90deg, rgba(244,63,94,0.22), rgba(244,63,94,0.05));">
+        <span>⚠️</span>
+        <span>로그인 정보가 없어 DB 상태를 조회할 수 없습니다 - 아래 카드는 전부 "조회 실패"로 보이는 게 정상입니다. <a href="index.html" style="color:#fff; font-weight:600;">index.html에서 먼저 로그인</a>한 뒤 이 탭에서 새로고침해주세요.</span>
+    </div>
+
+    <div class="page">
+        <header class="top">
+            <div class="brand">
+                <div class="brand-icon" id="brand-icon"></div>
+                <div class="brand-name">DB Agent</div>
+                <div class="header-divider"></div>
+                <div class="page-title">Fleet Overview</div>
+            </div>
+            <div class="header-actions">
+                <button class="icon-btn" id="refresh-btn" title="새로고침"></button>
+                <div class="avatar">KIPI</div>
+            </div>
+        </header>
+
+        <div class="summary-bar">
+            <div class="summary-tile"><div class="label">전체 DB</div><div class="value" id="sum-total">--</div></div>
+            <div class="summary-tile good"><div class="label">정상</div><div class="value" id="sum-good">--</div></div>
+            <div class="summary-tile warning"><div class="label">경고</div><div class="value" id="sum-warning">--</div></div>
+            <div class="summary-tile critical"><div class="label">위험</div><div class="value" id="sum-critical">--</div></div>
+        </div>
+
+        <div class="layout">
+            <div class="list-column">
+                <div class="toolbar">
+                    <div class="toolbar-left">
+                        <div class="search-box">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                            <input type="text" id="search-input" placeholder="DB명 검색">
+                        </div>
+                        <div class="chip active" data-status="all">전체 <span id="chip-count-all">0</span></div>
+                        <div class="chip" data-status="down"><span class="dot"></span>위험 <span id="chip-count-down">0</span></div>
+                        <div class="chip" data-status="degraded"><span class="dot"></span>경고 <span id="chip-count-degraded">0</span></div>
+                        <div class="chip" data-status="alive"><span class="dot"></span>정상 <span id="chip-count-alive">0</span></div>
+                    </div>
+                    <div class="view-toggle">
+                        <button id="view-card-btn" class="active">카드</button>
+                        <button id="view-table-btn">테이블</button>
+                    </div>
+                </div>
+
+                <div class="card-grid" id="card-grid"></div>
+
+                <div class="db-table-wrap" id="table-wrap">
+                    <table class="db-table">
+                        <thead>
+                            <tr>
+                                <th>상태</th>
+                                <th>DB명</th>
+                                <th>그룹</th>
+                                <th>Active Session</th>
+                                <th>Lock Wait</th>
+                                <th>CPU</th>
+                                <th>Uptime</th>
+                            </tr>
+                        </thead>
+                        <tbody id="table-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="insight-column">
+                <div class="insight-panel">
+                    <h3>주의 필요 Top 5</h3>
+                    <div class="insight-sub">CPU 기준 · 검색/필터와 무관하게 전체 DB 기준</div>
+                    <div id="top5-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            const ENGINE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>';
+            const WARNING_ICON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
+            const REFRESH_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>';
+
+            document.getElementById('brand-icon').innerHTML = ENGINE_ICON_SVG;
+            document.getElementById('refresh-btn').innerHTML = REFRESH_ICON_SVG;
+
+            const STATUS_META = {
+                alive: { label: 'ALIVE', color: 'var(--status-good)', pulse: true },
+                degraded: { label: 'DEGRADED', color: 'var(--status-warning)', pulse: true },
+                down: { label: 'NOT ALIVE', color: 'var(--status-critical)', pulse: false }
+            };
+            const STATUS_RANK = { down: 0, degraded: 1, alive: 2 };
+
+            function barColor(pct) {
+                if (pct > 80) return 'var(--status-critical)';
+                if (pct >= 60) return 'var(--status-warning)';
+                return 'var(--status-good)';
+            }
+
+            // Uptime ring: a vivid multi-stop gradient stroke (사용자 요청: "색은 화려하게") rather
+            // than a status/metric color, since this is meant to read as a distinct "headline" stat
+            // on the card, not blend in with the status-strip/CPU-MEM bar coloring. Each card needs
+            // its own <linearGradient> id - SVG gradient ids are page-global, so two cards reusing the
+            // same id would silently both render whichever def parses last.
+            const UPTIME_RING_R = 26;
+            const UPTIME_RING_CIRC = 2 * Math.PI * UPTIME_RING_R;
+            function uptimeRingSvg(d) {
+                const gradId = `uptimeGrad-${String(d.id).replace(/[^a-zA-Z0-9_-]/g, '')}`;
+                const pct = d.uptimePct != null ? Math.min(100, Math.max(0, d.uptimePct)) : 0;
+                const offset = UPTIME_RING_CIRC * (1 - pct / 100);
+                return `
+                    <svg class="uptime-ring" width="56" height="56" viewBox="0 0 64 64">
+                        <defs>
+                            <linearGradient id="${gradId}" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#2dd4bf"/>
+                                <stop offset="35%" stop-color="#8b5cf6"/>
+                                <stop offset="70%" stop-color="#f472b6"/>
+                                <stop offset="100%" stop-color="#fb923c"/>
+                            </linearGradient>
+                        </defs>
+                        <circle cx="32" cy="32" r="${UPTIME_RING_R}" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="7"/>
+                        ${d.uptimePct != null ? `<circle cx="32" cy="32" r="${UPTIME_RING_R}" fill="none" stroke="url(#${gradId})" stroke-width="7"
+                            stroke-linecap="round" stroke-dasharray="${UPTIME_RING_CIRC}" stroke-dashoffset="${offset}"
+                            transform="rotate(-90 32 32)"/>` : ''}
+                    </svg>
+                `;
+            }
+
+            let allDbs = [];
+            let activeStatusFilter = 'all';
+            let activeView = 'card';
+
+            // Real data: /api/config gives the DB list (name/group/id), /api/fleet_status gives the
+            // live status/CPU/MEM/session/lock-wait/uptime snapshot (MonitorService.getFleetStatus,
+            // checked concurrently across all instances - see MonitorController.fleetStatus). Fetched
+            // in parallel and joined by id client-side rather than having one endpoint do both, so the
+            // (already public, unauthenticated) DB list still renders even if fleet_status fails.
+            async function loadDbs() {
+                const token = sessionStorage.getItem('dbagent_token') || '';
+                document.getElementById('login-warning-banner').style.display = token ? 'none' : 'flex';
+
+                // Render panels immediately from the fast, public DB list (/api/config) - each one
+                // shows a "접속중..." spinner in place of status/metrics - instead of leaving the
+                // whole page blank until /api/fleet_status finishes, which can take several seconds
+                // (bounded by the slowest down DB's connect timeout, not the fastest) (사용자 요청).
+                const configData = await (await fetch('/api/config')).json();
+                allDbs = [];
+                (configData.groups || []).forEach(group => {
+                    (group.instances || []).forEach(inst => {
+                        allDbs.push(Object.assign({ group_name: group.group_name }, inst, { loading: true }));
+                    });
+                });
+                render();
+
+                // Distinguish "this whole tab isn't logged in yet" (all instances missing - see the
+                // banner above) from "this specific DB is restricted for the logged-in account" -
+                // otherwise a not-logged-in visitor sees N copies of a message that sounds like N
+                // individually-broken databases (사용자 피드백).
+                const fallbackMessage = token
+                    ? '상태 조회 실패 - 이 계정에 접근 권한이 없는 DB일 수 있습니다.'
+                    : '로그인이 필요합니다.';
+                let statusById = {};
+                try {
+                    const statusRes = await fetch(`/api/fleet_status?token=${encodeURIComponent(token)}`);
+                    const statusList = statusRes.ok ? await statusRes.json() : [];
+                    statusList.forEach(s => { statusById[s.id] = s; });
+                } catch (e) {
+                    // leave statusById empty - every instance falls back to fallbackMessage below
+                }
+                allDbs = allDbs.map(d => {
+                    const status = statusById[d.id] || { status: 'down', errorMessage: fallbackMessage };
+                    return Object.assign({}, d, status, { loading: false });
+                });
+                render();
+            }
+
+            function sortByRisk(list) {
+                return list.slice().sort((a, b) => {
+                    const r = STATUS_RANK[a.status] - STATUS_RANK[b.status];
+                    if (r !== 0) return r;
+                    return (b.cpuPct || 0) - (a.cpuPct || 0);
+                });
+            }
+
+            function renderSummary() {
+                const counts = { alive: 0, degraded: 0, down: 0 };
+                allDbs.forEach(d => { if (d.status in counts) counts[d.status]++; }); // status undefined while loading
+                document.getElementById('sum-total').textContent = allDbs.length;
+                document.getElementById('sum-good').textContent = counts.alive;
+                document.getElementById('sum-warning').textContent = counts.degraded;
+                document.getElementById('sum-critical').textContent = counts.down;
+                document.getElementById('chip-count-all').textContent = allDbs.length;
+                document.getElementById('chip-count-alive').textContent = counts.alive;
+                document.getElementById('chip-count-degraded').textContent = counts.degraded;
+                document.getElementById('chip-count-down').textContent = counts.down;
+            }
+
+            function renderTop5() {
+                const top5 = sortByRisk(allDbs).filter(d => d.cpuPct != null).sort((a, b) => (b.cpuPct || 0) - (a.cpuPct || 0)).slice(0, 5);
+                const el = document.getElementById('top5-list');
+                if (!top5.length) {
+                    el.innerHTML = '<div style="color:var(--text-muted); font-size:12px; padding:10px 0;">표시할 DB가 없습니다.</div>';
+                    return;
+                }
+                el.innerHTML = top5.map((d, i) => `
+                    <div class="rank-row" data-db-id="${d.id}">
+                        <div class="rank-num">${i + 1}</div>
+                        <div class="rank-info">
+                            <div class="rank-name">${d.name}</div>
+                            <div class="rank-sub">${d.group_name}</div>
+                        </div>
+                        <div class="rank-cpu" style="color:${barColor(d.cpuPct)}">${d.cpuPct}%</div>
+                    </div>
+                `).join('');
+                el.querySelectorAll('.rank-row').forEach(row => row.addEventListener('click', onDbClick));
+            }
+
+            function matchesFilters(d, query) {
+                if (activeStatusFilter !== 'all' && d.status !== activeStatusFilter) return false;
+                if (query && !d.name.toLowerCase().includes(query)) return false;
+                return true;
+            }
+
+            function cardHtml(d) {
+                if (d.loading) {
+                    return `
+                        <div class="db-card" data-db-id="${d.id}" style="border-left-color: var(--border);">
+                            <div class="card-head">
+                                <div class="card-head-left">
+                                    <div class="engine-icon">${ENGINE_ICON_SVG}</div>
+                                    <div class="card-name-block">
+                                        <div class="db-name">${d.name}</div>
+                                    </div>
+                                </div>
+                                <div class="group-badge">${d.group_name}</div>
+                            </div>
+                            <div class="loading-row"><div class="spinner"></div><span>접속중...</span></div>
+                        </div>
+                    `;
+                }
+                const meta = STATUS_META[d.status];
+                // CPU isn't repeated here - it's already shown as the mini-bar below (사용자 피드백:
+                // "아래 그래프에 CPU/MEM 있으니 CPU 문구 빼도 될거 같다"), so this row only carries
+                // the two stats that have no other representation on the card.
+                const statCells = d.status === 'down'
+                    ? `<div class="stat-cell"><div class="stat-label">Active Session</div><div class="stat-value muted">—</div></div>
+                       <div class="stat-cell"><div class="stat-label">Lock Wait</div><div class="stat-value muted">—</div></div>`
+                    : `<div class="stat-cell"><div class="stat-label">Active Session</div><div class="stat-value">${d.activeSession}</div></div>
+                       <div class="stat-cell"><div class="stat-label">Lock Wait</div><div class="stat-value ${d.lockWait > 0 ? 'warn' : ''}">${d.lockWait}</div></div>`;
+                // Card shows a short generic label, not the full ORA-/tnsnames detail (사용자 피드백:
+                // 카드에 너무 상세한 에러 문구가 떠 있음) - the full backend message is still there as
+                // a native tooltip (title attr) for anyone who hovers to check.
+                const bars = d.status === 'down'
+                    ? `<div class="down-banner" title="${(d.errorMessage || '').replace(/"/g, '&quot;')}">${WARNING_ICON_SVG}<span>연결할 수 없습니다</span></div>`
+                    : `<div class="mini-bar-row">
+                           <span class="mb-label">CPU</span>
+                           <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${d.cpuPct}%; background:${barColor(d.cpuPct)};"></div></div>
+                           <span class="mb-pct">${d.cpuPct}%</span>
+                       </div>
+                       <div class="mini-bar-row">
+                           <span class="mb-label">MEM</span>
+                           <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${d.memPct}%; background:${barColor(d.memPct)};"></div></div>
+                           <span class="mb-pct">${d.memPct}%</span>
+                       </div>`;
+                return `
+                    <div class="db-card status-${d.status}" data-db-id="${d.id}">
+                        <div class="card-head">
+                            <div class="card-head-left">
+                                <div class="engine-icon">${ENGINE_ICON_SVG}</div>
+                                <div class="card-name-block">
+                                    <div class="db-name">${d.name}</div>
+                                </div>
+                            </div>
+                            <div class="group-badge">${d.group_name}</div>
+                        </div>
+                        <div class="status-row">
+                            <span class="status-dot ${meta.pulse ? 'pulse' : ''}" style="background:${meta.color}; color:${meta.color};"></span>
+                            <span class="status-label" style="color:${meta.color};">${meta.label}</span>
+                            ${d.statusNote ? `<span class="status-note">${d.statusNote}</span>` : ''}
+                        </div>
+                        <div class="uptime-row">
+                            ${uptimeRingSvg(d)}
+                            <div class="uptime-text">
+                                <div class="uptime-label">Uptime(%)</div>
+                                <div class="uptime-value">${d.uptimePct != null ? d.uptimePct.toFixed(2) : '—'}${d.uptimePct != null ? '%' : ''}</div>
+                            </div>
+                        </div>
+                        <div class="stat-row">${statCells}</div>
+                        ${bars}
+                    </div>
+                `;
+            }
+
+            function tableRowHtml(d) {
+                if (d.loading) {
+                    return `
+                        <tr data-db-id="${d.id}">
+                            <td colspan="2"><div class="loading-row" style="padding:0;"><div class="spinner"></div><span>접속중...</span></div></td>
+                            <td>${d.group_name}</td>
+                            <td>—</td><td>—</td><td>—</td><td>—</td>
+                        </tr>
+                    `;
+                }
+                const meta = STATUS_META[d.status];
+                const cpuText = d.cpuPct != null ? `${d.cpuPct}%` : '—';
+                const cpuColor = d.cpuPct == null ? 'var(--text-muted)' : barColor(d.cpuPct);
+                const uptimeText = d.uptimePct != null ? `${d.uptimePct.toFixed(2)}%` : '—';
+                return `
+                    <tr data-db-id="${d.id}">
+                        <td><span class="table-status" style="color:${meta.color}"><span class="status-dot ${meta.pulse ? 'pulse' : ''}" style="background:${meta.color}; color:${meta.color};"></span>${meta.label}</span></td>
+                        <td><div class="table-name">${d.name}</div></td>
+                        <td>${d.group_name}</td>
+                        <td>${d.activeSession != null ? d.activeSession : '—'}</td>
+                        <td>${d.lockWait != null ? d.lockWait : '—'}</td>
+                        <td style="color:${cpuColor}; font-family:var(--font-mono); font-weight:600;">${cpuText}</td>
+                        <td style="font-family:var(--font-mono);">${uptimeText}</td>
+                    </tr>
+                `;
+            }
+
+            function onDbClick(e) {
+                const id = e.currentTarget.getAttribute('data-db-id');
+                // index.html reads ?db_id=... on load and auto-selects that instance instead of its
+                // usual "first non-restricted instance" default - see app.js's jumpToDbId handling
+                // in the "Load config and build tree" block.
+                window.location.href = `index.html?db_id=${encodeURIComponent(id)}`;
+            }
+
+            function render() {
+                const query = document.getElementById('search-input').value.trim().toLowerCase();
+                // Card/table order follows databases.json's own group/instance order (사용자 요청)
+                // rather than risk-sorting - allDbs is already in that order since loadDbs() builds it
+                // by walking /api/config's groups/instances in sequence. Top 5 (renderTop5) still
+                // risk-sorts on purpose - that panel's whole point is surfacing the worst DBs
+                // regardless of how this list is ordered or filtered.
+                const filtered = allDbs.filter(d => matchesFilters(d, query));
+
+                renderSummary();
+                renderTop5();
+
+                const grid = document.getElementById('card-grid');
+                const tbody = document.getElementById('table-body');
+                if (!filtered.length) {
+                    grid.innerHTML = '<div class="empty-state">조건에 맞는 DB가 없습니다.</div>';
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:40px; color:var(--text-muted);">조건에 맞는 DB가 없습니다.</td></tr>';
+                } else {
+                    grid.innerHTML = filtered.map(cardHtml).join('');
+                    tbody.innerHTML = filtered.map(tableRowHtml).join('');
+                }
+                grid.querySelectorAll('.db-card').forEach(el => el.addEventListener('click', onDbClick));
+                tbody.querySelectorAll('tr[data-db-id]').forEach(el => el.addEventListener('click', onDbClick));
+            }
+
+            document.getElementById('search-input').addEventListener('input', render);
+            document.querySelectorAll('.chip[data-status]').forEach(chip => {
+                chip.addEventListener('click', () => {
+                    document.querySelectorAll('.chip[data-status]').forEach(c => c.classList.remove('active'));
+                    chip.classList.add('active');
+                    activeStatusFilter = chip.getAttribute('data-status');
+                    render();
+                });
+            });
+            document.getElementById('view-card-btn').addEventListener('click', () => setView('card'));
+            document.getElementById('view-table-btn').addEventListener('click', () => setView('table'));
+            function setView(view) {
+                activeView = view;
+                document.getElementById('view-card-btn').classList.toggle('active', view === 'card');
+                document.getElementById('view-table-btn').classList.toggle('active', view === 'table');
+                document.getElementById('card-grid').style.display = view === 'card' ? 'grid' : 'none';
+                document.getElementById('table-wrap').style.display = view === 'table' ? 'block' : 'none';
+            }
+            document.getElementById('refresh-btn').addEventListener('click', loadDbs);
+
+            setView('card');
+            loadDbs();
+        })();
+    </script>
+</body>
+</html>

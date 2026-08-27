@@ -11,17 +11,20 @@ public final class UpdateUserRequest {
     private final String role;
     private final List<String> hiddenMenus;
     private final List<String> hiddenDbs;
+    private final Boolean fleetOverview;
 
     @JsonCreator
     public UpdateUserRequest(
             @JsonProperty("token") String token,
             @JsonProperty("role") String role,
             @JsonProperty("hidden_menus") List<String> hiddenMenus,
-            @JsonProperty("hidden_dbs") List<String> hiddenDbs) {
+            @JsonProperty("hidden_dbs") List<String> hiddenDbs,
+            @JsonProperty("fleet_overview") Boolean fleetOverview) {
         this.token = token;
         this.role = role;
         this.hiddenMenus = hiddenMenus;
         this.hiddenDbs = hiddenDbs;
+        this.fleetOverview = fleetOverview;
     }
 
     public String token() {
@@ -38,5 +41,9 @@ public final class UpdateUserRequest {
 
     public List<String> hiddenDbs() {
         return hiddenDbs;
+    }
+
+    public Boolean fleetOverview() {
+        return fleetOverview;
     }
 }

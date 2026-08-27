@@ -42,6 +42,8 @@ async function checkAuth() {
                 sessionStorage.setItem('dbagent_role', data.role || 'user');
                 sessionStorage.setItem('dbagent_account_hidden_menus', JSON.stringify(data.hidden_menus || []));
                 sessionStorage.setItem('dbagent_account_hidden_dbs', JSON.stringify(data.hidden_dbs || []));
+                sessionStorage.setItem('dbagent_fleet_overview', data.fleet_overview ? 'true' : 'false');
+                sessionStorage.setItem('dbagent_fleet_overview_auto_redirect', data.fleet_overview_auto_redirect ? 'true' : 'false');
                 return true;
             }
         }
@@ -54,6 +56,20 @@ async function checkAuth() {
 
 function isAdmin() {
     return sessionStorage.getItem('dbagent_role') === 'admin';
+}
+
+// Fleet Overview access: admin always has it; other accounts only if an admin granted it (계정 관리 >
+// "Fleet Overview 접근 허용", AuthService.canAccessFleetOverview - the backend is the actual gate via
+// /api/fleet_status's 403, this is just for hiding the entry points a account can't use anyway.
+function canFleetOverview() {
+    return isAdmin() || sessionStorage.getItem('dbagent_fleet_overview') === 'true';
+}
+
+// Personal preference, independent of the access permission above (사용자 요청: "admin 권한도 진입
+// 옵션 선택할 수 있나") - admin always has fleet_overview access but can still opt out of the
+// post-login auto-jump for themselves; a granted non-admin account can do the same.
+function wantsFleetOverviewAutoRedirect() {
+    return sessionStorage.getItem('dbagent_fleet_overview_auto_redirect') === 'true';
 }
 
 function getToken() {
@@ -85,8 +101,22 @@ function getToken() {
                     sessionStorage.setItem('dbagent_role', data.role || 'user');
                     sessionStorage.setItem('dbagent_account_hidden_menus', JSON.stringify(data.hidden_menus || []));
                     sessionStorage.setItem('dbagent_account_hidden_dbs', JSON.stringify(data.hidden_dbs || []));
+                    sessionStorage.setItem('dbagent_fleet_overview', data.fleet_overview ? 'true' : 'false');
+                    sessionStorage.setItem('dbagent_fleet_overview_auto_redirect', data.fleet_overview_auto_redirect ? 'true' : 'false');
                     document.querySelector('.user-name').textContent = data.username;
-                    location.reload();
+                    // Fleet Overview (fleet-overview-test-blue.html) is the post-login landing screen
+                    // (사용자 결정), but only for accounts with access (admin, or granted via 계정 관리 >
+                    // "Fleet Overview 접근 허용") AND who haven't personally turned the auto-jump off
+                    // (사용자 요청: "admin 권한도 진입 옵션 선택할 수 있나" - a personal preference,
+                    // toggled next to the FO button, separate from the access grant itself). Accounts
+                    // without either fall back to the normal dashboard reload, same as before this
+                    // feature existed. Only fires on a fresh login submit; reloads elsewhere (logout,
+                    // theme toggle, password change) intentionally still land back on this page.
+                    if (canFleetOverview() && wantsFleetOverviewAutoRedirect()) {
+                        window.location.href = 'fleet-overview-test-blue.html';
+                    } else {
+                        location.reload();
+                    }
                 } else {
                     errDiv.textContent = data.message || '로그인 실패';
                     errDiv.style.display = 'block';
@@ -97,6 +127,10 @@ function getToken() {
             }
         });
         
+        document.getElementById('fleet-overview-btn')?.addEventListener('click', () => {
+            window.location.href = 'fleet-overview-test-blue.html';
+        });
+
         document.getElementById('logout-btn')?.addEventListener('click', () => {
             sessionStorage.removeItem('dbagent_token');
             sessionStorage.removeItem('dbagent_role');
@@ -250,6 +284,28 @@ function getToken() {
         if (!isAdmin()) {
             document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
         }
+        const foAutoToggleWrap = document.getElementById('fo-auto-toggle-wrap');
+        const foAutoToggleInput = document.getElementById('fo-auto-toggle-input');
+        if (!canFleetOverview()) {
+            const foBtn = document.getElementById('fleet-overview-btn');
+            if (foBtn) foBtn.style.display = 'none';
+            if (foAutoToggleWrap) foAutoToggleWrap.style.display = 'none';
+        } else if (foAutoToggleInput) {
+            foAutoToggleInput.checked = wantsFleetOverviewAutoRedirect();
+            foAutoToggleInput.addEventListener('change', async () => {
+                const autoRedirect = foAutoToggleInput.checked;
+                sessionStorage.setItem('dbagent_fleet_overview_auto_redirect', autoRedirect ? 'true' : 'false');
+                try {
+                    await fetch(`${API_BASE_AUTH}/me/fleet_overview_auto_redirect`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token: getToken(), auto_redirect: autoRedirect })
+                    });
+                } catch (e) {
+                    console.error('Failed to save Fleet Overview auto-redirect preference', e);
+                }
+            });
+        }
         applyMenuVisibility();
 
         window.currentDbId = "";
@@ -262,6 +318,10 @@ function getToken() {
                 if(!container) return;
 
                 let isFirstInstance = true;
+                // ?db_id=... jumps straight to that instance instead of the usual "first
+                // non-restricted instance" default - used by the Fleet Overview page's card-click
+                // navigation (fleet-overview-test-blue.html opens index.html?db_id=<id>).
+                const jumpToDbId = new URLSearchParams(window.location.search).get('db_id');
                 // Admins always see every DB; other accounts don't see ones an admin restricted
                 // for them when the account was created (or later, via 계정 관리 > 수정).
                 const restrictedDbs = isAdmin() ? new Set() : new Set(getAccountHiddenDbs());
@@ -346,8 +406,15 @@ function getToken() {
                         
                         instancesDiv.appendChild(instLink);
                         
-                        // Auto-select the first non-restricted instance across all groups
-                        if (isFirstInstance && !isRestricted) {
+                        // Auto-select: the requested db_id if one was given (jumpToDbId), otherwise
+                        // the first non-restricted instance across all groups. If db_id was given but
+                        // never matches (unknown id, or restricted for this account), nothing here
+                        // auto-selects - no silent fallback to "first", so a stale/bad link doesn't
+                        // quietly land on the wrong DB.
+                        const shouldAutoSelect = jumpToDbId
+                            ? (inst.id === jumpToDbId && !isRestricted)
+                            : (isFirstInstance && !isRestricted);
+                        if (shouldAutoSelect) {
                             isFirstInstance = false;
                             setTimeout(() => {
                                 groupHeader.click();
