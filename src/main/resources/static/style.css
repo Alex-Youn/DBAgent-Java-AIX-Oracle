@@ -15,6 +15,47 @@
     
     --glass-bg: rgba(15, 23, 42, 0.6);
     --glass-border: rgba(255, 255, 255, 0.05);
+
+    /* Aliases: a large chunk of the app (SQL Runner, AI DBA, SQL Tuning panels, tables) was written
+       against these names, which were never actually defined here - they silently fell back to
+       transparent/invisible (no border, no background) instead of erroring. That was easy to miss
+       against the dark background but became glaring "invisible until focus" boxes once the light
+       theme exposed it. Defined once here (not repeated in the light block below) because a var()
+       reference re-resolves against the live custom property on every use, so these automatically
+       track whichever theme is active. */
+    --border-color: var(--border);
+    --text-secondary: var(--text-muted);
+    --text-primary: var(--text-main);
+    --primary-color: var(--primary);
+    --text-info: var(--info);
+    --bg-hover: rgba(59, 130, 246, 0.08);
+
+    /* Dedicated progress-bar-track color, separate from --border: --border was darkened for
+       visible panel/input outlines, which made it collide in tone with the gray "Other" wait-time
+       segment once reused as the track color - the empty track and the gray segment became
+       indistinguishable. Kept deliberately lighter than --border. */
+    --track-bg: rgba(255, 255, 255, 0.12);
+}
+
+:root[data-theme="light"] {
+    --bg-main: #f1f5f9;
+    --bg-panel: #ffffff;
+    --bg-card: rgba(255, 255, 255, 0.85);
+    --primary: #3b82f6;
+    --primary-hover: #2563eb;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+    --border: rgba(15, 23, 42, 0.28);
+
+    --success: #059669;
+    --warning: #d97706;
+    --danger: #dc2626;
+    --info: #2563eb;
+
+    --glass-bg: rgba(255, 255, 255, 0.6);
+    --glass-border: rgba(0, 0, 0, 0.06);
+
+    --track-bg: rgba(15, 23, 42, 0.12);
 }
 
 * {
@@ -33,7 +74,11 @@ body {
 
 .app-container {
     display: flex;
-    height: 100vh;
+    /* zoom: 90% is applied inline on this element (index.html) to fit more content on screen; zoom
+       shrinks the rendered box by that factor, so a plain 100vh here would only cover 90% of the
+       actual viewport height, leaving a blank strip at the bottom. Scale the height up to compensate
+       so the zoomed-out box still fills the full viewport. */
+    height: calc(100vh / 0.9);
 }
 
 /* Sidebar */
@@ -134,7 +179,7 @@ body {
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    background: radial-gradient(circle at top right, rgba(30, 41, 59, 0.8), var(--bg-main));
+    background: radial-gradient(circle at top right, var(--bg-panel), var(--bg-main));
 }
 
 .top-header {
@@ -244,7 +289,7 @@ body {
 }
 
 .content-area {
-    padding: 32px;
+    padding: 32px 32px calc(32px + 1cm) 32px;
 }
 
 /* Sections */
@@ -798,6 +843,225 @@ body {
     font-size: 0.9rem;
     margin-top: 12px;
     display: none;
+}
+
+/* Login showcase: layout modeled on a "Musify"-style reference mockup the user supplied (top brand
+   bar, form left / dashboard-preview peek right), but recolored to the app's own dark dashboard
+   palette (--bg-main #0f172a / --bg-panel #1e293b / --primary #3b82f6 etc, same tokens .main-content
+   uses) rather than the reference's teal. Colors are hardcoded to those tokens' dark-theme values,
+   not var()-linked, so the login screen keeps this look even if the in-app light/dark toggle (set
+   from a prior session, via localStorage) is currently light - login happens before that preference
+   matters. Scoped under .login-showcase so these overrides don't leak into
+   .login-card/.login-form-group/.login-btn, which are shared by the password-change,
+   account-management and menu-visibility modals elsewhere in this file. */
+#login-overlay {
+    overflow-y: auto;
+    background: radial-gradient(circle at top right, #1e293b, #0f172a);
+}
+
+.login-showcase {
+    --login-accent: #3b82f6;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 960px;
+    min-height: 560px;
+    margin: 20px;
+    background: rgba(30, 41, 59, 0.6);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.6);
+}
+
+.login-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 20px;
+    color: #fff;
+    font-weight: 700;
+    font-size: 1.1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.login-topbar i {
+    color: var(--login-accent);
+    width: 22px;
+    height: 22px;
+}
+
+.login-body {
+    display: flex;
+    flex: 1;
+}
+
+.login-form-panel {
+    flex: 1 1 380px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 48px 44px;
+    min-width: 320px;
+}
+
+.login-welcome h2 {
+    color: #fff;
+    font-size: 1.9rem;
+    margin-bottom: 8px;
+}
+
+.login-accent-text {
+    color: var(--login-accent);
+}
+
+.login-welcome p {
+    color: #94a3b8;
+    font-size: 0.9rem;
+    margin-bottom: 28px;
+}
+
+.login-showcase .login-form-group label {
+    color: #94a3b8;
+}
+
+.login-showcase .login-form-group input {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: #fff;
+}
+
+.login-showcase .login-form-group input:focus {
+    border-color: var(--login-accent);
+    box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.3);
+}
+
+.login-org-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.login-org-badge img {
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    background: #fff;
+    padding: 2px;
+    object-fit: contain;
+}
+
+.login-org-badge span {
+    color: #94a3b8;
+    font-size: 0.85rem;
+}
+
+/* Right side: not a real feature, just a decorative "peek" of the actual dashboard's shape (stat
+   tiles + trend chart) intentionally bled past the panel edge and clipped by .login-showcase's
+   overflow:hidden, echoing the cropped dashboard screenshot in the reference image. */
+.login-art-panel {
+    flex: 1 1 380px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 0 0 40px;
+    background:
+        radial-gradient(circle at 30% 20%, rgba(59, 130, 246, 0.3), transparent 60%),
+        radial-gradient(circle at 20% 100%, rgba(16, 185, 129, 0.15), transparent 60%),
+        #0f172a;
+}
+
+.login-preview-card {
+    width: 115%;
+    transform: translate(28px, 28px);
+    background: #111a22;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.55);
+    padding: 18px 20px 20px;
+}
+
+.login-preview-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 12px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.85rem;
+}
+
+.login-preview-brand, .login-preview-user {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #f1f5f9;
+}
+
+.login-preview-brand i, .login-preview-user i {
+    width: 15px;
+    height: 15px;
+    color: var(--login-accent);
+}
+
+.login-preview-title {
+    color: #94a3b8;
+    font-size: 1.1rem;
+    margin-bottom: 14px;
+}
+
+.login-preview-title b {
+    color: #fff;
+}
+
+.login-preview-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.login-preview-stat {
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.login-preview-stat:nth-child(1) { background: rgba(59, 130, 246, 0.18); }
+.login-preview-stat:nth-child(2) { background: rgba(16, 185, 129, 0.18); }
+.login-preview-stat:nth-child(3) { background: rgba(245, 158, 11, 0.18); }
+.login-preview-stat:nth-child(4) { background: rgba(239, 68, 68, 0.18); }
+
+.login-preview-stat span {
+    display: block;
+    color: #94a3b8;
+    font-size: 0.72rem;
+    margin-bottom: 4px;
+}
+
+.login-preview-stat b {
+    color: #fff;
+    font-size: 1.15rem;
+}
+
+.login-preview-chart {
+    height: 90px;
+}
+
+.login-preview-chart svg {
+    width: 100%;
+    height: 100%;
+}
+
+@media (min-width: 760px) {
+    .login-art-panel {
+        display: flex;
+    }
 }
 
 /* Modal extra */

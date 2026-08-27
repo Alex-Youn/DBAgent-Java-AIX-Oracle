@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>세션 상세정보</title>
+    <link rel="stylesheet" href="style.css?v=13">
+    <script>
+        // Match the main app's saved theme choice so this popup doesn't clash when kept open
+        // side-by-side with the dashboard on a second monitor.
+        (function () {
+            const saved = localStorage.getItem('dbagent_theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
+    <style>
+        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); }
+    </style>
+</head>
+<body>
+    <div id="content">불러오는 중...</div>
+    <script>
+        (function () {
+            function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
+            function qs(name) { return new URLSearchParams(window.location.search).get(name) || ''; }
+
+            const dbId = qs('db_id');
+            const sid = qs('sid');
+            const sqlId = qs('sql_id');
+            const contentEl = document.getElementById('content');
+
+            if (!getToken()) {
+                contentEl.innerHTML = '<h3 style="color: var(--danger);">인증 정보가 없습니다. 메인 화면에서 다시 열어주세요.</h3>';
+                return;
+            }
+
+            fetch(`/api/session_query?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(sid)}&sql_id=${encodeURIComponent(sqlId)}&token=${encodeURIComponent(getToken())}`)
+                .then(res => res.json())
+                .then(result => {
+                    if (result.error) {
+                        contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${result.error}</p>`;
+                        return;
+                    }
+                    document.title = `세션 상세정보 (SID: ${result.sid})`;
+
+                    let bindsHtml = '';
+                    if (result.binds && result.binds.length > 0) {
+                        bindsHtml = `
+                            <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+                                <thead>
+                                    <tr style="background-color:var(--bg-hover); border-bottom:1px solid var(--border);">
+                                        <th style="padding:8px; text-align:left;">Name</th>
+                                        <th style="padding:8px; text-align:left;">Position</th>
+                                        <th style="padding:8px; text-align:left;">Type</th>
+                                        <th style="padding:8px; text-align:left;">Value</th>
+                                        <th style="padding:8px; text-align:left;">Captured At</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${result.binds.map(b => `
+                                        <tr style="border-bottom:1px solid var(--border);">
+                                            <td style="padding:8px;">${b.name || '-'}</td>
+                                            <td style="padding:8px;">${b.position || '-'}</td>
+                                            <td style="padding:8px;">${b.datatype || '-'}</td>
+                                            <td style="padding:8px; font-weight:bold; color:var(--primary);">${b.value || 'NULL'}</td>
+                                            <td style="padding:8px;">${b.last_captured || '-'}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        `;
+                    } else {
+                        bindsHtml = `<div style="padding:20px; text-align:center; color:var(--text-secondary);">바인드 변수 정보가 없습니다.</div>`;
+                    }
+
+                    contentEl.innerHTML = `
+                        <div style="color: var(--text-main); text-align: left;">
+                            <h3 style="margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 10px;">세션 상세정보 (SID: ${result.sid})</h3>
+                            <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
+                                <span><strong style="color: var(--info);">SQL_ID:</strong> ${result.sql_id || '없음'}</span>
+                                <span><strong style="color: var(--info);">HASH_VALUE:</strong> ${result.hash_value != null ? result.hash_value : '없음'}</span>
+                                <button type="button" id="jump-to-tuning-btn" style="margin-left: auto; padding: 6px 14px; border-radius: 6px; border: none; background: var(--primary); color: #fff; cursor: pointer; font-size: 0.85rem;">Tuning</button>
+                            </div>
+
+                            <div class="tab-container" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
+                                <div class="tab-headers" style="display: flex; background-color: var(--bg-card); border-bottom: 1px solid var(--border);">
+                                    <div class="tab-btn active" data-tab="sql" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold; background-color: var(--bg-hover); color: var(--primary);">SQL 텍스트</div>
+                                    <div class="tab-btn" data-tab="plan" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold;">실행 계획 (Plan)</div>
+                                    <div class="tab-btn" data-tab="bind" style="padding: 10px 20px; cursor: pointer; font-weight: bold;">바인드 변수 (Bind)</div>
+                                </div>
+                                <div class="tab-content" style="background-color: var(--bg-main); padding: 15px;">
+                                    <div id="tab-sql" class="sess-tab" style="display: block;">
+                                        <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; font-family: monospace; font-size: 14px; margin: 0;">${result.sql_fulltext || 'SQL 텍스트가 없습니다.'}</pre>
+                                    </div>
+                                    <div id="tab-plan" class="sess-tab" style="display: none;">
+                                        <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre; font-family: monospace; font-size: 13px; margin: 0; line-height: 1.2;">${result.plan_text || '실행 계획 정보가 없습니다.'}</pre>
+                                    </div>
+                                    <div id="tab-bind" class="sess-tab" style="display: none;">
+                                        ${bindsHtml}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+
+                    document.querySelectorAll('.tab-btn').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            document.querySelectorAll('.sess-tab').forEach(el => el.style.display = 'none');
+                            document.querySelectorAll('.tab-btn').forEach(el => {
+                                el.style.backgroundColor = 'transparent';
+                                el.style.color = 'inherit';
+                            });
+                            document.getElementById('tab-' + btn.dataset.tab).style.display = 'block';
+                            btn.style.backgroundColor = 'var(--bg-hover)';
+                            btn.style.color = 'var(--primary)';
+                        });
+                    });
+
+                    const jumpBtn = document.getElementById('jump-to-tuning-btn');
+                    if (jumpBtn) {
+                        jumpBtn.addEventListener('click', () => {
+                            if (!window.opener || window.opener.closed) {
+                                alert('메인 화면이 닫혀 있어 이동할 수 없습니다.');
+                                return;
+                            }
+                            if (typeof window.opener.openSqlTuningFromPopup === 'function') {
+                                window.opener.openSqlTuningFromPopup(result.sql_fulltext, result.hash_value, result.binds);
+                            }
+                            window.opener.focus();
+                            window.close();
+                        });
+                    }
+                })
+                .catch(err => {
+                    contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${err.message}</p>`;
+                });
+        })();
+    </script>
+</body>
+</html>

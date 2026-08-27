@@ -85,6 +85,26 @@ public class OracleConnectionPoolManager {
         }
     }
 
+    // Pool keys embed host/user/dsn (see getConnection), so editing or deleting a databases.json
+    // instance never matches an already-cached pool's key - without this, the old pool (and its live
+    // DB connections) would just leak forever instead of being replaced. Called by DbConfigAdminController
+    // after a successful update/delete.
+    public void evictPoolsForDbId(String dbId) {
+        final String prefix = dbId + "_";
+        pools.keySet().removeIf(key -> {
+            if (!key.startsWith(prefix)) {
+                return false;
+            }
+            HikariDataSource ds = pools.get(key);
+            if (ds != null) {
+                ds.close();
+            }
+            return true;
+        });
+        failedPools.keySet().removeIf(key -> key.startsWith(prefix));
+        poolLocks.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
     private static final Pattern WAITING_PATTERN = Pattern.compile("waiting=(\\d+)");
 
     // HikariCP wraps BOTH cases in the exact same "Connection is not available" message: (a) every

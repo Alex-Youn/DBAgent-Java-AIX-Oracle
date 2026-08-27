@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB 운영 Agent</title>
-    <link rel="stylesheet" href="style.css?v=5">
+    <link rel="stylesheet" href="style.css?v=16">
     <script src="lib/lucide.js"></script>
     <script src="lib/mermaid.min.js"></script>
     <script src="lib/chart.js"></script>
@@ -14,20 +14,63 @@
 
     <!-- Login Overlay -->
     <div id="login-overlay">
-        <div class="login-card">
-            <h2><i data-lucide="database"></i> DB Agent</h2>
-            <form id="login-form">
-                <div class="login-form-group">
-                    <label>Username</label>
-                    <input type="text" id="login-username" value="admin" required autocomplete="username">
+        <div class="login-showcase">
+            <div class="login-topbar">
+                <i data-lucide="database"></i>
+                <span>DB Agent</span>
+            </div>
+            <div class="login-body">
+                <div class="login-form-panel">
+                    <div class="login-welcome">
+                        <h2><span class="login-accent-text">관리자</span> 로그인</h2>
+                        <p>접속하시려면 계정 정보를 입력하세요.</p>
+                    </div>
+                    <form id="login-form">
+                        <div class="login-form-group">
+                            <label>Username</label>
+                            <input type="text" id="login-username" value="admin" required autocomplete="username">
+                        </div>
+                        <div class="login-form-group">
+                            <label>Password</label>
+                            <input type="password" id="login-password" required autocomplete="current-password">
+                            <div id="login-password-capslock" style="display:none; color:#fbbf24; font-size:0.8rem; margin-top:4px;">⚠ Caps Lock이 켜져 있습니다</div>
+                        </div>
+                        <button type="submit" class="login-btn">Sign in</button>
+                        <div id="login-error" class="login-error"></div>
+                    </form>
+                    <div class="login-org-badge">
+                        <img src="KIPI_emblem.png" alt="한국특허정보원 로고">
+                        <span>한국특허정보원</span>
+                    </div>
                 </div>
-                <div class="login-form-group">
-                    <label>Password</label>
-                    <input type="password" id="login-password" required autocomplete="current-password">
+                <div class="login-art-panel">
+                    <div class="login-preview-card">
+                        <div class="login-preview-topbar">
+                            <div class="login-preview-brand"><i data-lucide="database"></i>DB Agent</div>
+                            <div class="login-preview-user"><i data-lucide="user-circle"></i>Admin</div>
+                        </div>
+                        <div class="login-preview-title">실시간 <b>대시보드</b></div>
+                        <div class="login-preview-stats">
+                            <div class="login-preview-stat"><span>Active Sessions</span><b>128</b></div>
+                            <div class="login-preview-stat"><span>CPU</span><b>42%</b></div>
+                            <div class="login-preview-stat"><span>Memory</span><b>67%</b></div>
+                            <div class="login-preview-stat"><span>Fail Rate</span><b>0%</b></div>
+                        </div>
+                        <div class="login-preview-chart">
+                            <svg viewBox="0 0 300 90" preserveAspectRatio="none">
+                                <path d="M0,60 C30,20 60,70 90,45 C120,20 150,55 180,35 C210,15 240,50 270,25 L300,10 L300,90 L0,90 Z" fill="url(#loginChartFill)"></path>
+                                <path d="M0,60 C30,20 60,70 90,45 C120,20 150,55 180,35 C210,15 240,50 270,25 L300,10" fill="none" stroke="#3b82f6" stroke-width="2"></path>
+                                <defs>
+                                    <linearGradient id="loginChartFill" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.35"></stop>
+                                        <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"></stop>
+                                    </linearGradient>
+                                </defs>
+                            </svg>
+                        </div>
+                    </div>
                 </div>
-                <button type="submit" class="login-btn">Login</button>
-                <div id="login-error" class="login-error"></div>
-            </form>
+            </div>
         </div>
     </div>
     <script>
@@ -63,87 +106,7 @@
         </div>
     </div>
 
-    <!-- Account Management Modal (admin only) -->
-    <div id="account-mgmt-modal" class="modal-overlay">
-        <div class="login-card" style="max-width: 560px; max-height: 85vh; overflow-y: auto;">
-            <div id="account-mgmt-list-view">
-                <h3 style="margin-bottom: 20px;">계정 관리</h3>
-                <form id="create-user-form">
-                    <div class="login-form-group">
-                        <label>새 계정 아이디</label>
-                        <input type="text" id="new-user-username" required autocomplete="off">
-                    </div>
-                    <div class="login-form-group">
-                        <label>비밀번호</label>
-                        <input type="password" id="new-user-password" required autocomplete="new-password">
-                    </div>
-                    <div class="login-form-group">
-                        <label>비밀번호 확인</label>
-                        <input type="password" id="new-user-password-confirm" required autocomplete="new-password">
-                    </div>
-                    <div style="margin-bottom: 16px;">
-                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-main); font-size: 0.95rem;">
-                            <input type="checkbox" id="new-user-is-admin" style="width: auto; accent-color: var(--primary);">
-                            <span>관리자(Admin) 권한 부여</span>
-                        </label>
-                    </div>
-                    <div style="margin-bottom: 16px; text-align: left;">
-                        <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">표시할 메뉴</label>
-                        <div id="new-user-menu-list" class="menu-checkbox-grid"></div>
-                    </div>
-                    <div style="margin-bottom: 16px; text-align: left;">
-                        <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">접속 대상 DB</label>
-                        <div id="new-user-db-list" class="menu-checkbox-grid"></div>
-                    </div>
-                    <div style="display: flex; gap: 10px; margin-top: 15px;">
-                        <button type="submit" class="login-btn" style="margin-top: 0;">계정 생성</button>
-                        <button type="button" class="login-btn" id="account-mgmt-close-btn" style="margin-top: 0; background: #64748b;">닫기</button>
-                    </div>
-                    <div id="account-mgmt-error" class="login-error"></div>
-                </form>
-                <hr style="border-color: var(--border-color); margin: 20px 0;">
-                <h4 style="margin-bottom: 10px; color: var(--text-secondary); font-size: 0.9rem;">계정 목록</h4>
-                <div id="user-list"></div>
-            </div>
-
-            <div id="account-mgmt-edit-view" style="display: none;">
-                <h3 style="margin-bottom: 20px;">권한 수정 - <span id="edit-user-username"></span></h3>
-                <div style="margin-bottom: 16px;">
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-main); font-size: 0.95rem;">
-                        <input type="checkbox" id="edit-user-is-admin" style="width: auto; accent-color: var(--primary);">
-                        <span>관리자(Admin) 권한 부여</span>
-                    </label>
-                </div>
-                <div style="margin-bottom: 16px; text-align: left;">
-                    <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">표시할 메뉴</label>
-                    <div id="edit-user-menu-list" class="menu-checkbox-grid"></div>
-                </div>
-                <div style="margin-bottom: 16px; text-align: left;">
-                    <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">접속 대상 DB</label>
-                    <div id="edit-user-db-list" class="menu-checkbox-grid"></div>
-                </div>
-                <div style="display: flex; gap: 10px; margin-top: 15px;">
-                    <button type="button" class="login-btn" id="edit-user-save-btn" style="margin-top: 0;">저장</button>
-                    <button type="button" class="login-btn" id="edit-user-cancel-btn" style="margin-top: 0; background: #64748b;">취소</button>
-                </div>
-                <div id="edit-user-error" class="login-error"></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Menu Visibility Modal (admin only) -->
-    <div id="menu-visibility-modal" class="modal-overlay">
-        <div class="login-card" style="max-width: 520px;">
-            <h3 style="margin-bottom: 20px;">메뉴 표시 설정</h3>
-            <div id="menu-visibility-list" class="menu-checkbox-grid" style="margin-bottom: 20px;"></div>
-            <div style="display: flex; gap: 10px;">
-                <button type="button" class="login-btn" id="menu-visibility-save-btn" style="margin-top: 0;">저장</button>
-                <button type="button" class="login-btn" id="menu-visibility-close-btn" style="margin-top: 0; background: #64748b;">닫기</button>
-            </div>
-        </div>
-    </div>
-
-    <div class="app-container">
+    <div class="app-container" style="zoom: 90%;">
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-header" style="flex-direction: column; align-items: flex-start; gap: 15px;">
@@ -183,12 +146,15 @@
                     <div class="header-actions">
                         <button class="icon-btn" id="change-pwd-trigger" title="비밀번호 변경"><i data-lucide="key"></i></button>
                         <button class="icon-btn" id="logout-btn" title="로그아웃"><i data-lucide="log-out"></i></button>
-                        <button class="icon-btn"><i data-lucide="bell"></i></button>
+                        <button class="icon-btn" id="theme-toggle-btn" title="화면 배색 전환"><i data-lucide="sun"></i></button>
                         <div class="gear-menu-wrap admin-only" style="position: relative;">
                             <button class="icon-btn" id="gear-trigger" title="설정"><i data-lucide="settings"></i></button>
                             <div id="gear-dropdown" class="gear-dropdown">
                                 <button type="button" class="gear-dropdown-item" id="open-account-mgmt-btn">
                                     <i data-lucide="users"></i><span>계정 관리</span>
+                                </button>
+                                <button type="button" class="gear-dropdown-item" id="open-db-mgmt-btn">
+                                    <i data-lucide="database"></i><span>DB 관리</span>
                                 </button>
                                 <button type="button" class="gear-dropdown-item" id="open-menu-visibility-btn">
                                     <i data-lucide="list-checks"></i><span>메뉴 표시 설정</span>
@@ -230,6 +196,10 @@
                         <i data-lucide="bot"></i>
                         <span>AI DBA</span>
                     </a>
+                    <a href="#sqltuning" class="nav-item" data-target="sqltuning">
+                        <i data-lucide="wrench"></i>
+                        <span>SQL 정합성/튜닝</span>
+                    </a>
                 </nav>
             </header>
 
@@ -237,7 +207,7 @@
                 <!-- Dashboard Section -->
                 <section id="dashboard" class="content-section active">
                     <div class="db-mini-status" style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border-color); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);">
-                        <div style="display: flex; gap: 30px; align-items: center;">
+                        <div style="display: flex; gap: 30px; align-items: center; flex-wrap: wrap; row-gap: 8px;">
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-secondary);">인스턴스</span>
                                 <div id="mini-status-instance-circle" style="width: 12px; height: 12px; border-radius: 50%; background-color: var(--text-muted);"></div>
@@ -247,6 +217,18 @@
                                 <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-secondary);">리스너</span>
                                 <div id="mini-status-listener-circle" style="width: 12px; height: 12px; border-radius: 50%; background-color: var(--text-muted);"></div>
                                 <span id="mini-status-listener" style="font-weight: bold; color: var(--text-main);">--</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-secondary);">Max Session</span>
+                                <span id="mini-status-max-session" style="font-weight: bold; color: var(--text-main);">--</span>
+                                <span style="color: var(--text-secondary); font-size: 0.85rem;">EA</span>
+                                <span style="color: var(--text-muted); font-size: 0.85rem;">[Active <span id="mini-status-active-session" style="color: var(--text-main); font-weight: 600;">--</span> EA / Inactive <span id="mini-status-inactive-session" style="color: var(--text-main); font-weight: 600;">--</span> EA]</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-secondary);">Max Process</span>
+                                <span id="mini-status-max-process" style="font-weight: bold; color: var(--text-main);">--</span>
+                                <span style="color: var(--text-secondary); font-size: 0.85rem;">EA</span>
+                                <span style="color: var(--text-muted); font-size: 0.85rem;">[Dedicate <span id="mini-status-dedicated-session" style="color: var(--text-main); font-weight: 600;">--</span> EA / Dispatcher <span id="mini-status-shared-session" style="color: var(--text-main); font-weight: 600;">--</span> EA]</span>
                             </div>
                         </div>
                     </div>
@@ -277,7 +259,7 @@
                         </div>
                         <div class="stat-card">
                             <div class="stat-header">
-                                <h3>장애발생 가능성 <span id="dash-fail-count" style="color: #fbbf24; font-size: 0.9rem; margin-left: 5px; font-weight: 600;">(TM Lock: --건) (TX Lock: --건)</span></h3>
+                                <h3>장애발생 가능성 <span id="dash-fail-count" style="color: #fbbf24; font-size: 0.9rem; margin-left: 5px; font-weight: 600;">[TM Lock -- EA / TX Lock -- EA]</span></h3>
                                 <i data-lucide="alert-triangle" class="text-warning"></i>
                             </div>
                             <div style="height: 160px; margin-top: 5px; position: relative; display: flex; justify-content: center; align-items: center;">
@@ -290,11 +272,14 @@
                         </div>
                         <div class="stat-card">
                             <div class="stat-header">
-                                <h3>활성 세션 <span id="dash-sess-val" style="color: var(--text-main); font-size: 1.25rem; margin-left: 10px; font-weight: 600;">--</span></h3>
+                                <h3>활성 세션</h3>
                                 <i data-lucide="users" class="text-green"></i>
                             </div>
-                            <div style="height: 160px; margin-top: 5px;">
+                            <div style="height: 160px; margin-top: 5px; position: relative; display: flex; justify-content: center; align-items: center;">
                                 <canvas id="dash-sess-chart"></canvas>
+                                <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
+                                    <span id="dash-sess-val" style="color: var(--text-main); font-size: 1.5rem; font-weight: 700;">--</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -428,6 +413,53 @@
                                     <button id="chat-send-btn" class="primary-btn" style="padding: 0 20px; border-radius: 6px;">
                                         <i data-lucide="send"></i> 전송
                                     </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="sqltuning" class="content-section">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h2>SQL 정합성/튜닝</h2>
+                            <p style="color: var(--text-secondary); margin-top: 5px; font-size: 0.9rem;">실행계획/실측 통계를 직접 조회하는 메뉴입니다. (이 환경에는 AI 모델 서버가 연동되어 있지 않아 모델 기반 분석 버튼은 비활성 안내만 표시됩니다 - "1차 성능점검"으로 실행계획/실측 통계를 직접 확인하세요)</p>
+                        </div>
+                        <div class="panel-body">
+                            <div class="admin-only" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
+                                <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">관리자 전용</span>
+                                <label for="sqltuning-account-select" style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">접속 계정</label>
+                                <select id="sqltuning-account-select" class="form-input" style="padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-main); color: var(--text-main);"></select>
+                                <button id="sqltuning-auto-btn" class="primary-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem; white-space: nowrap;"><i data-lucide="database"></i> 실행계획 조회 후 분석</button>
+                                <span style="font-size: 0.8rem; color: var(--text-muted);">(EXPLAIN PLAN - 쿼리 미실행, 추정치, AI 모델 필요)</span>
+                                <button id="sqltuning-auto-actual-btn" class="danger-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem; white-space: nowrap;"><i data-lucide="play"></i> 실제 실행 통계로 분석</button>
+                                <span style="font-size: 0.8rem; color: var(--text-muted);">(DISPLAY_CURSOR - <strong>쿼리를 실제로 실행함</strong>, 실측치, SELECT/WITH만 가능, AI 모델 필요)</span>
+                                <button id="sqltuning-quickcheck-btn" class="danger-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem; white-space: nowrap;"><i data-lucide="list-checks"></i> 1차 성능점검</button>
+                                <span style="font-size: 0.8rem; color: var(--text-muted);">(위와 동일하게 <strong>쿼리를 실제로 실행</strong>하지만, AI 분석 없이 실행계획/실측 통계만 바로 보여줌 - 더 빠름, 모델 불필요)</span>
+                            </div>
+                            <div id="sqltuning-bind-panel" class="admin-only" style="display: none; flex-direction: column; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
+                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+                                    <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">바인드 변수 값 (:1, :SID 등 - "실제 실행 통계로 분석"/"1차 성능점검"에 사용):</span>
+                                    <button type="button" id="sqltuning-bind-toggle-btn" style="display: none; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-secondary); cursor: pointer;"></button>
+                                </div>
+                                <div id="sqltuning-bind-fields" style="display: flex; flex-wrap: wrap; gap: 8px;"></div>
+                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border-color);">
+                                    <span style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;">V$SQL_BIND_CAPTURE에서 불러오기 (HASH_VALUE):</span>
+                                    <input type="text" id="sqltuning-bind-hashvalue" placeholder="예: 1234567890" style="width: 140px; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-main); color: var(--text-main); font-family: 'Consolas', 'D2Coding', monospace;">
+                                    <button type="button" id="sqltuning-bind-capture-btn" style="padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-secondary); cursor: pointer;">불러오기</button>
+                                    <span id="sqltuning-bind-capture-status" style="font-size: 0.8rem; color: var(--text-muted);"></span>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <textarea id="sqltuning-input" rows="8" placeholder="분석하려는 SQL 쿼리를 입력하세요. (Ctrl+Enter: 분석 실행)" style="width: 100%; font-family: 'Consolas', 'D2Coding', monospace; font-size: 0.9rem; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main); resize: vertical;"></textarea>
+                                <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 10px;">
+                                    <button id="sqltuning-clear-btn" type="button" style="padding: 0 20px; border-radius: 6px; height: 40px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); cursor: pointer;"><i data-lucide="eraser"></i> 화면 클리어</button>
+                                    <button id="sqltuning-run-btn" class="primary-btn"><i data-lucide="search"></i> 분석 실행 (Ctrl+Enter, AI 모델 필요)</button>
+                                </div>
+                            </div>
+                            <div id="sqltuning-result" style="margin-top: 20px; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main); min-height: 150px;">
+                                <div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">
+                                    쿼리/실행계획을 입력하고 분석 실행 버튼을 누르세요.
                                 </div>
                             </div>
                         </div>
@@ -624,35 +656,119 @@
                                     <div id="scatter-selection-box" style="position: absolute; border: 1px dashed #3498db; background: rgba(52,152,219,0.2); pointer-events: none; display: none; z-index: 10;"></div>
                                 </div>
                             </div>
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                <h3 style="color: var(--text-primary); margin: 0;">Active 세션 목록</h3>
-                                <button id="session-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;">선택 세션 Kill</button>
+                            <div class="tabs-container" style="display: flex; gap: 20px; border-bottom: 2px solid var(--border); margin-bottom: 10px;">
+                                <div class="sesslist-tab-btn active" data-sesslist-tab="sesslist-active-session" style="padding: 10px 20px; cursor: pointer; border-bottom: 2px solid #3b82f6; font-weight: 600; color: #3b82f6;">Active Session</div>
+                                <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-active-tx" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">Active Transaction</div>
+                                <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-parallel" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">Parallel Session</div>
+                                <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-2pc" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">2pc Pending Transaction</div>
                             </div>
-                            <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
-                                <table class="data-table" style="border: none;">
-                                    <thead>
-                                        <tr>
-                                            <th style="width: 40px; text-align: center;"><input type="checkbox" id="session-select-all"></th>
-                                            <th>Instance Name</th>
-                                            <th>Status</th>
-                                            <th>SID</th>
-                                            <th>Serial#</th>
-                                            <th>Server PID</th>
-                                            <th>Duration Time(sec)</th>
-                                            <th>Session Wait(%)</th>
-                                            <th>SQL ID</th>
-                                            <th>Event Name</th>
-                                            <th>Plan Hash Value</th>
-                                            <th>SQL Text</th>
-                                            <th>Machine Name</th>
-                                            <th>Oracle User Name</th>
-                                            <th>Program Name</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="session-tbody">
-                                        <tr><td colspan="15" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
-                                    </tbody>
-                                </table>
+
+                            <!-- Tab: Active Session -->
+                            <div id="sesslist-active-session" class="sesslist-tab-content" style="display: block;">
+                                <div style="display: flex; justify-content: flex-end; align-items: center; margin-bottom: 10px;">
+                                    <button id="session-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;">선택 세션 Kill</button>
+                                </div>
+                                <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
+                                    <table class="data-table" style="border: none;">
+                                        <thead>
+                                            <tr>
+                                                <th style="width: 40px; text-align: center;"><input type="checkbox" id="session-select-all"></th>
+                                                <th>Instance Name</th>
+                                                <th>Status</th>
+                                                <th>SID</th>
+                                                <th>Serial#</th>
+                                                <th>Server PID</th>
+                                                <th>Duration Time(sec)</th>
+                                                <th>Session Wait(%)</th>
+                                                <th>SQL ID</th>
+                                                <th>Event Name</th>
+                                                <th>Plan Hash Value</th>
+                                                <th>SQL Text</th>
+                                                <th>Machine Name</th>
+                                                <th>Oracle User Name</th>
+                                                <th>Program Name</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="session-tbody">
+                                            <tr><td colspan="15" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- Tab: Active Transaction -->
+                            <div id="sesslist-active-tx" class="sesslist-tab-content" style="display: none;">
+                                <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
+                                    <table class="data-table" style="border: none;">
+                                        <thead>
+                                            <tr>
+                                                <th>SID</th>
+                                                <th>Serial#</th>
+                                                <th>Oracle User Name</th>
+                                                <th>Status</th>
+                                                <th>Machine Name</th>
+                                                <th>Program Name</th>
+                                                <th>SQL ID</th>
+                                                <th>Start Time</th>
+                                                <th>Used Undo Blocks</th>
+                                                <th>Used Undo Records</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="sesslist-active-tx-tbody">
+                                            <tr><td colspan="10" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- Tab: Parallel Session -->
+                            <div id="sesslist-parallel" class="sesslist-tab-content" style="display: none;">
+                                <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
+                                    <table class="data-table" style="border: none;">
+                                        <thead>
+                                            <tr>
+                                                <th>QC SID</th>
+                                                <th>QC Serial#</th>
+                                                <th>SID</th>
+                                                <th>Serial#</th>
+                                                <th>Server#</th>
+                                                <th>Degree</th>
+                                                <th>Req Degree</th>
+                                                <th>Oracle User Name</th>
+                                                <th>Status</th>
+                                                <th>Program Name</th>
+                                                <th>Machine Name</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="sesslist-parallel-tbody">
+                                            <tr><td colspan="11" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- Tab: 2pc Pending Transaction -->
+                            <div id="sesslist-2pc" class="sesslist-tab-content" style="display: none;">
+                                <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
+                                    <table class="data-table" style="border: none;">
+                                        <thead>
+                                            <tr>
+                                                <th>Local Tran ID</th>
+                                                <th>Global Tran ID</th>
+                                                <th>State</th>
+                                                <th>Mixed</th>
+                                                <th>Comment</th>
+                                                <th>Host</th>
+                                                <th>Fail Time</th>
+                                                <th>Retry Time</th>
+                                                <th>OS User</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="sesslist-2pc-tbody">
+                                            <tr><td colspan="9" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -815,6 +931,6 @@
             </div>
         </div>
     </div>
-    <script src="app.js?v=29"></script>
+    <script src="app.js?v=52"></script>
 </body>
 </html>

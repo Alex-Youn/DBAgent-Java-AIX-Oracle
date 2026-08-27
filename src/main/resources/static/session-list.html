@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>선택된 세션 리스트</title>
+    <link rel="stylesheet" href="style.css?v=16">
+    <script>
+        // Match the main app's saved theme choice so this popup doesn't clash when kept open
+        // side-by-side with the dashboard on a second monitor (same as session-detail.html).
+        (function () {
+            const saved = localStorage.getItem('dbagent_theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
+    <style>
+        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); }
+    </style>
+</head>
+<body>
+    <div id="content">불러오는 중...</div>
+    <script>
+        (function () {
+            // The opener stashes the drag-selected sessions in localStorage (not sessionStorage - a
+            // popup only inherits a one-time COPY of the opener's sessionStorage at the moment
+            // window.open() is called, so re-dragging a selection while this window is already open
+            // would leave it showing the stale first batch). localStorage is a live, shared area
+            // across same-origin windows, and the 'storage' event below lets this page re-render
+            // in place whenever the opener stashes a new selection.
+            const STORAGE_KEY = 'dbagent_selected_sessions';
+            const contentEl = document.getElementById('content');
+
+            function render(sessions) {
+                sessions = sessions || [];
+                document.title = `선택된 세션 리스트 (${sessions.length}건)`;
+
+                const cmdMap = { 2: 'INSERT', 3: 'SELECT', 6: 'UPDATE', 7: 'DELETE' };
+                contentEl.innerHTML = `
+                    <h3 style="color:var(--text-main); margin-top:0;">선택된 세션 리스트 (${sessions.length}건)</h3>
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:15px;">행을 클릭하시면 세션 상세정보(SQL 텍스트, DBMS Plan, 바인드 변수)가 별도 창으로 열립니다.</p>
+                    <div style="overflow-x:auto; border:1px solid var(--border); border-radius:4px;">
+                        <table style="width:100%; border-collapse:collapse; color:var(--text-main); white-space: nowrap;">
+                            <thead style="background:var(--bg-hover); position:sticky; top:0;">
+                                <tr>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Database Name</th>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">종료시간</th>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">SID</th>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">SERIAL#</th>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">SQL_ID</th>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Command</th>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Elapse Time(sec)</th>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Program</th>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">OS USER</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${sessions.map(s => {
+                                    const cmdText = s.command !== undefined ? (cmdMap[s.command] || s.command) : '-';
+                                    return `
+                                    <tr class="clickable-session-row" style="cursor:pointer; border-bottom:1px solid var(--border);" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
+                                        <td style="padding:10px;">${s.db_name || '-'}</td>
+                                        <td style="padding:10px;">${s.capture_time || '-'}</td>
+                                        <td style="padding:10px;">${s.sid}</td>
+                                        <td style="padding:10px;">${s.serial || '-'}</td>
+                                        <td style="padding:10px;">${s.sql_id || '-'}</td>
+                                        <td style="padding:10px;">${cmdText}</td>
+                                        <td style="padding:10px; color:var(--danger); font-weight:bold;">${s.duration_time}s</td>
+                                        <td style="padding:10px;">${s.program_name || '-'}</td>
+                                        <td style="padding:10px;">${s.osuser || '-'}</td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
+
+            function loadFromStorage() {
+                try {
+                    const raw = localStorage.getItem(STORAGE_KEY);
+                    const parsed = raw ? JSON.parse(raw) : null;
+                    render(parsed ? parsed.sessions : []);
+                } catch (e) {
+                    contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${e.message}</p>`;
+                }
+            }
+
+            loadFromStorage();
+
+            window.addEventListener('storage', (e) => {
+                if (e.key === STORAGE_KEY) loadFromStorage();
+            });
+
+            // Same open-or-focus pattern as the main dashboard's `.clickable-session-row` delegate,
+            // duplicated here because this popup is its own document/JS scope (window.opener isn't
+            // reliable to depend on for this - the user may close the main tab while this stays open).
+            document.addEventListener('click', (e) => {
+                const row = e.target.closest('.clickable-session-row');
+                if (!row || e.target.closest('input[type="checkbox"]')) return;
+
+                const sid = row.getAttribute('data-sid');
+                const sql_id = row.getAttribute('data-sql_id') || '';
+                if (!sid && !sql_id) return;
+
+                const dbId = (window.opener && !window.opener.closed && window.opener.currentDbId) ? window.opener.currentDbId : '';
+                const url = `session-detail.html?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(sid || '')}&sql_id=${encodeURIComponent(sql_id)}`;
+                const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, 'width=640,height=720,resizable=yes,scrollbars=yes');
+                if (popup) {
+                    // A window's `.opener` defaults to whatever actually called window.open() on it -
+                    // that would be this session-list.html popup, not the main dashboard. session-
+                    // detail.html's "튜닝" button calls `window.opener.openSqlTuningFromPopup(...)`,
+                    // which only exists on the main dashboard's window, so left at the default it
+                    // silently does nothing when opened through this intermediate popup. `.opener` is
+                    // a writable property (WHATWG HTML calls it "Replaceable"), so forward this popup's
+                    // own opener (the main dashboard) instead, keeping the chain flat.
+                    try { popup.opener = window.opener; } catch (e) { /* ignore, non-fatal */ }
+                    popup.focus();
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

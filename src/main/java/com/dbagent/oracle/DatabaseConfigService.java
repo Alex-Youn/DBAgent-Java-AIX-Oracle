@@ -1,8 +1,11 @@
 package com.dbagent.oracle;
 
+import com.dbagent.util.Maps;
 import com.dbagent.util.Strings;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -32,6 +35,12 @@ public class DatabaseConfigService {
     private final ObjectMapper mapper = new ObjectMapper();
     private JsonNode config;
     private TargetDbConfig fallback;
+
+    // Guards createInstance/updateInstance/deleteInstance: config is otherwise copy-on-write (each
+    // write builds a whole new tree and swaps the `config` reference), so reads (resolve, findInstance,
+    // safeConfig, ...) never need to synchronize - they just see either the old tree or the new one,
+    // never a half-mutated one. This lock only serializes concurrent admin writes against each other.
+    private final Object writeLock = new Object();
 
     @PostConstruct
     void init() throws IOException {
@@ -140,9 +149,23 @@ public class DatabaseConfigService {
                     Iterator<Map.Entry<String, JsonNode>> fields = inst.fields();
                     while (fields.hasNext()) {
                         Map.Entry<String, JsonNode> field = fields.next();
-                        if (!"password".equals(field.getKey())) {
-                            safeInst.put(field.getKey(), field.getValue().isTextual() ? field.getValue().asText() : field.getValue());
+                        if ("password".equals(field.getKey())) {
+                            continue;
                         }
+                        if ("accounts".equals(field.getKey())) {
+                            // Strip each extra account's (still B64-obfuscated, but not real
+                            // encryption) password too - this response goes to every logged-in
+                            // user, not just admins, same as the top-level instance password above.
+                            List<Map<String, Object>> safeAccounts = new ArrayList<>();
+                            for (JsonNode acc : field.getValue()) {
+                                Map<String, Object> safeAcc = new LinkedHashMap<>();
+                                safeAcc.put("user", acc.path("user").asText(""));
+                                safeAccounts.add(safeAcc);
+                            }
+                            safeInst.put("accounts", safeAccounts);
+                            continue;
+                        }
+                        safeInst.put(field.getKey(), field.getValue().isTextual() ? field.getValue().asText() : field.getValue());
                     }
                     instances.add(safeInst);
                 }
@@ -198,5 +221,256 @@ public class DatabaseConfigService {
         }
         String encoded = raw.substring(B64_PREFIX.length(), raw.length() - B64_SUFFIX.length());
         return new String(Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8);
+    }
+
+    private String encodePassword(String plain) {
+        if (plain == null) {
+            return "";
+        }
+        return B64_PREFIX + Base64.getEncoder().encodeToString(plain.getBytes(StandardCharsets.UTF_8)) + B64_SUFFIX;
+    }
+
+    /** Admin UI: add a new DB instance under groupName (created if it doesn't already exist). */
+    public Map<String, Object> createInstance(String groupName, String id, String name, String host, int port,
+            String sid, String user, String password, Integer poolMinIdle, Integer poolMaxSize,
+            List<Map<String, String>> accounts, List<Integer> sessionThresholds) {
+        if (Strings.isBlank(id)) {
+            return Maps.of("success", false, "message", "ID는 필수입니다.");
+        }
+        if (Strings.isBlank(groupName)) {
+            return Maps.of("success", false, "message", "그룹명은 필수입니다.");
+        }
+        if (Strings.isBlank(password)) {
+            return Maps.of("success", false, "message", "비밀번호는 필수입니다.");
+        }
+        synchronized (writeLock) {
+            ObjectNode root = ((ObjectNode) config).deepCopy();
+            ArrayNode groups = ensureGroupsArray(root);
+            if (findInstanceNode(groups, id) != null) {
+                return Maps.of("success", false, "message", "이미 존재하는 ID입니다: " + id);
+            }
+            ArrayNode instances = ensureInstancesArray(findOrCreateGroup(groups, groupName));
+            ObjectNode inst = mapper.createObjectNode();
+            inst.put("id", id);
+            inst.put("name", name == null ? "" : name);
+            inst.put("host", host == null ? "" : host);
+            inst.put("port", port);
+            inst.put("sid", sid == null ? "" : sid);
+            inst.put("user", user == null ? "" : user);
+            inst.put("password", encodePassword(password));
+            putNullableInt(inst, "pool_min_idle", poolMinIdle);
+            putNullableInt(inst, "pool_max_size", poolMaxSize);
+            // A brand-new instance has no stored accounts to fall back to, so every row here needs
+            // its own non-blank password.
+            String accountsError = applyAccounts(inst, accounts, null);
+            if (accountsError != null) {
+                return Maps.of("success", false, "message", accountsError);
+            }
+            String thresholdsError = applySessionThresholds(inst, sessionThresholds);
+            if (thresholdsError != null) {
+                return Maps.of("success", false, "message", thresholdsError);
+            }
+            instances.add(inst);
+            return persist(root, "DB가 추가되었습니다.");
+        }
+    }
+
+    /** Admin UI: update an existing instance's fields. Blank/null password keeps the stored value. */
+    public Map<String, Object> updateInstance(String id, String name, String host, int port, String sid,
+            String user, String password, Integer poolMinIdle, Integer poolMaxSize,
+            List<Map<String, String>> accounts, List<Integer> sessionThresholds) {
+        synchronized (writeLock) {
+            ObjectNode root = ((ObjectNode) config).deepCopy();
+            ArrayNode groups = ensureGroupsArray(root);
+            ObjectNode inst = findInstanceNode(groups, id);
+            if (inst == null) {
+                return Maps.of("success", false, "message", "존재하지 않는 DB입니다: " + id);
+            }
+            JsonNode existingAccounts = inst.path("accounts");
+            inst.put("name", name == null ? "" : name);
+            inst.put("host", host == null ? "" : host);
+            inst.put("port", port);
+            inst.put("sid", sid == null ? "" : sid);
+            inst.put("user", user == null ? "" : user);
+            if (!Strings.isBlank(password)) {
+                inst.put("password", encodePassword(password));
+            }
+            putNullableInt(inst, "pool_min_idle", poolMinIdle);
+            putNullableInt(inst, "pool_max_size", poolMaxSize);
+            // A blank password on an existing account row keeps that account's stored password.
+            String accountsError = applyAccounts(inst, accounts, existingAccounts);
+            if (accountsError != null) {
+                return Maps.of("success", false, "message", accountsError);
+            }
+            String thresholdsError = applySessionThresholds(inst, sessionThresholds);
+            if (thresholdsError != null) {
+                return Maps.of("success", false, "message", thresholdsError);
+            }
+            return persist(root, "DB 정보가 수정되었습니다.");
+        }
+    }
+
+    /** Admin UI: remove an instance; removes its group too if that was the group's last instance. */
+    public Map<String, Object> deleteInstance(String id) {
+        synchronized (writeLock) {
+            ObjectNode root = ((ObjectNode) config).deepCopy();
+            ArrayNode groups = ensureGroupsArray(root);
+            boolean removed = false;
+            Iterator<JsonNode> groupIt = groups.iterator();
+            while (groupIt.hasNext()) {
+                JsonNode group = groupIt.next();
+                if (!(group.path("instances") instanceof ArrayNode)) {
+                    continue;
+                }
+                ArrayNode instances = (ArrayNode) group.path("instances");
+                for (int i = 0; i < instances.size(); i++) {
+                    if (id.equals(instances.get(i).path("id").asText(""))) {
+                        instances.remove(i);
+                        removed = true;
+                        break;
+                    }
+                }
+                if (removed) {
+                    if (instances.isEmpty()) {
+                        groupIt.remove();
+                    }
+                    break;
+                }
+            }
+            if (!removed) {
+                return Maps.of("success", false, "message", "존재하지 않는 DB입니다: " + id);
+            }
+            return persist(root, "DB가 삭제되었습니다.");
+        }
+    }
+
+    private ArrayNode ensureGroupsArray(ObjectNode root) {
+        JsonNode existing = root.get("groups");
+        if (existing instanceof ArrayNode) {
+            return (ArrayNode) existing;
+        }
+        return root.putArray("groups");
+    }
+
+    private ArrayNode ensureInstancesArray(ObjectNode group) {
+        JsonNode existing = group.get("instances");
+        if (existing instanceof ArrayNode) {
+            return (ArrayNode) existing;
+        }
+        return group.putArray("instances");
+    }
+
+    private ObjectNode findOrCreateGroup(ArrayNode groups, String groupName) {
+        for (JsonNode group : groups) {
+            if (groupName.equals(group.path("group_name").asText(""))) {
+                return (ObjectNode) group;
+            }
+        }
+        ObjectNode group = mapper.createObjectNode();
+        group.put("group_name", groupName);
+        group.putArray("instances");
+        groups.add(group);
+        return group;
+    }
+
+    private ObjectNode findInstanceNode(ArrayNode groups, String id) {
+        for (JsonNode group : groups) {
+            for (JsonNode inst : group.path("instances")) {
+                if (id.equals(inst.path("id").asText(""))) {
+                    return (ObjectNode) inst;
+                }
+            }
+        }
+        return null;
+    }
+
+    private void putNullableInt(ObjectNode node, String field, Integer value) {
+        if (value == null) {
+            node.putNull(field);
+        } else {
+            node.put(field, value);
+        }
+    }
+
+    /**
+     * Rebuilds inst's "accounts" array from the admin UI's rows. A row with a blank password reuses
+     * the matching user's already-stored (still B64-encoded) password from existingAccounts, if any -
+     * this is how "leave blank to keep unchanged" works for account rows shown to the admin without
+     * ever sending a decoded password back to the browser. Returns an error message, or null on success.
+     */
+    private String applyAccounts(ObjectNode inst, List<Map<String, String>> accounts, JsonNode existingAccounts) {
+        if (accounts == null || accounts.isEmpty()) {
+            inst.remove("accounts");
+            return null;
+        }
+        ArrayNode accArr = mapper.createArrayNode();
+        for (Map<String, String> acc : accounts) {
+            String accUser = acc.get("user");
+            if (Strings.isBlank(accUser)) {
+                continue;
+            }
+            String accPassword = acc.get("password");
+            String encoded;
+            if (!Strings.isBlank(accPassword)) {
+                encoded = encodePassword(accPassword);
+            } else {
+                encoded = existingAccounts == null ? null : findAccountPassword(existingAccounts, accUser);
+                if (encoded == null) {
+                    return "추가 계정 '" + accUser + "'의 비밀번호를 입력하세요.";
+                }
+            }
+            ObjectNode accNode = mapper.createObjectNode();
+            accNode.put("user", accUser);
+            accNode.put("password", encoded);
+            accArr.add(accNode);
+        }
+        if (accArr.size() > 0) {
+            inst.set("accounts", accArr);
+        } else {
+            inst.remove("accounts");
+        }
+        return null;
+    }
+
+    private String findAccountPassword(JsonNode existingAccounts, String user) {
+        for (JsonNode acc : existingAccounts) {
+            if (user.equals(acc.path("user").asText(""))) {
+                return acc.path("password").asText(null);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * "session_thresholds": [t1..t5] - per-instance override of the dashboard's active-session
+     * color/gauge thresholds (see app.js DEFAULT_SESSION_THRESHOLDS). Null/empty from the admin UI
+     * means "don't override" (field removed, global default applies); otherwise exactly 5 values are
+     * required, matching what app.js's getSessColor() expects.
+     */
+    private String applySessionThresholds(ObjectNode inst, List<Integer> sessionThresholds) {
+        if (sessionThresholds == null || sessionThresholds.isEmpty()) {
+            inst.remove("session_thresholds");
+            return null;
+        }
+        if (sessionThresholds.size() != 5 || sessionThresholds.contains(null)) {
+            return "세션 임계치는 5개 값을 모두 입력해야 합니다.";
+        }
+        ArrayNode arr = mapper.createArrayNode();
+        for (Integer t : sessionThresholds) {
+            arr.add(t);
+        }
+        inst.set("session_thresholds", arr);
+        return null;
+    }
+
+    /** Writes root to databases.json and swaps it in as the live in-memory config on success. */
+    private Map<String, Object> persist(ObjectNode root, String successMessage) {
+        try {
+            mapper.writerWithDefaultPrettyPrinter().writeValue(new File(databasesConfigPath), root);
+        } catch (IOException e) {
+            return Maps.of("success", false, "message", "파일 저장 실패: " + e.getMessage());
+        }
+        config = root;
+        return Maps.of("success", true, "message", successMessage);
     }
 }

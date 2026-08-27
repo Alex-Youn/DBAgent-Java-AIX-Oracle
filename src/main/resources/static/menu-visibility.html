@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>메뉴 표시 설정</title>
+    <link rel="stylesheet" href="style.css?v=16">
+    <script>
+        // Match the main app's saved theme choice (same as session-detail.html).
+        (function () {
+            const saved = localStorage.getItem('dbagent_theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
+    <style>
+        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); }
+    </style>
+</head>
+<body>
+    <div id="content">불러오는 중...</div>
+    <script>
+        (function () {
+            const contentEl = document.getElementById('content');
+            if (!window.opener || window.opener.closed) {
+                contentEl.innerHTML = '<h3 style="color: var(--danger);">메인 화면이 닫혀 있어 열 수 없습니다.</h3>';
+                return;
+            }
+            // Gear-dropdown button hiding is only a UI convenience - this page needs its own check
+            // in case a non-admin opens the URL directly.
+            if (sessionStorage.getItem('dbagent_role') !== 'admin') {
+                contentEl.innerHTML = '<h3 style="color: var(--danger);">관리자만 접근할 수 있습니다.</h3>';
+                return;
+            }
+
+            function getHiddenMenus() {
+                try {
+                    return JSON.parse(localStorage.getItem('dbagent_hidden_menus') || '[]');
+                } catch (e) {
+                    return [];
+                }
+            }
+
+            // Menu list is read from the opener's own nav (not duplicated here), so a menu added
+            // later just shows up automatically - same reasoning as the in-page version this replaced.
+            function renderMenuCheckboxes(container, hiddenSet) {
+                container.innerHTML = '';
+                window.opener.document.querySelectorAll('.top-nav .nav-item[data-target]').forEach(item => {
+                    const target = item.getAttribute('data-target');
+                    if (target === 'dashboard') return;
+                    const label = item.querySelector('span') ? item.querySelector('span').innerText : target;
+                    const row = document.createElement('label');
+                    row.innerHTML = `<input type="checkbox" data-menu-target="${target}" ${hiddenSet.has(target) ? '' : 'checked'}><span>${label}</span>`;
+                    container.appendChild(row);
+                });
+            }
+
+            function collectHidden(container) {
+                const hidden = [];
+                container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                    if (!cb.checked) hidden.push(cb.getAttribute('data-menu-target'));
+                });
+                return hidden;
+            }
+
+            contentEl.innerHTML = `
+                <div class="login-card" style="max-width: 520px; margin: 0;">
+                    <h3 style="margin-bottom: 20px;">메뉴 표시 설정</h3>
+                    <div id="menu-visibility-list" class="menu-checkbox-grid" style="margin-bottom: 20px;"></div>
+                    <div style="display: flex; gap: 10px;">
+                        <button type="button" class="login-btn" id="menu-visibility-save-btn" style="margin-top: 0;">저장</button>
+                        <button type="button" class="login-btn" id="menu-visibility-close-btn" style="margin-top: 0; background: #64748b;">닫기</button>
+                    </div>
+                </div>
+            `;
+
+            const listEl = document.getElementById('menu-visibility-list');
+            renderMenuCheckboxes(listEl, new Set(getHiddenMenus()));
+
+            document.getElementById('menu-visibility-close-btn').addEventListener('click', () => window.close());
+            document.getElementById('menu-visibility-save-btn').addEventListener('click', () => {
+                localStorage.setItem('dbagent_hidden_menus', JSON.stringify(collectHidden(listEl)));
+                if (window.opener && !window.opener.closed) window.opener.location.reload();
+                window.close();
+            });
+        })();
+    </script>
+</body>
+</html>

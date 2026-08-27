@@ -1,4 +1,24 @@
 
+// --- Theme Logic ---
+// Applied at script-load time (not inside DOMContentLoaded) so the correct theme paints as early as
+// possible instead of flashing the default dark theme first.
+(function applySavedTheme() {
+    const saved = localStorage.getItem('dbagent_theme') || 'dark';
+    if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+})();
+
+function isLightTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light';
+}
+
+// Chart.js configs below hardcode axis/grid colors as shades of white for the dark theme; this
+// returns the equivalent shade of near-black when the light theme is active instead, so text/grid
+// lines stay legible against the now-light chart background. Only for chart chrome (ticks/grid/
+// borders/titles), not series colors (those stay theme-neutral).
+function chartLineColor(alpha) {
+    return isLightTheme() ? `rgba(15, 23, 42, ${alpha})` : `rgba(255, 255, 255, ${alpha})`;
+}
+
 // --- Auth Logic ---
 const API_BASE_AUTH = `/api`;
 
@@ -84,7 +104,26 @@ function getToken() {
             sessionStorage.removeItem('dbagent_account_hidden_dbs');
             location.reload();
         });
-        
+
+        const themeToggleBtn = document.getElementById('theme-toggle-btn');
+        const applyThemeIcon = () => {
+            if (!themeToggleBtn) return;
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            themeToggleBtn.querySelector('i').setAttribute('data-lucide', isLight ? 'moon' : 'sun');
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        };
+        applyThemeIcon();
+        themeToggleBtn?.addEventListener('click', () => {
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            localStorage.setItem('dbagent_theme', isLight ? 'dark' : 'light');
+            // Full reload rather than an in-place toggle: several Chart.js instances (session trend,
+            // scatter, AWR history) bake their axis/grid colors into options at creation time via
+            // chartLineColor() and only get touched again through .update() on data, not on theme
+            // change - a reload is the simplest way to guarantee every chart repaints with the new
+            // theme's colors instead of tracking down and re-applying options on each instance.
+            location.reload();
+        });
+
         const pwdModal = document.getElementById('change-pwd-modal');
         document.getElementById('change-pwd-trigger')?.addEventListener('click', () => {
             pwdModal.style.display = 'flex';
@@ -133,98 +172,11 @@ function getToken() {
             }
         });
 
-        // --- Account management (admin only) ---
-        const acctModal = document.getElementById('account-mgmt-modal');
-        const acctError = document.getElementById('account-mgmt-error');
-        const userListEl = document.getElementById('user-list');
-        const acctListView = document.getElementById('account-mgmt-list-view');
-        const acctEditView = document.getElementById('account-mgmt-edit-view');
-        const editUserError = document.getElementById('edit-user-error');
-
-        function showAccountListView() {
-            acctEditView.style.display = 'none';
-            acctListView.style.display = 'block';
-        }
-
-        function showAccountEditView(user) {
-            acctListView.style.display = 'none';
-            acctEditView.style.display = 'block';
-            editUserError.style.display = 'none';
-            document.getElementById('edit-user-username').textContent = user.username;
-            document.getElementById('edit-user-is-admin').checked = user.role === 'admin';
-            renderMenuCheckboxes(document.getElementById('edit-user-menu-list'), new Set(user.hidden_menus || []));
-            renderDbCheckboxes(document.getElementById('edit-user-db-list'), new Set(user.hidden_dbs || []));
-            document.getElementById('edit-user-save-btn').dataset.username = user.username;
-        }
-
-        document.getElementById('edit-user-cancel-btn')?.addEventListener('click', showAccountListView);
-        document.getElementById('edit-user-save-btn')?.addEventListener('click', async (e) => {
-            const token = sessionStorage.getItem('dbagent_token');
-            const username = e.target.dataset.username;
-            const role = document.getElementById('edit-user-is-admin').checked ? 'admin' : 'user';
-            const hiddenMenus = collectHiddenFromCheckboxes(document.getElementById('edit-user-menu-list'));
-            const hiddenDbs = collectHiddenDbsFromCheckboxes(document.getElementById('edit-user-db-list'));
-            try {
-                const res = await fetch(`/api/users/${encodeURIComponent(username)}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs })
-                });
-                const data = await res.json();
-                if (res.ok && data.success) {
-                    showAccountListView();
-                    loadUserList();
-                } else {
-                    editUserError.textContent = data.message || '수정 실패';
-                    editUserError.style.display = 'block';
-                }
-            } catch (e2) {
-                editUserError.textContent = '서버 오류';
-                editUserError.style.display = 'block';
-            }
-        });
-
-        async function loadUserList() {
-            const token = sessionStorage.getItem('dbagent_token');
-            userListEl.innerHTML = '<div style="color: var(--text-secondary); padding: 8px 0;">불러오는 중...</div>';
-            try {
-                const res = await fetch(`/api/users?token=${encodeURIComponent(token)}`);
-                const data = await res.json();
-                if (!res.ok) {
-                    userListEl.innerHTML = `<div style="color:#f87171;">${data.message || '목록 조회 실패'}</div>`;
-                    return;
-                }
-                userListEl.innerHTML = '';
-                (data.users || []).forEach(u => {
-                    const row = document.createElement('div');
-                    row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--border-color);';
-                    const isProtected = u.username === 'admin';
-                    const actionsHtml = isProtected ? '' : `
-                        <div style="display:flex; gap:6px;">
-                            <button type="button" class="login-btn user-edit-btn" style="width:auto; margin-top:0; padding:6px 12px; font-size:0.85rem; background:#475569;">수정</button>
-                            <button type="button" class="login-btn user-delete-btn" style="width:auto; margin-top:0; padding:6px 12px; font-size:0.85rem; background:#dc2626;">삭제</button>
-                        </div>`;
-                    row.innerHTML = `<span>${u.username} <span style="color: var(--text-secondary); font-size: 0.85rem;">(${u.role})</span></span>${actionsHtml}`;
-                    userListEl.appendChild(row);
-
-                    if (isProtected) return;
-
-                    row.querySelector('.user-edit-btn').addEventListener('click', () => showAccountEditView(u));
-                    row.querySelector('.user-delete-btn').addEventListener('click', async () => {
-                        if (!confirm(`'${u.username}' 계정을 삭제하시겠습니까?`)) return;
-                        const delRes = await fetch(`/api/users/${encodeURIComponent(u.username)}?token=${encodeURIComponent(token)}`, { method: 'DELETE' });
-                        const delData = await delRes.json();
-                        if (!delRes.ok || !delData.success) {
-                            alert(delData.message || '삭제 실패');
-                        }
-                        loadUserList();
-                    });
-                });
-            } catch (e) {
-                userListEl.innerHTML = '<div style="color:#f87171;">서버 오류</div>';
-            }
-        }
-
+        // Account management/DB management/menu visibility settings all used to be in-page modals
+        // here; moved to real popup windows (account-mgmt.html/db-mgmt.html/menu-visibility.html) so
+        // the user can drag them to a second monitor, same reasoning as session-detail.html. Each
+        // popup reads what it needs from window.opener (nav items, sidebar DB list, the token) and
+        // reloads/closes the opener on a successful save - see those files for the actual logic.
         const gearTrigger = document.getElementById('gear-trigger');
         const gearDropdown = document.getElementById('gear-dropdown');
         gearTrigger?.addEventListener('click', (e) => {
@@ -238,61 +190,24 @@ function getToken() {
             }
         });
 
-        document.getElementById('open-account-mgmt-btn')?.addEventListener('click', () => {
+        function openAdminPopup(url, name, features) {
             gearDropdown.classList.remove('open');
-            acctError.style.display = 'none';
-            document.getElementById('new-user-is-admin').checked = false;
-            renderMenuCheckboxes(document.getElementById('new-user-menu-list'), new Set());
-            renderDbCheckboxes(document.getElementById('new-user-db-list'), new Set());
-            showAccountListView();
-            acctModal.style.display = 'flex';
-            loadUserList();
+            const popup = window.open(url, name, features);
+            if (popup) popup.focus();
+        }
+        document.getElementById('open-account-mgmt-btn')?.addEventListener('click', () => {
+            openAdminPopup('account-mgmt.html', 'dbagent_account_mgmt', 'width=620,height=760,resizable=yes,scrollbars=yes');
         });
-        document.getElementById('account-mgmt-close-btn')?.addEventListener('click', () => {
-            acctModal.style.display = 'none';
-            document.getElementById('create-user-form').reset();
-            acctError.style.display = 'none';
+        document.getElementById('open-db-mgmt-btn')?.addEventListener('click', () => {
+            openAdminPopup('db-mgmt.html', 'dbagent_db_mgmt', 'width=980,height=820,resizable=yes,scrollbars=yes');
         });
-
-        document.getElementById('create-user-form')?.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const token = sessionStorage.getItem('dbagent_token');
-            const username = document.getElementById('new-user-username').value.trim();
-            const password = document.getElementById('new-user-password').value;
-            const confirmPwd = document.getElementById('new-user-password-confirm').value;
-
-            if (password !== confirmPwd) {
-                acctError.textContent = '비밀번호가 일치하지 않습니다.';
-                acctError.style.display = 'block';
-                return;
-            }
-            const role = document.getElementById('new-user-is-admin').checked ? 'admin' : 'user';
-            const hiddenMenus = collectHiddenFromCheckboxes(document.getElementById('new-user-menu-list'));
-            const hiddenDbs = collectHiddenDbsFromCheckboxes(document.getElementById('new-user-db-list'));
-            try {
-                const res = await fetch('/api/users', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token, username, password, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs })
-                });
-                const data = await res.json();
-                if (res.ok && data.success) {
-                    acctError.style.display = 'none';
-                    document.getElementById('create-user-form').reset();
-                    loadUserList();
-                } else {
-                    acctError.textContent = data.message || '계정 생성 실패';
-                    acctError.style.display = 'block';
-                }
-            } catch (e) {
-                acctError.textContent = '서버 오류';
-                acctError.style.display = 'block';
-            }
+        document.getElementById('open-menu-visibility-btn')?.addEventListener('click', () => {
+            openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', 'width=560,height=560,resizable=yes,scrollbars=yes');
         });
 
         // --- Menu visibility settings (admin only) ---
-        // Reads the nav-items straight from the DOM (excluding Dashboard) so any menu added
-        // later just shows up here automatically - no code changes needed to stay in sync.
+        // getHiddenMenus/applyMenuVisibility etc. stay here (not moved into menu-visibility.html)
+        // because they're also needed on every normal page load, not just from that popup.
         function getHiddenMenus() {
             try {
                 return JSON.parse(localStorage.getItem('dbagent_hidden_menus') || '[]');
@@ -328,63 +243,6 @@ function getToken() {
             });
         }
 
-        // Shared by the browser-level "메뉴 표시 설정" panel and the per-account menu
-        // picker in the account creation form - both just need a checkbox per nav-item.
-        function renderMenuCheckboxes(container, hiddenSet) {
-            container.innerHTML = '';
-            document.querySelectorAll('.top-nav .nav-item[data-target]').forEach(item => {
-                const target = item.getAttribute('data-target');
-                if (target === 'dashboard') return;
-                const label = item.querySelector('span')?.innerText || target;
-                const row = document.createElement('label');
-                row.innerHTML = `<input type="checkbox" data-menu-target="${target}" ${hiddenSet.has(target) ? '' : 'checked'}><span>${label}</span>`;
-                container.appendChild(row);
-            });
-        }
-
-        function collectHiddenFromCheckboxes(container) {
-            const hidden = [];
-            container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-                if (!cb.checked) hidden.push(cb.getAttribute('data-menu-target'));
-            });
-            return hidden;
-        }
-
-        // Same idea, but reads the DB instances already rendered into the sidebar (from
-        // databases.json via /api/config) - a new DB added there shows up here automatically too.
-        function renderDbCheckboxes(container, hiddenSet) {
-            container.innerHTML = '';
-            document.querySelectorAll('#db-groups-container .instance-item[data-db-id]').forEach(item => {
-                const dbId = item.getAttribute('data-db-id');
-                const label = item.querySelector('span')?.innerText || dbId;
-                const row = document.createElement('label');
-                row.innerHTML = `<input type="checkbox" data-db-target="${dbId}" ${hiddenSet.has(dbId) ? '' : 'checked'}><span>${label}</span>`;
-                container.appendChild(row);
-            });
-        }
-
-        function collectHiddenDbsFromCheckboxes(container) {
-            const hidden = [];
-            container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-                if (!cb.checked) hidden.push(cb.getAttribute('data-db-target'));
-            });
-            return hidden;
-        }
-
-        document.getElementById('open-menu-visibility-btn')?.addEventListener('click', () => {
-            gearDropdown.classList.remove('open');
-            renderMenuCheckboxes(document.getElementById('menu-visibility-list'), new Set(getHiddenMenus()));
-            document.getElementById('menu-visibility-modal').style.display = 'flex';
-        });
-        document.getElementById('menu-visibility-close-btn')?.addEventListener('click', () => {
-            document.getElementById('menu-visibility-modal').style.display = 'none';
-        });
-        document.getElementById('menu-visibility-save-btn')?.addEventListener('click', () => {
-            const hidden = collectHiddenFromCheckboxes(document.getElementById('menu-visibility-list'));
-            localStorage.setItem('dbagent_hidden_menus', JSON.stringify(hidden));
-            applyMenuVisibility();
-            document.getElementById('menu-visibility-modal').style.display = 'none';
-        });
 
         const authed = await checkAuth();
         if (!authed) return;
@@ -477,7 +335,11 @@ function getToken() {
                             if(svg) svg.style.color = 'var(--success)';
                             
                             window.currentDbId = inst.id;
+                            // 인스턴스별 세션 임계치 오버라이드 (databases.json의 "session_thresholds": [t1..t5]),
+                            // 없으면 undefined -> getSessColor()가 자동으로 기본값(DEFAULT_SESSION_THRESHOLDS) 사용.
+                            window.currentSessionThresholds = Array.isArray(inst.session_thresholds) ? inst.session_thresholds : null;
                             if (typeof resetAllDashboardWidgets === 'function') resetAllDashboardWidgets();
+                            if (typeof resetSessionMonitor === 'function') resetSessionMonitor();
                             switchTab('dashboard');
                             fetchDashboard();
                         });
@@ -570,8 +432,10 @@ function getToken() {
             }
         }
         
-        // Auto-fetch data if session
+        // Auto-fetch data if session - always reset+refetch on arrival (not just the first time) so
+        // stale data from before a menu switch or DB switch never lingers on screen.
         if (targetId === 'session') {
+            if (typeof resetSessionMonitor === 'function') resetSessionMonitor();
             const toggleBtn = document.getElementById('session-toggle-btn');
             if (toggleBtn && !isSessionAutoRefreshing) {
                 setTimeout(() => { toggleBtn.click(); }, 100);
@@ -581,6 +445,10 @@ function getToken() {
         // Populate the account dropdown for the currently selected DB
         if (targetId === 'sqlrunner' && typeof window.loadSqlRunnerAccounts === 'function') {
             window.loadSqlRunnerAccounts();
+        }
+        if (targetId === 'sqltuning' && typeof window.loadSqlTuningAccounts === 'function') {
+            window.loadSqlTuningAccounts();
+            if (typeof window.renderSqlTuningBindFields === 'function') window.renderSqlTuningBindFields();
         }
 
         // Auto-fetch data if tmlock
@@ -1297,7 +1165,7 @@ let layoutHTML = "";
             data.forEach(holder => {
                 // Add Holder
                 tableHtml += `
-                    <tr class="tmlock-row" data-sid="${holder.sid}" style="background-color: #ffebee; color: #000; cursor: pointer;">
+                    <tr class="tmlock-row clickable-session-row" data-sid="${holder.sid}" style="background-color: #ffebee; color: #000; cursor: pointer;">
                         <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${holder.sid}" data-serial="${holder.serial}" onclick="event.stopPropagation();"></td>
                         <td><strong><i data-lucide="lock" style="width: 16px; height: 16px; margin-right: 4px; vertical-align: middle;"></i>${holder.sid}</strong></td>
                         <td>${holder.inst_id}</td>
@@ -1319,7 +1187,7 @@ let layoutHTML = "";
                     holder.waiters.forEach(waiter => {
                         // Add Waiter
                         tableHtml += `
-                            <tr class="tmlock-row" data-sid="${waiter.sid}" style="background-color: #fff3cd; color: #000; cursor: pointer;">
+                            <tr class="tmlock-row clickable-session-row" data-sid="${waiter.sid}" style="background-color: #fff3cd; color: #000; cursor: pointer;">
                                 <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${waiter.sid}" data-serial="${waiter.serial}" onclick="event.stopPropagation();"></td>
                                 <td style="padding-left: 20px;"><i data-lucide="corner-down-right" style="width: 16px; height: 16px; margin-right: 4px; vertical-align: middle;"></i>${waiter.sid}</td>
                                 <td>${waiter.inst_id}</td>
@@ -1361,104 +1229,9 @@ let layoutHTML = "";
                 });
             }
 
-            // Attach row click listeners for SQL Query
-            document.querySelectorAll('.tmlock-row').forEach(row => {
-                row.addEventListener('click', async (e) => {
-                    if (e.target.tagName.toLowerCase() === 'input') return;
-                    
-                    const sid = row.getAttribute('data-sid');
-                    if (!sid) return;
-                    
-                    const modal = document.getElementById('image-modal');
-                    const modalContent = document.getElementById('modal-content');
-                    if (!modal || !modalContent) return;
-                    
-                    modalContent.innerHTML = '<h3 style="color: var(--text-main); margin-top: 0;">SQL 조회 중...</h3>';
-                    modal.style.display = 'block';
-                    
-                    try {
-                        const response = await fetch(`/api/session_query?db_id=${window.currentDbId || ""}&sid=${sid}&token=${encodeURIComponent(getToken())}`);
-                        const result = await response.json();
-                        
-                        if (result.error) {
-                            modalContent.innerHTML = `<h3 style="color: var(--danger); margin-top: 0;">오류 발생</h3><p style="color: var(--text-main);">${result.error}</p>`;
-                            return;
-                        }
-                        let bindsHtml = '';
-                        if (result.binds && result.binds.length > 0) {
-                            bindsHtml = `
-                                <table style="width:100%; border-collapse:collapse; margin-top:10px;">
-                                    <thead>
-                                        <tr style="background-color:var(--bg-hover); border-bottom:1px solid var(--border);">
-                                            <th style="padding:8px; text-align:left;">Name</th>
-                                            <th style="padding:8px; text-align:left;">Position</th>
-                                            <th style="padding:8px; text-align:left;">Type</th>
-                                            <th style="padding:8px; text-align:left;">Value</th>
-                                            <th style="padding:8px; text-align:left;">Captured At</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${result.binds.map(b => `
-                                            <tr style="border-bottom:1px solid var(--border);">
-                                                <td style="padding:8px;">${b.name || '-'}</td>
-                                                <td style="padding:8px;">${b.position || '-'}</td>
-                                                <td style="padding:8px;">${b.datatype || '-'}</td>
-                                                <td style="padding:8px; font-weight:bold; color:var(--primary);">${b.value || 'NULL'}</td>
-                                                <td style="padding:8px;">${b.last_captured || '-'}</td>
-                                            </tr>
-                                        `).join('')}
-                                    </tbody>
-                                </table>
-                            `;
-                        } else {
-                            bindsHtml = `<div style="padding:20px; text-align:center; color:var(--text-secondary);">바인드 변수 정보가 없습니다.</div>`;
-                        }
-
-                        modalContent.innerHTML = `
-                            <div style="color: var(--text-main); text-align: left; max-width: 900px; width: 100%;">
-                                <h3 style="margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 10px;">세션 상세정보 (SID: ${result.sid})</h3>
-                                <div style="margin-bottom: 15px;">
-                                    <strong style="color: var(--info);">SQL_ID:</strong> ${result.sql_id || '없음'}
-                                </div>
-                                
-                                <div class="tab-container" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
-                                    <div class="tab-headers" style="display: flex; background-color: var(--bg-card); border-bottom: 1px solid var(--border);">
-                                        <div class="tab-btn active" onclick="switchSessionTab('sql', this)" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold; background-color: var(--bg-hover); color: var(--primary);">SQL 텍스트</div>
-                                        <div class="tab-btn" onclick="switchSessionTab('plan', this)" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold;">실행 계획 (Plan)</div>
-                                        <div class="tab-btn" onclick="switchSessionTab('bind', this)" style="padding: 10px 20px; cursor: pointer; font-weight: bold;">바인드 변수 (Bind)</div>
-                                    </div>
-                                    <div class="tab-content" style="background-color: var(--bg-main); padding: 15px;">
-                                        <div id="tab-sql" class="sess-tab" style="display: block;">
-                                            <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; font-family: monospace; font-size: 14px; margin: 0;">${result.sql_fulltext || 'SQL 텍스트가 없습니다.'}</pre>
-                                        </div>
-                                        <div id="tab-plan" class="sess-tab" style="display: none;">
-                                            <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre; font-family: monospace; font-size: 13px; margin: 0; line-height: 1.2;">${result.plan_text || '실행 계획 정보가 없습니다.'}</pre>
-                                        </div>
-                                        <div id="tab-bind" class="sess-tab" style="display: none;">
-                                            ${bindsHtml}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        `;
-
-                        if (!window.switchSessionTab) {
-                            window.switchSessionTab = function(tabName, element) {
-                                document.querySelectorAll('.sess-tab').forEach(el => el.style.display = 'none');
-                                document.querySelectorAll('.tab-btn').forEach(el => {
-                                    el.style.backgroundColor = 'transparent';
-                                    el.style.color = 'inherit';
-                                });
-                                document.getElementById('tab-' + tabName).style.display = 'block';
-                                element.style.backgroundColor = 'var(--bg-hover)';
-                                element.style.color = 'var(--primary)';
-                            };
-                        }
-                    } catch (error) {
-                        modalContent.innerHTML = `<h3 style="color: var(--danger); margin-top: 0;">오류 발생</h3><p style="color: var(--text-main);">${error.message}</p>`;
-                    }
-                });
-            });
+            // Row clicks are handled by the global `.clickable-session-row` delegate (opens
+            // session-detail.html as a separate, draggable OS window) - see the document-level
+            // click listener near showSelectedSessionsPopup. No per-row listener needed here.
 
             if (typeof lucide !== 'undefined') {
                 lucide.createIcons();
@@ -1558,12 +1331,17 @@ let layoutHTML = "";
     let sessionScatterChart = null;
     let scatterDataPoints = [];
     let isScatterBrushBound = false;
-    const maxDataPoints = 60; // Store last 60 data points (5 minutes at 5s interval)
+    // Both trend charts (left line chart, right Trace scatter) show this same fixed window with
+    // ticks every 5 minutes (20 ticks total) regardless of the polling interval. Window size is tied
+    // to tick count on purpose - 20 ticks is about what fits without Chart.js's autoSkip thinning them
+    // back out, so halving stepSize (10min -> 5min) halves the window too, not just the tick label.
+    const CHART_WINDOW_MS = 20 * 5 * 60 * 1000;
     const sessionHistory = {
         labels: [],
-        active: [],
-        inactive: [],
-        activeTx: []
+        activeTx: [],
+        parallel: [],
+        pending2pc: [],
+        lockWait: []
     };
 
     async function fetchSessions() {
@@ -1573,17 +1351,31 @@ let layoutHTML = "";
             const icon = sessionRefreshBtn.querySelector('i');
             if (icon) icon.classList.add('spinning');
             
-            const response = await fetch(`/api/session?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`);
+            const [response, extraResponse] = await Promise.all([
+                fetch(`/api/session?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`),
+                fetch(`/api/session_extra?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`)
+            ]);
             if (!response.ok) throw new Error('Network response was not ok');
             const data = await response.json();
-            
+
             if (data.error) throw new Error(data.error);
-            
+
+            // session_extra is best-effort (feeds the trend lines + the 3 extra tabs below) - a
+            // failure there shouldn't take down the primary Active Session list/table.
+            let extra = { active_transactions: [], parallel_sessions: [], pending_2pc: [], lock_wait_count: 0 };
+            try {
+                if (extraResponse.ok) {
+                    const extraData = await extraResponse.json();
+                    if (!extraData.error) extra = extraData;
+                }
+            } catch (extraErr) {
+                console.error('Failed to fetch session_extra:', extraErr);
+            }
+
             let activeCount = 0;
             let inactiveCount = 0;
-            let activeTxCount = 0;
             const activeSessions = [];
-            
+
             data.forEach(session => {
                 if (session.status.toUpperCase() === 'ACTIVE') {
                     activeCount++;
@@ -1591,25 +1383,28 @@ let layoutHTML = "";
                 } else {
                     inactiveCount++;
                 }
-                if (session.has_transaction) {
-                    activeTxCount++;
-                }
             });
-            
+
             const now = new Date();
             const nowTime = now.getTime();
             sessionHistory.labels.push(nowTime);
-            sessionHistory.active.push(activeCount);
-            sessionHistory.inactive.push(inactiveCount);
-            sessionHistory.activeTx.push(activeTxCount);
-            
+            sessionHistory.activeTx.push(extra.active_transactions.length);
+            sessionHistory.parallel.push(extra.parallel_sessions.length);
+            sessionHistory.pending2pc.push(extra.pending_2pc.length);
+            sessionHistory.lockWait.push(extra.lock_wait_count || 0);
+
+            // Recomputed every fetch (not a fixed constant) since the polling interval is user-adjustable
+            // - always keep enough points to cover the fixed CHART_WINDOW_MS window at the current rate.
+            const refreshMs = (parseInt(sessionIntervalInput.value) || 5) * 1000;
+            const maxDataPoints = Math.max(1, Math.ceil(CHART_WINDOW_MS / refreshMs));
             if (sessionHistory.labels.length > maxDataPoints) {
                 sessionHistory.labels.shift();
-                sessionHistory.active.shift();
-                sessionHistory.inactive.shift();
                 sessionHistory.activeTx.shift();
+                sessionHistory.parallel.shift();
+                sessionHistory.pending2pc.shift();
+                sessionHistory.lockWait.shift();
             }
-            
+
             const ctx = document.getElementById('session-chart');
             if (ctx) {
                 if (!sessionChart) {
@@ -1619,8 +1414,8 @@ let layoutHTML = "";
                             labels: sessionHistory.labels,
                             datasets: [
                                 {
-                                    label: 'ACTIVE',
-                                    data: sessionHistory.active,
+                                    label: 'ACTIVE TRANSACTION',
+                                    data: sessionHistory.activeTx,
                                     borderColor: '#10b981',
                                     backgroundColor: 'rgba(16, 185, 129, 0.1)',
                                     borderWidth: 1.5,
@@ -1630,10 +1425,10 @@ let layoutHTML = "";
                                     tension: 0
                                 },
                                 {
-                                    label: 'INACTIVE',
-                                    data: sessionHistory.inactive,
-                                    borderColor: '#94a3b8',
-                                    backgroundColor: 'rgba(148, 163, 184, 0.1)',
+                                    label: 'PARALLEL SESSION',
+                                    data: sessionHistory.parallel,
+                                    borderColor: '#808000',
+                                    backgroundColor: 'rgba(128, 128, 0, 0.1)',
                                     borderWidth: 1.5,
                                     pointRadius: 1.5,
                                     pointHoverRadius: 3,
@@ -1641,10 +1436,21 @@ let layoutHTML = "";
                                     tension: 0
                                 },
                                 {
-                                    label: 'ACTIVE TRANSACTION',
-                                    data: sessionHistory.activeTx,
-                                    borderColor: '#f59e0b',
-                                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                                    label: '2PC PENDING TRANSACTION',
+                                    data: sessionHistory.pending2pc,
+                                    borderColor: '#3b82f6',
+                                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                    borderWidth: 1.5,
+                                    pointRadius: 1.5,
+                                    pointHoverRadius: 3,
+                                    fill: true,
+                                    tension: 0
+                                },
+                                {
+                                    label: 'LOCK WAIT',
+                                    data: sessionHistory.lockWait,
+                                    borderColor: '#9333ea',
+                                    backgroundColor: 'rgba(147, 51, 234, 0.1)',
                                     borderWidth: 1.5,
                                     pointRadius: 1.5,
                                     pointHoverRadius: 3,
@@ -1663,41 +1469,40 @@ let layoutHTML = "";
                                 x: {
                                     type: 'time',
                                     time: {
+                                        unit: 'minute',
                                         tooltipFormat: 'HH:mm:ss',
                                         displayFormats: {
-                                            millisecond: 'HH:mm:ss',
-                                            second: 'HH:mm:ss',
-                                            minute: 'HH:mm:ss',
-                                            hour: 'HH:mm:ss'
+                                            minute: 'HH:mm'
                                         }
                                     },
-                                    min: nowTime - (5 * 60 * 1000),
+                                    min: nowTime - CHART_WINDOW_MS,
                                     max: nowTime,
-                                    ticks: { color: 'rgba(255, 255, 255, 0.8)' },
+                                    // stepSize belongs under ticks (not time) in Chart.js v4's time scale -
+                                    // this is what actually forces exact 10-minute-spaced ticks.
+                                    ticks: { color: chartLineColor(0.8), stepSize: 5, maxRotation: 0, minRotation: 0, font: { size: 13 } },
                                     grid: { 
                                         drawOnChartArea: true,
-                                        color: 'rgba(255, 255, 255, 0.15)',
+                                        color: chartLineColor(0.15),
                                         borderDash: [4, 4]
                                     },
                                     border: {
                                         display: true,
-                                        color: 'rgba(255, 255, 255, 1)',
+                                        color: chartLineColor(1),
                                         width: 2
                                     }
                                 },
                                 y: {
                                     beginAtZero: true,
                                     min: 0,
-                                    max: 120,
-                                    ticks: { stepSize: 20, color: 'rgba(255, 255, 255, 0.8)' },
-                                    grid: { 
+                                    ticks: { precision: 0, color: chartLineColor(0.8), font: { size: 13 } },
+                                    grid: {
                                         drawOnChartArea: true,
-                                        color: 'rgba(255, 255, 255, 0.15)',
+                                        color: chartLineColor(0.15),
                                         borderDash: [4, 4]
                                     },
                                     border: {
                                         display: true,
-                                        color: 'rgba(255, 255, 255, 1)',
+                                        color: chartLineColor(1),
                                         width: 2
                                     }
                                 }
@@ -1712,16 +1517,16 @@ let layoutHTML = "";
                                 },
                                 subtitle: {
                                     display: true,
-                                    text: 'Session Count',
+                                    text: 'Transaction / Session Count',
                                     align: 'start',
-                                    color: 'rgba(255, 255, 255, 0.8)',
+                                    color: chartLineColor(0.8),
                                     padding: { bottom: 10 }
                                 }
                             }
                         }
                     });
                 } else {
-                    sessionChart.options.scales.x.min = nowTime - (5 * 60 * 1000);
+                    sessionChart.options.scales.x.min = nowTime - CHART_WINDOW_MS;
                     sessionChart.options.scales.x.max = nowTime;
                     sessionChart.update();
                 }
@@ -1743,8 +1548,8 @@ let layoutHTML = "";
                     }
                 }
             });
-            // Keep only last 10 minutes
-            scatterDataPoints = scatterDataPoints.filter(p => scatterNowTime - p.x <= 10 * 60 * 1000);
+            // Keep only the fixed CHART_WINDOW_MS window (matches the left trend chart)
+            scatterDataPoints = scatterDataPoints.filter(p => scatterNowTime - p.x <= CHART_WINDOW_MS);
 
             const scatterCtx = document.getElementById('session-scatter-chart');
             if (scatterCtx) {
@@ -1760,7 +1565,7 @@ let layoutHTML = "";
                                 borderWidth: 2,
                                 pointRadius: 2,
                                 pointHoverRadius: 5,
-                                pointStyle: 'star'
+                                pointStyle: 'crossRot'
                             }]
                         },
                         options: {
@@ -1769,27 +1574,33 @@ let layoutHTML = "";
                             animation: false,
                             scales: {
                                 x: {
-                                    type: 'linear',
+                                    type: 'time',
                                     position: 'bottom',
-                                    border: {
-                                        display: true,
-                                        color: 'rgba(255, 255, 255, 1)',
-                                        width: 1
-                                    },
-                                    ticks: {
-                                        color: 'rgba(255, 255, 255, 1)',
-                                        maxRotation: 0,
-                                        callback: function(value) {
-                                            const d = new Date(value);
-                                            return d.getHours().toString().padStart(2, '0') + ':' + 
-                                                   d.getMinutes().toString().padStart(2, '0') + ':' + 
-                                                   d.getSeconds().toString().padStart(2, '0');
+                                    time: {
+                                        unit: 'minute',
+                                        tooltipFormat: 'HH:mm:ss',
+                                        displayFormats: {
+                                            minute: 'HH:mm'
                                         }
                                     },
-                                    grid: { 
-                                        color: 'rgba(255, 255, 255, 0.1)',
-                                        borderColor: 'rgba(255, 255, 255, 1)',
-                                        tickColor: 'rgba(255, 255, 255, 1)'
+                                    min: scatterNowTime - CHART_WINDOW_MS,
+                                    max: scatterNowTime,
+                                    border: {
+                                        display: true,
+                                        color: chartLineColor(1),
+                                        width: 1
+                                    },
+                                    // stepSize belongs under ticks (not time) in Chart.js v4's time scale.
+                                    ticks: {
+                                        color: chartLineColor(1),
+                                        stepSize: 5,
+                                        maxRotation: 0,
+                                        font: { size: 13 }
+                                    },
+                                    grid: {
+                                        color: chartLineColor(0.1),
+                                        borderColor: chartLineColor(1),
+                                        tickColor: chartLineColor(1)
                                     },
                                     title: { display: false }
                                 },
@@ -1799,20 +1610,21 @@ let layoutHTML = "";
                                     max: 300,
                                     border: {
                                         display: true,
-                                        color: 'rgba(255, 255, 255, 1)',
+                                        color: chartLineColor(1),
                                         width: 1
                                     },
                                     ticks: {
-                                        color: 'rgba(255, 255, 255, 1)',
+                                        color: chartLineColor(1),
                                         stepSize: 100,
+                                        font: { size: 13 },
                                         callback: function(value) {
                                             return value;
                                         }
                                     },
                                     grid: { 
-                                        color: 'rgba(255, 255, 255, 0.1)',
-                                        borderColor: 'rgba(255, 255, 255, 1)',
-                                        tickColor: 'rgba(255, 255, 255, 1)'
+                                        color: chartLineColor(0.1),
+                                        borderColor: chartLineColor(1),
+                                        tickColor: chartLineColor(1)
                                     }
                                 }
                             },
@@ -1821,7 +1633,7 @@ let layoutHTML = "";
                                     display: true,
                                     text: 'Trace(sec)',
                                     align: 'start',
-                                    color: 'rgba(255, 255, 255, 0.7)',
+                                    color: chartLineColor(0.7),
                                     font: { size: 12, weight: 'bold' },
                                     padding: { top: 0, bottom: 5 }
                                 },
@@ -1838,7 +1650,7 @@ let layoutHTML = "";
                     });
                 } else {
                     sessionScatterChart.data.datasets[0].data = scatterDataPoints;
-                    const minX = scatterNowTime - 5 * 60 * 1000;
+                    const minX = scatterNowTime - CHART_WINDOW_MS;
                     sessionScatterChart.options.scales.x.min = minX;
                     sessionScatterChart.options.scales.x.max = scatterNowTime;
                     sessionScatterChart.update('none');
@@ -1857,7 +1669,7 @@ let layoutHTML = "";
                     const statusClass = 'online';
                     const durationVal = session.duration_time !== null ? Number(session.duration_time) : 0;
                     const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
-                    const durationHtml = session.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--border-color); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3498db; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
+                    const durationHtml = session.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3498db; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
                     html += `
                         <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${session.sid}" data-sql_id="${session.sql_id || ''}">
                             <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="session-checkbox" data-sid="${session.sid}" data-serial="${session.serial}"></td>
@@ -1872,7 +1684,7 @@ let layoutHTML = "";
                                 if (session.session_wait_pct && session.session_wait_pct.includes(',')) {
                                     const [cpu, uio, sio, other] = session.session_wait_pct.split(',').map(Number);
                                     if (cpu + uio + sio + other > 0) {
-                                        waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--border-color);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${other}%; background-color: #95a5a6;" title="Other: ${other}%"></div></div>`;
+                                        waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
                                     }
                                 }
                                 return waitHtml;
@@ -1895,7 +1707,11 @@ let layoutHTML = "";
                     }
                 });
             }
-            
+
+            renderActiveTransactionsTab(extra.active_transactions);
+            renderParallelSessionsTab(extra.parallel_sessions);
+            renderPending2pcTab(extra.pending_2pc);
+
             if (icon) icon.classList.remove('spinning');
         } catch (error) {
             console.error('Error fetching sessions:', error);
@@ -1929,6 +1745,123 @@ let layoutHTML = "";
         });
     }
 
+    function renderActiveTransactionsTab(rows) {
+        const tbody = document.getElementById('sesslist-active-tx-tbody');
+        if (!tbody) return;
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding: 30px;">활성 트랜잭션이 없습니다.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(r => `
+            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${r.sid}" data-sql_id="${r.sql_id || ''}">
+                <td>${r.sid}</td>
+                <td>${r.serial}</td>
+                <td>${r.username || '-'}</td>
+                <td>${r.status || '-'}</td>
+                <td>${r.machine || '-'}</td>
+                <td>${r.program || '-'}</td>
+                <td>${r.sql_id || '-'}</td>
+                <td>${r.start_time || '-'}</td>
+                <td>${r.used_ublk != null ? r.used_ublk : '-'}</td>
+                <td>${r.used_urec != null ? r.used_urec : '-'}</td>
+            </tr>
+        `).join('');
+    }
+
+    function renderParallelSessionsTab(rows) {
+        const tbody = document.getElementById('sesslist-parallel-tbody');
+        if (!tbody) return;
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">병렬 세션이 없습니다.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(r => `
+            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${r.sid}" data-sql_id="">
+                <td>${r.qcsid != null ? r.qcsid : '-'}</td>
+                <td>${r.qcserial != null ? r.qcserial : '-'}</td>
+                <td>${r.sid}</td>
+                <td>${r.serial}</td>
+                <td>${r.server_number != null ? r.server_number : '-'}</td>
+                <td>${r.degree != null ? r.degree : '-'}</td>
+                <td>${r.req_degree != null ? r.req_degree : '-'}</td>
+                <td>${r.username || '-'}</td>
+                <td>${r.status || '-'}</td>
+                <td>${r.program || '-'}</td>
+                <td>${r.machine || '-'}</td>
+            </tr>
+        `).join('');
+    }
+
+    function renderPending2pcTab(rows) {
+        const tbody = document.getElementById('sesslist-2pc-tbody');
+        if (!tbody) return;
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 30px;">보류 중인 2PC 트랜잭션이 없습니다.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(r => `
+            <tr>
+                <td>${r.local_tran_id || '-'}</td>
+                <td>${r.global_tran_id || '-'}</td>
+                <td>${r.state || '-'}</td>
+                <td>${r.mixed || '-'}</td>
+                <td>${r.tran_comment || '-'}</td>
+                <td>${r.host || '-'}</td>
+                <td>${r.fail_time || '-'}</td>
+                <td>${r.retry_time || '-'}</td>
+                <td>${r.os_user || '-'}</td>
+            </tr>
+        `).join('');
+    }
+
+    // Active Session / Active Transaction / Parallel Session / 2pc Pending Transaction tabs
+    const sessListTabBtns = document.querySelectorAll('.sesslist-tab-btn');
+    sessListTabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            sessListTabBtns.forEach(b => {
+                b.classList.remove('active');
+                b.style.borderBottom = 'none';
+                b.style.color = 'var(--text-muted)';
+                b.style.fontWeight = '500';
+            });
+            btn.classList.add('active');
+            btn.style.borderBottom = '2px solid #3b82f6';
+            btn.style.color = '#3b82f6';
+            btn.style.fontWeight = '600';
+
+            const targetId = btn.getAttribute('data-sesslist-tab');
+            document.querySelectorAll('.sesslist-tab-content').forEach(content => {
+                content.style.display = 'none';
+            });
+            document.getElementById(targetId).style.display = 'block';
+        });
+    });
+
+    // Called on arrival at the "Current Session" menu and on every DB switch (see the instance-click
+    // handler and switchTab() below) - destroys the trend/scatter charts and clears their backing
+    // history arrays instead of letting a new DB's data points get appended after an old DB's, which
+    // would otherwise draw a single line jumping between two DBs' unrelated values.
+    function resetSessionMonitor() {
+        if (sessionChart) { sessionChart.destroy(); sessionChart = null; }
+        if (sessionScatterChart) { sessionScatterChart.destroy(); sessionScatterChart = null; }
+        sessionHistory.labels = [];
+        sessionHistory.activeTx = [];
+        sessionHistory.parallel = [];
+        sessionHistory.pending2pc = [];
+        sessionHistory.lockWait = [];
+        scatterDataPoints = [];
+
+        if (sessionTbody) sessionTbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
+        const activeTxTbody = document.getElementById('sesslist-active-tx-tbody');
+        if (activeTxTbody) activeTxTbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
+        const parallelTbody = document.getElementById('sesslist-parallel-tbody');
+        if (parallelTbody) parallelTbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
+        const pending2pcTbody = document.getElementById('sesslist-2pc-tbody');
+        if (pending2pcTbody) pending2pcTbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
+
+        fetchSessions();
+    }
+
     // Dashboard Logic
     const dashCpuVal = document.getElementById('dash-cpu-val');
     const dashMemVal = document.getElementById('dash-mem-val');
@@ -1942,16 +1875,30 @@ let layoutHTML = "";
     const dashHistory = {
         labels: [],
         cpu: [],
-        mem: [],
-        sess: []
+        mem: []
     };
-    
+
     const maxDashPoints = 300; // 5 minutes at 1s interval
-    
+
+    // 기본 임계치(전역) - DB별로 databases.json 인스턴스에 "session_thresholds": [t1,t2,t3,t4,t5] 를
+    // 추가하면(예: [200,300,400,500,600]) 그 DB에서는 이 기본값 대신 그 값을 사용함 (window.currentSessionThresholds,
+    // instLink 클릭 시 채워짐 - 위 DB 트리 로딩 부분 참고).
+    const DEFAULT_SESSION_THRESHOLDS = [60, 70, 80, 90, 100];
+
+    function getSessColor(count, thresholds) {
+        const t = (thresholds && thresholds.length === 5) ? thresholds : DEFAULT_SESSION_THRESHOLDS;
+        if (count >= t[4]) return '#7f1d1d';
+        if (count >= t[3]) return '#b91c1c';
+        if (count >= t[2]) return '#ef4444';
+        if (count >= t[1]) return '#f59e0b';
+        if (count >= t[0]) return '#eab308';
+        return '#10b981';
+    }
+
     function createSegmentedDoughnutChart(ctx, value, activeColor) {
         const segments = 10;
         const dataArr = Array(segments).fill(1);
-        const bgColors = Array(segments).fill('rgba(255, 255, 255, 0.1)'); // Faint white outline for off segments
+        const bgColors = Array(segments).fill(chartLineColor(0.1)); // Faint white outline for off segments
         
         const activeSegments = Math.round((value / 100) * segments);
         for(let i=0; i<activeSegments; i++) {
@@ -1982,67 +1929,6 @@ let layoutHTML = "";
         });
     }
 
-    function createSparkline(ctx, data, color, yMax = null) {
-        const nowTime = new Date().getTime();
-        const config = {
-            type: 'line',
-            data: {
-                labels: dashHistory.labels,
-                datasets: [{
-                    data: data,
-                    borderColor: color,
-                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                    borderWidth: 1.5,
-                    pointRadius: 1.5,
-                    pointHoverRadius: 3,
-                    fill: true,
-                    tension: 0
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: { duration: 0 },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: { enabled: false }
-                },
-                scales: {
-                    x: {
-                        display: true,
-                        type: 'time',
-                        time: {
-                            unit: 'minute',
-                            stepSize: 5,
-                            displayFormats: {
-                                minute: 'HH:mm'
-                            }
-                        },
-                        min: nowTime - (5 * 60 * 1000),
-                        max: nowTime,
-                        ticks: { display: true, color: 'rgba(255, 255, 255, 0.6)', font: { size: 10 } },
-                        grid: { drawOnChartArea: false },
-                        border: { display: true, color: 'rgba(255, 255, 255, 1)', width: 1 }
-                    },
-                    y: { 
-                        display: true,
-                        min: 0,
-                        max: 100,
-                        ticks: { 
-                            display: true, 
-                            stepSize: 20, 
-                            color: 'rgba(255, 255, 255, 0.6)', 
-                            font: { size: 10 } 
-                        },
-                        grid: { drawOnChartArea: false },
-                        border: { display: true, color: 'rgba(255, 255, 255, 1)', width: 1 }
-                    }
-                }
-            }
-        };
-        return new Chart(ctx, config);
-    }
-    
     // Track which db_id each fetch is in flight for (not just a boolean): lets switching DB
     // start a fresh request immediately instead of being blocked by the previous DB's slow one,
     // and lets a late/stale response be discarded if the user has since switched DBs.
@@ -2055,6 +1941,15 @@ let layoutHTML = "";
     // Defined at this shared scope (not inside fetchDashboard) so the DB-switch click handler can
     // also call them directly, wiping stale widgets the instant a new DB is selected rather than
     // waiting on any in-flight fetch to resolve.
+    // Clears a segmented doughnut chart back to the "no data" look (all segments faint) instead of
+    // leaving the previous DB's colored segments on screen until the next fetch resolves.
+    const clearSegmentedDoughnutChart = (chart) => {
+        if (!chart) return;
+        const segments = chart.data.datasets[0].backgroundColor.length;
+        chart.data.datasets[0].backgroundColor = Array(segments).fill(chartLineColor(0.1));
+        chart.update();
+    };
+
     const resetBasic = () => {
         const dashCpuVal = document.getElementById('dash-cpu-val');
         const dashMemVal = document.getElementById('dash-mem-val');
@@ -2062,6 +1957,20 @@ let layoutHTML = "";
         if (dashCpuVal) { dashCpuVal.innerText = '-'; dashCpuVal.style.color = 'var(--text-main)'; }
         if (dashMemVal) { dashMemVal.innerText = '-'; dashMemVal.style.color = 'var(--text-main)'; }
         if (dashSessVal) dashSessVal.innerText = '-';
+        clearSegmentedDoughnutChart(dashCpuChart);
+        clearSegmentedDoughnutChart(dashMemChart);
+        clearSegmentedDoughnutChart(dashSessChart);
+    };
+
+    const resetFailIndicator = () => {
+        const failVal = document.getElementById('dash-fail-val');
+        const failCountLabel = document.getElementById('dash-fail-count');
+        if (failVal) failVal.textContent = '-';
+        if (failCountLabel) failCountLabel.textContent = '';
+        document.body.classList.remove('alert-blink');
+        const incidentBtn = document.getElementById('dash-incident-action-btn');
+        if (incidentBtn) incidentBtn.style.display = 'none';
+        clearSegmentedDoughnutChart(dashFailChart);
     };
 
     const resetHealth = () => {
@@ -2079,6 +1988,11 @@ let layoutHTML = "";
             elList.style.color = 'var(--text-main)';
             elListCirc.style.backgroundColor = 'var(--text-muted)';
         }
+        ['mini-status-max-session', 'mini-status-active-session', 'mini-status-inactive-session',
+         'mini-status-max-process', 'mini-status-dedicated-session', 'mini-status-shared-session'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.innerText = '--';
+        });
     };
 
     const resetSessionData = (message = 'DB에 연결할 수 없습니다.') => {
@@ -2096,6 +2010,7 @@ let layoutHTML = "";
     function resetAllDashboardWidgets() {
         resetBasic();
         resetHealth();
+        resetFailIndicator();
         resetSessionData('접속 중...');
         resetEvents('접속 중...');
     }
@@ -2128,7 +2043,10 @@ let layoutHTML = "";
                     else dashCpuVal.style.color = 'var(--text-main)';
                 }
                 if (dashMemVal) dashMemVal.innerText = `${data.memory}%`;
-                if (dashSessVal) dashSessVal.innerText = data.active_sessions;
+                if (dashSessVal) {
+                    dashSessVal.innerText = data.active_sessions;
+                    dashSessVal.style.color = getSessColor(data.active_sessions, window.currentSessionThresholds);
+                }
                 
                 // Update Memory color based on usage
                 if (dashMemVal) {
@@ -2142,13 +2060,11 @@ let layoutHTML = "";
                 dashHistory.labels.push(nowTime);
                 dashHistory.cpu.push(data.cpu);
                 dashHistory.mem.push(data.memory);
-                dashHistory.sess.push(data.active_sessions);
-                
+
                 if (dashHistory.labels.length > maxDashPoints) {
                     dashHistory.labels.shift();
                     dashHistory.cpu.shift();
                     dashHistory.mem.shift();
-                    dashHistory.sess.shift();
                 }
                 
                 const cpuCtx = document.getElementById('dash-cpu-chart');
@@ -2162,7 +2078,7 @@ let layoutHTML = "";
                     
                     const segments = 10;
                     const activeSegments = Math.round((data.cpu / 100) * segments);
-                    const bgColors = Array(segments).fill('rgba(255, 255, 255, 0.1)');
+                    const bgColors = Array(segments).fill(chartLineColor(0.1));
                     for(let i=0; i<activeSegments; i++) {
                         bgColors[i] = cpuColor;
                     }
@@ -2181,7 +2097,7 @@ let layoutHTML = "";
                     
                     const segments = 10;
                     const activeSegments = Math.round((data.memory / 100) * segments);
-                    const bgColors = Array(segments).fill('rgba(255, 255, 255, 0.1)');
+                    const bgColors = Array(segments).fill(chartLineColor(0.1));
                     for(let i=0; i<activeSegments; i++) {
                         bgColors[i] = memColor;
                     }
@@ -2194,11 +2110,26 @@ let layoutHTML = "";
                     }
                 }
                 
-                if (sessCtx && !dashSessChart) dashSessChart = createSparkline(sessCtx, dashHistory.sess, '#10b981');
-                else if (dashSessChart) {
-                    dashSessChart.options.scales.x.min = nowTime - (5 * 60 * 1000);
-                    dashSessChart.options.scales.x.max = nowTime;
-                    dashSessChart.update();
+                if (sessCtx) {
+                    const sessThresholds = window.currentSessionThresholds || DEFAULT_SESSION_THRESHOLDS;
+                    const sessColor = getSessColor(data.active_sessions, sessThresholds);
+                    // 링은 이 DB의 최상위 임계치(다섯 번째 값) 기준으로 꽉 채워짐 - DB마다 정상 범위가 다르므로
+                    // 절대 100이 아니라 그 DB의 "심각" 기준에 도달했을 때 100%로 보이게 함.
+                    const sessPercent = Math.min((data.active_sessions / sessThresholds[4]) * 100, 100);
+
+                    const segments = 10;
+                    const activeSegments = Math.round((sessPercent / 100) * segments);
+                    const bgColors = Array(segments).fill(chartLineColor(0.1));
+                    for(let i=0; i<activeSegments; i++) {
+                        bgColors[i] = sessColor;
+                    }
+
+                    if (!dashSessChart) {
+                        dashSessChart = createSegmentedDoughnutChart(sessCtx, sessPercent, sessColor);
+                    } else {
+                        dashSessChart.data.datasets[0].backgroundColor = bgColors;
+                        dashSessChart.update();
+                    }
                 }
             } catch (error) {
                 console.error('Dashboard fetchBasic error:', error);
@@ -2223,6 +2154,11 @@ let layoutHTML = "";
                 elList.style.color = '#ef4444';
                 elListCirc.style.backgroundColor = '#ef4444';
             }
+            ['mini-status-max-session', 'mini-status-active-session', 'mini-status-inactive-session',
+             'mini-status-max-process', 'mini-status-dedicated-session', 'mini-status-shared-session'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.innerText = '--';
+            });
         };
 
         const fetchHealth = async () => {
@@ -2260,6 +2196,19 @@ let layoutHTML = "";
                         elList.style.color = lc;
                         elListCirc.style.backgroundColor = lc;
                     }
+
+                    // null when the underlying v$parameter/v$session query failed (e.g. missing
+                    // grant) rather than the DB being down - show '--' instead of a misleading 0.
+                    const setStat = (id, value) => {
+                        const el = document.getElementById(id);
+                        if (el) el.innerText = (value === null || value === undefined) ? '--' : value;
+                    };
+                    setStat('mini-status-max-session', hData.max_sessions);
+                    setStat('mini-status-active-session', hData.active_sessions);
+                    setStat('mini-status-inactive-session', hData.inactive_sessions);
+                    setStat('mini-status-max-process', hData.max_processes);
+                    setStat('mini-status-dedicated-session', hData.dedicated_sessions);
+                    setStat('mini-status-shared-session', hData.shared_sessions);
                 } else {
                     markHealthDown();
                 }
@@ -2322,7 +2271,7 @@ let layoutHTML = "";
                 if (failCtx && failVal) {
                     failVal.textContent = percentage + '%';
                     if (failCountLabel) {
-                        failCountLabel.textContent = `(TM Lock: ${tmLockCount}건) (TX Lock: ${txLockCount}건)`;
+                        failCountLabel.textContent = `[TM Lock ${tmLockCount} EA / TX Lock ${txLockCount} EA]`;
                     }
                     if (percentage >= 80) document.body.classList.add('alert-blink');
                     else document.body.classList.remove('alert-blink');
@@ -2337,7 +2286,7 @@ let layoutHTML = "";
                     
                     const segments = 10;
                     const activeSegments = Math.round((percentage / 100) * segments);
-                    const bgColors = Array(segments).fill('rgba(255, 255, 255, 0.1)');
+                    const bgColors = Array(segments).fill(chartLineColor(0.1));
                     for(let i=0; i<activeSegments; i++) bgColors[i] = failColor;
                     
                     if (!dashFailChart) {
@@ -2376,7 +2325,7 @@ let layoutHTML = "";
                                 activeSess.forEach(s => {
                                     const durationVal = s.duration_time !== null ? Number(s.duration_time) : 0;
                                     const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
-                                    const durationHtml = s.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--border-color); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3498db; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
+                                    const durationHtml = s.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3498db; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
                                     html += `<tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
                                         <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="dash-sess-checkbox" data-sid="${s.sid}" data-serial="${s.serial}"></td>
                                         <td>${s.db_name || '-'}</td>
@@ -2390,7 +2339,7 @@ let layoutHTML = "";
                                             if (s.session_wait_pct && s.session_wait_pct.includes(',')) {
                                                 const [cpu, uio, sio, other] = s.session_wait_pct.split(',').map(Number);
                                                 if (cpu + uio + sio + other > 0) {
-                                                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--border-color);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${other}%; background-color: #95a5a6;" title="Other: ${other}%"></div></div>`;
+                                                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
                                                 }
                                             }
                                             return waitHtml;
@@ -2731,110 +2680,68 @@ let layoutHTML = "";
     }
 
 
-// Global delegate for clickable session rows
-document.addEventListener('click', async (e) => {
+// Global delegate for clickable session rows - opens the session detail (SQL/Plan/Bind) in a
+// separate real browser window (window.open) rather than an in-page modal, so it's a native OS
+// window the user can drag to a second monitor and keep open side-by-side with the dashboard.
+// See session-detail.html for the popup's own fetch/render logic (it has its own document, so it
+// can't share this page's JS scope).
+document.addEventListener('click', (e) => {
     const row = e.target.closest('.clickable-session-row');
     if (row && !e.target.closest('input[type="checkbox"]')) {
         const sid = row.getAttribute('data-sid');
         const sql_id = row.getAttribute('data-sql_id') || '';
         if (!sid && !sql_id) return;
-        
-        const modal = document.getElementById('image-modal');
-        const modalContent = document.getElementById('modal-content');
-        if (!modal || !modalContent) return;
-        
-        modalContent.innerHTML = '<h3 style="color: var(--text-main); margin-top: 0;">로딩 중...</h3>';
-        modal.style.display = 'block';
-        
-        try {
-            const response = await fetch(`/api/session_query?db_id=${window.currentDbId || ""}&sid=${sid || ""}&sql_id=${sql_id}&token=${encodeURIComponent(getToken())}`);
-            const result = await response.json();
-            
-            if (result.error) {
-                modalContent.innerHTML = `<h3 style="color: var(--danger); margin-top: 0;">오류 발생</h3><p style="color: var(--text-main);">${result.error}</p>`;
-                return;
-            }
-            
-            const showSessionDetail = () => {
-                        let bindsHtml = '';
-                        if (result.binds && result.binds.length > 0) {
-                            bindsHtml = `
-                                <table style="width:100%; border-collapse:collapse; margin-top:10px;">
-                                    <thead>
-                                        <tr style="background-color:var(--bg-hover); border-bottom:1px solid var(--border);">
-                                            <th style="padding:8px; text-align:left;">Name</th>
-                                            <th style="padding:8px; text-align:left;">Position</th>
-                                            <th style="padding:8px; text-align:left;">Type</th>
-                                            <th style="padding:8px; text-align:left;">Value</th>
-                                            <th style="padding:8px; text-align:left;">Captured At</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${result.binds.map(b => `
-                                            <tr style="border-bottom:1px solid var(--border);">
-                                                <td style="padding:8px;">${b.name || '-'}</td>
-                                                <td style="padding:8px;">${b.position || '-'}</td>
-                                                <td style="padding:8px;">${b.datatype || '-'}</td>
-                                                <td style="padding:8px; font-weight:bold; color:var(--primary);">${b.value || 'NULL'}</td>
-                                                <td style="padding:8px;">${b.last_captured || '-'}</td>
-                                            </tr>
-                                        `).join('')}
-                                    </tbody>
-                                </table>
-                            `;
-                        } else {
-                            bindsHtml = `<div style="padding:20px; text-align:center; color:var(--text-secondary);">바인드 변수 정보가 없습니다.</div>`;
-                        }
 
-                        modalContent.innerHTML = `
-                            <div style="color: var(--text-main); text-align: left; max-width: 900px; width: 100%;">
-                                <h3 style="margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 10px;">세션 상세정보 (SID: ${result.sid})</h3>
-                                <div style="margin-bottom: 15px;">
-                                    <strong style="color: var(--info);">SQL_ID:</strong> ${result.sql_id || '없음'}
-                                </div>
-                                
-                                <div class="tab-container" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
-                                    <div class="tab-headers" style="display: flex; background-color: var(--bg-card); border-bottom: 1px solid var(--border);">
-                                        <div class="tab-btn active" onclick="switchSessionTab('sql', this)" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold; background-color: var(--bg-hover); color: var(--primary);">SQL 텍스트</div>
-                                        <div class="tab-btn" onclick="switchSessionTab('plan', this)" style="padding: 10px 20px; cursor: pointer; border-right: 1px solid var(--border); font-weight: bold;">실행 계획 (Plan)</div>
-                                        <div class="tab-btn" onclick="switchSessionTab('bind', this)" style="padding: 10px 20px; cursor: pointer; font-weight: bold;">바인드 변수 (Bind)</div>
-                                    </div>
-                                    <div class="tab-content" style="background-color: var(--bg-main); padding: 15px;">
-                                        <div id="tab-sql" class="sess-tab" style="display: block;">
-                                            <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; font-family: monospace; font-size: 14px; margin: 0;">${result.sql_fulltext || 'SQL 텍스트가 없습니다.'}</pre>
-                                        </div>
-                                        <div id="tab-plan" class="sess-tab" style="display: none;">
-                                            <pre style="background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre; font-family: monospace; font-size: 13px; margin: 0; line-height: 1.2;">${result.plan_text || '실행 계획 정보가 없습니다.'}</pre>
-                                        </div>
-                                        <div id="tab-bind" class="sess-tab" style="display: none;">
-                                            ${bindsHtml}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        `;
-
-                        if (!window.switchSessionTab) {
-                            window.switchSessionTab = function(tabName, element) {
-                                document.querySelectorAll('.sess-tab').forEach(el => el.style.display = 'none');
-                                document.querySelectorAll('.tab-btn').forEach(el => {
-                                    el.style.backgroundColor = 'transparent';
-                                    el.style.color = 'inherit';
-                                });
-                                document.getElementById('tab-' + tabName).style.display = 'block';
-                                element.style.backgroundColor = 'var(--bg-hover)';
-                                element.style.color = 'var(--primary)';
-                            };
-                        }
-            };
-            showSessionDetail();
-            
-        } catch (error) {
-            modalContent.innerHTML = `<h3 style="color: var(--danger); margin-top: 0;">오류 발생</h3><p style="color: var(--text-main);">${error.message}</p>`;
-        }
+        const url = `session-detail.html?db_id=${encodeURIComponent(window.currentDbId || '')}&sid=${encodeURIComponent(sid || '')}&sql_id=${encodeURIComponent(sql_id)}`;
+        // Window name keyed on sid/sql_id: re-clicking the same row focuses/reloads its existing
+        // popup instead of spawning a duplicate, while different sessions each get their own window.
+        const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, 'width=640,height=720,resizable=yes,scrollbars=yes');
+        if (popup) popup.focus();
     }
 });
 
+// Receiving end of the "튜닝" button in the session-detail.html popup (called via window.opener).
+// Fills the SQL 정합성/튜닝 메뉴 with the popup's session data and switches to it. AIX has no sLLM
+// server, but the menu's Oracle-only features (1차 성능점검, 바인드 불러오기) still work fully.
+window.openSqlTuningFromPopup = function(sqlText, hashValue, binds) {
+    // If this popup was opened by clicking a session inside the Trace-drag "선택된 세션 리스트" modal
+    // (see showSelectedSessionsPopup), that modal is still open behind the popup - switching the main
+    // window's menu here without closing it first leaves its fixed full-screen overlay sitting on top
+    // of the new SQL 튜닝 screen, making the page look unresponsive/disabled.
+    const selectionModal = document.getElementById('image-modal');
+    if (selectionModal) selectionModal.style.display = 'none';
+
+    const tuningInputEl = document.getElementById('sqltuning-input');
+    const tuningHashEl = document.getElementById('sqltuning-bind-hashvalue');
+    if (tuningInputEl) tuningInputEl.value = sqlText || '';
+    if (tuningHashEl) tuningHashEl.value = (hashValue != null) ? String(hashValue) : '';
+
+    sqlTuningBindValues = {};
+    (binds || []).forEach(b => {
+        if (!b.name) return;
+        const name = b.name.startsWith(':') ? b.name.substring(1) : b.name;
+        sqlTuningBindValues[name] = b.value || '';
+    });
+
+    const navItem = document.querySelector('.nav-item[data-target="sqltuning"]');
+    if (navItem) navItem.click();
+    if (typeof window.renderSqlTuningBindFields === 'function') window.renderSqlTuningBindFields();
+    if (tuningInputEl) tuningInputEl.focus();
+};
+
+
+// .app-container has CSS `zoom: 90%` (see style.css), which makes getBoundingClientRect()/clientX
+// report real screen pixels (post-zoom) while the selection box's own left/top and Chart.js's pixel
+// space are both interpreted in the container's local (pre-zoom) pixels. Mixing the two spaces is why
+// the drag box/selection used to land away from the actual cursor - convert screen px to local px here.
+function scatterPointerToLocal(e, container) {
+    const rect = container.getBoundingClientRect();
+    const scaleX = rect.width ? container.clientWidth / rect.width : 1;
+    const scaleY = rect.height ? container.clientHeight / rect.height : 1;
+    const x = Math.max(0, Math.min((e.clientX - rect.left) * scaleX, container.clientWidth));
+    const y = Math.max(0, Math.min((e.clientY - rect.top) * scaleY, container.clientHeight));
+    return { x, y };
+}
 
 // Scatter Brush Selection Logic
 (function initScatterBrush() {
@@ -2849,26 +2756,23 @@ document.addEventListener('click', async (e) => {
         scatterContainer.addEventListener('mousedown', (e) => {
             if (e.target.id !== 'session-scatter-chart') return;
             isDragging = true;
-            const rect = scatterContainer.getBoundingClientRect();
-            startX = e.clientX - rect.left;
-            startY = e.clientY - rect.top;
-            
+            const p = scatterPointerToLocal(e, scatterContainer);
+            startX = p.x;
+            startY = p.y;
+
             selectionBox.style.left = startX + 'px';
             selectionBox.style.top = startY + 'px';
             selectionBox.style.width = '0px';
             selectionBox.style.height = '0px';
             selectionBox.style.display = 'block';
         });
-        
+
         window.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
-            const rect = scatterContainer.getBoundingClientRect();
-            let currentX = e.clientX - rect.left;
-            let currentY = e.clientY - rect.top;
-            
-            currentX = Math.max(0, Math.min(currentX, rect.width));
-            currentY = Math.max(0, Math.min(currentY, rect.height));
-            
+            const p = scatterPointerToLocal(e, scatterContainer);
+            const currentX = p.x;
+            const currentY = p.y;
+
             const left = Math.min(startX, currentX);
             const top = Math.min(startY, currentY);
             const width = Math.abs(currentX - startX);
@@ -2886,14 +2790,11 @@ document.addEventListener('click', async (e) => {
             selectionBox.style.display = 'none';
             
             if (!window.globalSessionScatterChart) return;
-            
-            const rect = scatterContainer.getBoundingClientRect();
-            let endX = e.clientX - rect.left;
-            let endY = e.clientY - rect.top;
-            
-            endX = Math.max(0, Math.min(endX, rect.width));
-            endY = Math.max(0, Math.min(endY, rect.height));
-            
+
+            const p = scatterPointerToLocal(e, scatterContainer);
+            const endX = p.x;
+            const endY = p.y;
+
             if (Math.abs(endX - startX) < 5 && Math.abs(endY - startY) < 5) return;
             
             const left = Math.min(startX, endX);
@@ -2917,14 +2818,14 @@ document.addEventListener('click', async (e) => {
                 
                 if (!window.globalScatterDataPoints) return;
                 
-                const selectedPoints = (window.globalScatterDataPoints || []).filter(p => 
-                    p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
+                const selectedPoints = (window.globalScatterDataPoints || []).filter(pt =>
+                    pt.x >= minX && pt.x <= maxX && pt.y >= minY && pt.y <= maxY
                 );
-                
+
                 // Deduplicate by SID (to show latest for each SID in the box)
                 const uniqueSessions = {};
-                selectedPoints.forEach(p => {
-                    uniqueSessions[p.session.sid] = p.session;
+                selectedPoints.forEach(pt => {
+                    uniqueSessions[pt.session.sid] = pt.session;
                 });
                 
                 const finalSessions = Object.values(uniqueSessions);
@@ -2939,53 +2840,20 @@ document.addEventListener('click', async (e) => {
     }
 })();
 
+// Drag-selecting on the Trace scatter (or the History tab's scatter) used to render this list into
+// the shared #image-modal in-page. Moved to a real OS window (session-list.html) so it can be dragged
+// to a second monitor the same way session-detail.html already can. localStorage (not sessionStorage -
+// see session-list.html's comment) carries the selection over, with a 'storage' event on the popup
+// side so re-dragging a new selection updates the already-open window instead of showing stale data.
 function showSelectedSessionsPopup(sessions) {
-    const modal = document.getElementById('image-modal');
-    const modalContent = document.getElementById('modal-content');
-    if (!modal || !modalContent) return;
-    
-    let tableHtml = `
-    <h3 style="color:var(--text-main); margin-top:0;">선택된 세션 리스트 (${sessions.length}건)</h3>
-    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:15px;">행을 클릭하시면 SQL 텍스트, DBMS Plan, 바인드 변수 탭이 열립니다.</p>
-    <div style="max-height:400px; overflow-y:auto; border:1px solid var(--border); border-radius:4px;">
-        <table style="width:100%; border-collapse:collapse; color:var(--text-main); white-space: nowrap;">
-            <thead style="background:var(--bg-hover); position:sticky; top:0;">
-                <tr>
-                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Database Name</th>
-                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">종료시간</th>
-                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">SID</th>
-                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">SERIAL#</th>
-                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">SQL_ID</th>
-                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Command</th>
-                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Elapse Time(sec)</th>
-                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Program</th>
-                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">OS USER</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${sessions.map(s => {
-                    const cmdMap = {2: 'INSERT', 3: 'SELECT', 6: 'UPDATE', 7: 'DELETE'};
-                    const cmdText = s.command !== undefined ? (cmdMap[s.command] || s.command) : '-';
-                    return `
-                    <tr class="clickable-session-row" style="cursor:pointer; border-bottom:1px solid var(--border);" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
-                        <td style="padding:10px;">${s.db_name || '-'}</td>
-                        <td style="padding:10px;">${s.capture_time || '-'}</td>
-                        <td style="padding:10px;">${s.sid}</td>
-                        <td style="padding:10px;">${s.serial || '-'}</td>
-                        <td style="padding:10px;">${s.sql_id || '-'}</td>
-                        <td style="padding:10px;">${cmdText}</td>
-                        <td style="padding:10px; color:var(--danger); font-weight:bold;">${s.duration_time}s</td>
-                        <td style="padding:10px;">${s.program_name || '-'}</td>
-                        <td style="padding:10px;">${s.osuser || '-'}</td>
-                    </tr>`;
-                }).join('')}
-            </tbody>
-        </table>
-    </div>
-    `;
-    
-    modalContent.innerHTML = tableHtml;
-    modal.style.display = 'block';
+    try {
+        localStorage.setItem('dbagent_selected_sessions', JSON.stringify({ sessions, ts: Date.now() }));
+    } catch (e) {
+        console.error('Failed to stash selected sessions for the list popup', e);
+        return;
+    }
+    const popup = window.open('session-list.html', 'dbagent_selected_sessions', 'width=1000,height=600,resizable=yes,scrollbars=yes');
+    if (popup) popup.focus();
 }
 
 let historyScatterChart = null;
@@ -3056,26 +2924,23 @@ let historyDataCache = [];
         historyContainer.addEventListener('mousedown', (e) => {
             if (e.target.id !== 'history-scatter-chart') return;
             hIsDragging = true;
-            const rect = historyContainer.getBoundingClientRect();
-            hStartX = e.clientX - rect.left;
-            hStartY = e.clientY - rect.top;
-            
+            const p = scatterPointerToLocal(e, historyContainer);
+            hStartX = p.x;
+            hStartY = p.y;
+
             historySelectionBox.style.left = hStartX + 'px';
             historySelectionBox.style.top = hStartY + 'px';
             historySelectionBox.style.width = '0px';
             historySelectionBox.style.height = '0px';
             historySelectionBox.style.display = 'block';
         });
-        
+
         window.addEventListener('mousemove', (e) => {
             if (!hIsDragging) return;
-            const rect = historyContainer.getBoundingClientRect();
-            let currentX = e.clientX - rect.left;
-            let currentY = e.clientY - rect.top;
-            
-            currentX = Math.max(0, Math.min(currentX, rect.width));
-            currentY = Math.max(0, Math.min(currentY, rect.height));
-            
+            const p = scatterPointerToLocal(e, historyContainer);
+            const currentX = p.x;
+            const currentY = p.y;
+
             const left = Math.min(hStartX, currentX);
             const top = Math.min(hStartY, currentY);
             const width = Math.abs(currentX - hStartX);
@@ -3091,14 +2956,11 @@ let historyDataCache = [];
             if (!hIsDragging) return;
             hIsDragging = false;
             historySelectionBox.style.display = 'none';
-            
-            const rect = historyContainer.getBoundingClientRect();
-            let endX = e.clientX - rect.left;
-            let endY = e.clientY - rect.top;
-            
-            endX = Math.max(0, Math.min(endX, rect.width));
-            endY = Math.max(0, Math.min(endY, rect.height));
-            
+
+            const p = scatterPointerToLocal(e, historyContainer);
+            const endX = p.x;
+            const endY = p.y;
+
             const left = Math.min(hStartX, endX);
             const right = Math.max(hStartX, endX);
             const top = Math.min(hStartY, endY);
@@ -3178,12 +3040,12 @@ function updateHistoryUI(data) {
                             tooltipFormat: 'yyyy-MM-dd HH:mm:ss'
                         },
                         title: { display: true, text: 'Sample Time' },
-                        grid: { color: 'rgba(255,255,255,0.05)' }
+                        grid: { color: chartLineColor(0.05) }
                     },
                     y: {
                         beginAtZero: true,
                         title: { display: true, text: 'Duration (sec)' },
-                        grid: { color: 'rgba(255,255,255,0.05)' }
+                        grid: { color: chartLineColor(0.05) }
                     }
                 },
                 plugins: {
@@ -3478,6 +3340,306 @@ let historySortAsc = true;
             });
         });
     }, 1000);
+
+// SQL 정합성/튜닝 Logic
+// AIX 이관본: sLLM(FastAPI) 서버가 없어 모델 기반 버튼(분석 실행/실행계획 조회 후 분석/실제 실행 통계로
+// 분석)은 서버가 항상 "sLLM 연동 필요" 메시지를 돌려주도록 되어 있음(SqlTuningController 참고) - 이
+// 프런트엔드 코드는 원본과 완전히 동일하며 그 메시지를 그대로 표시할 뿐, 특별한 분기 없음. 모델이
+// 필요 없는 "1차 성능점검"/바인드 불러오기는 실제로 동작함.
+
+    const sqlTuningInput = document.getElementById('sqltuning-input');
+    const sqlTuningBtn = document.getElementById('sqltuning-run-btn');
+    const sqlTuningResult = document.getElementById('sqltuning-result');
+
+    // 모델 답변에 줄바꿈(\n)이 있으면 그대로 쓰고, 하나도 없이 한 문단으로 쭉 이어진 경우엔
+    // 문장이 끝나는 마침표 뒤마다 줄바꿈을 넣어 가독성을 보완한다. 숫자 뒤 마침표(번호 목록
+    // "1. ..." 이나 소수점 "2.5")는 문장 끝이 아니므로 lookbehind로 제외.
+    function formatSqlTuningAnswer(text) {
+        if (!text) return '';
+        if (text.indexOf('\n') !== -1) {
+            return text.replace(/\n/g, '<br/>');
+        }
+        return text.replace(/(?<!\d)\.\s+/g, '.<br/><br/>');
+    }
+
+    if (sqlTuningInput && sqlTuningBtn && sqlTuningResult) {
+        const runSqlTuning = () => {
+            const text = sqlTuningInput.value.trim();
+            if (!text || sqlTuningBtn.disabled) return;
+
+            sqlTuningBtn.disabled = true;
+            sqlTuningResult.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary);"><i data-lucide="loader-2" class="spinning"></i> 모델이 분석 중입니다 (최대 1분 정도 소요될 수 있습니다)...</div>';
+            if (typeof lucide !== 'undefined') lucide.createIcons({root: sqlTuningResult});
+
+            fetch(`/api/sqltuning/analyze`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: text })
+            })
+            .then(res => res.json())
+            .then(data => {
+                sqlTuningBtn.disabled = false;
+                if (data.success === false) {
+                    sqlTuningResult.innerHTML = `<div style="color: red;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
+                    return;
+                }
+                const formatted = formatSqlTuningAnswer(data.answer);
+                sqlTuningResult.innerHTML = `<div style="line-height: 1.6;">${formatted}</div>`;
+            })
+            .catch(() => {
+                sqlTuningBtn.disabled = false;
+                sqlTuningResult.innerHTML = '<div style="color: red;">서버 통신 오류가 발생했습니다. (SQL 튜닝 모델 서버가 켜져 있는지 확인하세요)</div>';
+            });
+        };
+
+        sqlTuningBtn.addEventListener('click', runSqlTuning);
+        sqlTuningInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) runSqlTuning();
+        });
+    }
+
+    // 실행계획/실제 실행 통계 자동 조회 (관리자 전용)
+    const sqlTuningAccountSelect = document.getElementById('sqltuning-account-select');
+    const sqlTuningAutoBtn = document.getElementById('sqltuning-auto-btn');
+    const sqlTuningAutoActualBtn = document.getElementById('sqltuning-auto-actual-btn');
+    const sqlTuningBindPanel = document.getElementById('sqltuning-bind-panel');
+    const sqlTuningBindFields = document.getElementById('sqltuning-bind-fields');
+    const sqlTuningBindToggleBtn = document.getElementById('sqltuning-bind-toggle-btn');
+    const sqlTuningBindHashInput = document.getElementById('sqltuning-bind-hashvalue');
+    const sqlTuningBindCaptureBtn = document.getElementById('sqltuning-bind-capture-btn');
+    const sqlTuningBindCaptureStatus = document.getElementById('sqltuning-bind-capture-status');
+    const SQLTUNING_BIND_COLLAPSE_THRESHOLD = 6; // 이보다 많으면 기본 접힘 + 펼치기 버튼
+    let sqlTuningBindValues = {};
+    let sqlTuningBindExpanded = false;
+
+    // 쿼리에서 :1, :SID 같은 오라클 바인드 변수(콜론 표기, JDBC ? 아님)를 찾아 입력칸을 그려줌.
+    // 문자열 리터럴 안의 콜론은 매칭에서 제외.
+    function extractSqlTuningBindNames(query) {
+        const stripped = query.replace(/'([^']|'')*'/g, "''");
+        const re = /:([A-Za-z][A-Za-z0-9_$#]*|[0-9]+)/g;
+        const seen = new Set();
+        const names = [];
+        let m;
+        while ((m = re.exec(stripped)) !== null) {
+            if (!seen.has(m[1])) { seen.add(m[1]); names.push(m[1]); }
+        }
+        return names;
+    }
+
+    function renderBindField(name) {
+        const val = (sqlTuningBindValues[name] || '').replace(/"/g, '&quot;');
+        return `<label style="display:flex; align-items:center; gap:4px; font-size:0.85rem; color: var(--text-secondary);">:${name}
+            <input type="text" data-bind-name="${name}" value="${val}" style="width: 140px; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-main); color: var(--text-main); font-family: 'Consolas', 'D2Coding', monospace;">
+        </label>`;
+    }
+
+    window.renderSqlTuningBindFields = function () {
+        if (!sqlTuningBindPanel || !sqlTuningBindFields || !sqlTuningInput || !isAdmin()) return;
+        const names = extractSqlTuningBindNames(sqlTuningInput.value);
+        if (names.length === 0) {
+            sqlTuningBindPanel.style.display = 'none';
+            sqlTuningBindFields.innerHTML = '';
+            return;
+        }
+        sqlTuningBindPanel.style.display = 'flex';
+
+        const isCollapsible = names.length > SQLTUNING_BIND_COLLAPSE_THRESHOLD;
+        if (sqlTuningBindToggleBtn) {
+            sqlTuningBindToggleBtn.style.display = isCollapsible ? 'inline-block' : 'none';
+            sqlTuningBindToggleBtn.textContent = `바인드 변수 ${names.length}개 (${sqlTuningBindExpanded ? '접기 ▲' : '펼치기 ▼'})`;
+        }
+
+        if (isCollapsible && !sqlTuningBindExpanded) {
+            sqlTuningBindFields.style.display = 'none';
+            return;
+        }
+
+        sqlTuningBindFields.style.cssText = isCollapsible
+            ? 'display: flex; flex-wrap: wrap; gap: 8px; max-height: 320px; overflow-y: auto; padding: 4px;'
+            : 'display: flex; flex-wrap: wrap; gap: 8px;';
+        sqlTuningBindFields.innerHTML = names.map(renderBindField).join('');
+        sqlTuningBindFields.querySelectorAll('input[data-bind-name]').forEach(inp => {
+            inp.addEventListener('input', () => {
+                sqlTuningBindValues[inp.dataset.bindName] = inp.value;
+            });
+        });
+    }
+
+    if (sqlTuningBindToggleBtn) {
+        sqlTuningBindToggleBtn.addEventListener('click', () => {
+            sqlTuningBindExpanded = !sqlTuningBindExpanded;
+            window.renderSqlTuningBindFields();
+        });
+    }
+
+    if (sqlTuningBindCaptureBtn && sqlTuningBindHashInput) {
+        sqlTuningBindCaptureBtn.addEventListener('click', async () => {
+            const hashValue = sqlTuningBindHashInput.value.trim();
+            if (!hashValue) return;
+            sqlTuningBindCaptureBtn.disabled = true;
+            if (sqlTuningBindCaptureStatus) sqlTuningBindCaptureStatus.textContent = '조회 중...';
+            try {
+                const res = await fetch('/api/sqltuning/bind_capture', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        db_id: window.currentDbId || '',
+                        account: sqlTuningAccountSelect ? sqlTuningAccountSelect.value : '',
+                        token: getToken(),
+                        hash_value: hashValue
+                    })
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    if (sqlTuningBindCaptureStatus) sqlTuningBindCaptureStatus.textContent = data.message || '조회 실패';
+                    return;
+                }
+                Object.assign(sqlTuningBindValues, data.binds || {});
+                sqlTuningBindExpanded = true;
+                window.renderSqlTuningBindFields();
+                if (sqlTuningBindCaptureStatus) {
+                    sqlTuningBindCaptureStatus.textContent = `${Object.keys(data.binds || {}).length}개 값 채움`;
+                }
+            } catch (e) {
+                if (sqlTuningBindCaptureStatus) sqlTuningBindCaptureStatus.textContent = '서버 통신 오류';
+            } finally {
+                sqlTuningBindCaptureBtn.disabled = false;
+            }
+        });
+    }
+
+    if (sqlTuningInput) {
+        sqlTuningInput.addEventListener('input', window.renderSqlTuningBindFields);
+    }
+
+    window.loadSqlTuningAccounts = async function () {
+        if (!sqlTuningAccountSelect) return;
+        const dbId = window.currentDbId || '';
+        try {
+            const res = await fetch(`/api/query/accounts?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`);
+            const data = await res.json();
+            const accounts = data.accounts || [];
+            const previous = sqlTuningAccountSelect.value;
+            sqlTuningAccountSelect.innerHTML = accounts.map(a => `<option value="${a}">${a}</option>`).join('');
+            if (accounts.includes(previous)) {
+                sqlTuningAccountSelect.value = previous;
+            }
+        } catch (e) {
+            console.error('Failed to load SQL tuning accounts:', e);
+        }
+    };
+
+    function runSqlTuningAutoMode(btn, endpoint, loadingMsg, planLabel) {
+        const query = sqlTuningInput.value.trim();
+        if (!query || btn.disabled) return;
+
+        btn.disabled = true;
+        sqlTuningResult.innerHTML = `<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary);"><i data-lucide="loader-2" class="spinning"></i> ${loadingMsg}</div>`;
+        if (typeof lucide !== 'undefined') lucide.createIcons({root: sqlTuningResult});
+
+        fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                db_id: window.currentDbId || '',
+                account: sqlTuningAccountSelect ? sqlTuningAccountSelect.value : '',
+                token: getToken(),
+                query: query,
+                binds: sqlTuningBindValues
+            })
+        })
+        .then(res => res.json())
+        .then(data => {
+            btn.disabled = false;
+            if (data.success === false) {
+                sqlTuningResult.innerHTML = `<div style="color: red;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
+                return;
+            }
+            const formatted = formatSqlTuningAnswer(data.answer);
+            const planHtml = data.plan
+                ? `<div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.8rem; color: var(--text-muted); cursor: pointer;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">[+] ${planLabel}</div><div style="display: none; font-size: 0.8rem; color: var(--text-muted); background: var(--bg-card); padding: 10px; border-radius: 4px; margin-top: 5px; white-space: pre-wrap; font-family: 'Consolas', 'D2Coding', monospace;">${data.plan}</div>`
+                : '';
+            sqlTuningResult.innerHTML = `<div style="line-height: 1.6;">${formatted}</div>${planHtml}`;
+        })
+        .catch(() => {
+            btn.disabled = false;
+            sqlTuningResult.innerHTML = '<div style="color: red;">서버 통신 오류가 발생했습니다.</div>';
+        });
+    }
+
+    if (sqlTuningAutoBtn && sqlTuningInput && sqlTuningResult) {
+        sqlTuningAutoBtn.addEventListener('click', () => runSqlTuningAutoMode(
+            sqlTuningAutoBtn, '/api/sqltuning/analyze_from_query',
+            '실행계획 조회 중... (이어서 모델 분석까지 최대 1분 정도 소요될 수 있습니다)',
+            '조회된 실행계획 원문 보기 (EXPLAIN PLAN, 추정치)'
+        ));
+    }
+
+    if (sqlTuningAutoActualBtn && sqlTuningInput && sqlTuningResult) {
+        sqlTuningAutoActualBtn.addEventListener('click', () => {
+            const query = sqlTuningInput.value.trim();
+            if (!query) return;
+            runSqlTuningAutoMode(
+                sqlTuningAutoActualBtn, '/api/sqltuning/analyze_from_query_actual',
+                '쿼리를 실제로 실행 중... (이어서 모델 분석까지 최대 1분 정도 소요될 수 있습니다)',
+                '조회된 실행계획 원문 보기 (DISPLAY_CURSOR, 실측치)'
+            );
+        });
+    }
+
+    // 1차 성능점검 - "실제 실행 통계로 분석"과 같은 실행계획/실측 통계를 얻지만 sLLM(FastAPI) 호출 없이
+    // 그대로 바로 보여줌 (AI 분석 전에 DBA가 눈으로 먼저 훑어보는 용도, 훨씬 빠름).
+    const sqlTuningQuickCheckBtn = document.getElementById('sqltuning-quickcheck-btn');
+    if (sqlTuningQuickCheckBtn && sqlTuningInput && sqlTuningResult) {
+        sqlTuningQuickCheckBtn.addEventListener('click', () => {
+            const query = sqlTuningInput.value.trim();
+            if (!query || sqlTuningQuickCheckBtn.disabled) return;
+
+            sqlTuningQuickCheckBtn.disabled = true;
+            sqlTuningResult.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary);"><i data-lucide="loader-2" class="spinning"></i> 쿼리를 실제로 실행 중...</div>';
+            if (typeof lucide !== 'undefined') lucide.createIcons({root: sqlTuningResult});
+
+            fetch('/api/sqltuning/quick_check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    db_id: window.currentDbId || '',
+                    account: sqlTuningAccountSelect ? sqlTuningAccountSelect.value : '',
+                    token: getToken(),
+                    query: query,
+                    binds: sqlTuningBindValues
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                sqlTuningQuickCheckBtn.disabled = false;
+                if (data.success === false) {
+                    sqlTuningResult.innerHTML = `<div style="color: red;">${data.message || '점검 중 오류가 발생했습니다.'}</div>`;
+                    return;
+                }
+                sqlTuningResult.innerHTML = `<div style="font-size: 0.85rem; color: var(--text-muted); background: var(--bg-card); padding: 12px; border-radius: 4px; white-space: pre-wrap; font-family: 'Consolas', 'D2Coding', monospace;">${data.plan}</div>`;
+            })
+            .catch(() => {
+                sqlTuningQuickCheckBtn.disabled = false;
+                sqlTuningResult.innerHTML = '<div style="color: red;">서버 통신 오류가 발생했습니다.</div>';
+            });
+        });
+    }
+
+    // 화면 클리어 - 쿼리 입력, 바인드 변수, 결과 영역을 전부 초기 상태로 되돌림
+    const sqlTuningClearBtn = document.getElementById('sqltuning-clear-btn');
+    if (sqlTuningClearBtn && sqlTuningInput && sqlTuningResult) {
+        sqlTuningClearBtn.addEventListener('click', () => {
+            sqlTuningInput.value = '';
+            sqlTuningBindValues = {};
+            sqlTuningBindExpanded = false;
+            if (sqlTuningBindHashInput) sqlTuningBindHashInput.value = '';
+            if (sqlTuningBindCaptureStatus) sqlTuningBindCaptureStatus.textContent = '';
+            window.renderSqlTuningBindFields();
+            sqlTuningResult.innerHTML = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">쿼리/실행계획을 입력하고 분석 실행 버튼을 누르세요.</div>';
+            sqlTuningInput.focus();
+        });
+    }
 
 // AI DBA Tabs & Error Search Logic
 

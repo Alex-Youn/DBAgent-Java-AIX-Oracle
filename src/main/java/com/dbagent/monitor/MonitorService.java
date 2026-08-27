@@ -212,6 +212,113 @@ public class MonitorService {
         return sessions;
     }
 
+    // ------------------------------------------------------------ session_extra
+    // Feeds the "Current Session" screen's Active Transaction / Parallel Session / 2pc Pending
+    // Transaction tabs and trend chart. Each piece is independently best-effort: DBA_2PC_PENDING in
+    // particular requires a privilege many app accounts won't have, so one missing grant shouldn't
+    // blank out the other tabs/lines.
+    public Map<String, Object> getSessionExtra(TargetDbConfig target) throws SQLException {
+        try (Connection conn = poolManager.getConnection(target)) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("active_transactions", queryActiveTransactions(conn));
+            result.put("parallel_sessions", queryParallelSessions(conn));
+            result.put("pending_2pc", queryPending2pc(conn));
+            result.put("lock_wait_count", queryLockWaitCount(conn));
+            return result;
+        }
+    }
+
+    private List<Map<String, Object>> queryActiveTransactions(Connection conn) {
+        String query = "SELECT s.sid, s.serial#, s.username, s.status, s.machine, s.program, s.sql_id, " +
+                "t.start_time, t.used_ublk, t.used_urec " +
+                "FROM v$transaction t JOIN v$session s ON s.saddr = t.ses_addr " +
+                "ORDER BY s.sid";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("sid", rs.getObject("sid"));
+                row.put("serial", rs.getObject("serial#"));
+                row.put("username", rs.getString("username"));
+                row.put("status", rs.getString("status"));
+                row.put("machine", rs.getString("machine"));
+                row.put("program", rs.getString("program"));
+                row.put("sql_id", rs.getString("sql_id"));
+                row.put("start_time", rs.getString("start_time"));
+                row.put("used_ublk", rs.getObject("used_ublk"));
+                row.put("used_urec", rs.getObject("used_urec"));
+                rows.add(row);
+            }
+        } catch (SQLException ignored) {
+            // Best-effort - leave the tab empty rather than failing the whole session_extra call.
+        }
+        return rows;
+    }
+
+    private List<Map<String, Object>> queryParallelSessions(Connection conn) {
+        String query = "SELECT px.sid, px.serial#, px.qcsid, px.qcserial#, px.server#, px.degree, px.req_degree, " +
+                "s.username, s.status, s.program, s.machine " +
+                "FROM v$px_session px JOIN v$session s ON s.sid = px.sid AND s.serial# = px.serial# " +
+                "ORDER BY px.qcsid, px.server#";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("sid", rs.getObject("sid"));
+                row.put("serial", rs.getObject("serial#"));
+                row.put("qcsid", rs.getObject("qcsid"));
+                row.put("qcserial", rs.getObject("qcserial#"));
+                row.put("server_number", rs.getObject("server#"));
+                row.put("degree", rs.getObject("degree"));
+                row.put("req_degree", rs.getObject("req_degree"));
+                row.put("username", rs.getString("username"));
+                row.put("status", rs.getString("status"));
+                row.put("program", rs.getString("program"));
+                row.put("machine", rs.getString("machine"));
+                rows.add(row);
+            }
+        } catch (SQLException ignored) {
+        }
+        return rows;
+    }
+
+    private List<Map<String, Object>> queryPending2pc(Connection conn) {
+        String query = "SELECT local_tran_id, global_tran_id, state, mixed, tran_comment, host, " +
+                "TO_CHAR(fail_time, 'YYYY-MM-DD HH24:MI:SS') as fail_time, " +
+                "TO_CHAR(retry_time, 'YYYY-MM-DD HH24:MI:SS') as retry_time, os_user " +
+                "FROM dba_2pc_pending ORDER BY fail_time";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("local_tran_id", rs.getString("local_tran_id"));
+                row.put("global_tran_id", rs.getString("global_tran_id"));
+                row.put("state", rs.getString("state"));
+                row.put("mixed", rs.getString("mixed"));
+                row.put("tran_comment", rs.getString("tran_comment"));
+                row.put("host", rs.getString("host"));
+                row.put("fail_time", rs.getString("fail_time"));
+                row.put("retry_time", rs.getString("retry_time"));
+                row.put("os_user", rs.getString("os_user"));
+                rows.add(row);
+            }
+        } catch (SQLException ignored) {
+            // Most app accounts won't have SELECT on DBA_2PC_PENDING - empty tab rather than an error.
+        }
+        return rows;
+    }
+
+    private int queryLockWaitCount(Connection conn) {
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT COUNT(DISTINCT sid) as cnt FROM v$lock WHERE request > 0")) {
+            if (rs.next()) {
+                return rs.getInt("cnt");
+            }
+        } catch (SQLException ignored) {
+        }
+        return 0;
+    }
+
     // ------------------------------------------------------------ tablespace
     public List<Map<String, Object>> getTablespaces(TargetDbConfig target) throws SQLException {
         String query = "SELECT df.tablespace_name, df.status, df.total_mb, " +
@@ -408,10 +515,11 @@ public class MonitorService {
 
             String sqlText = "";
             String planText = "";
+            Object hashValue = null;
             List<Map<String, Object>> binds = new ArrayList<>();
 
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT sql_fulltext FROM v$sql WHERE sql_id = ? AND ROWNUM = 1")) {
+                    "SELECT sql_fulltext, hash_value FROM v$sql WHERE sql_id = ? AND ROWNUM = 1")) {
                 ps.setString(1, sSqlId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
@@ -422,6 +530,7 @@ public class MonitorService {
                         } else if (lob != null) {
                             sqlText = rs.getString(1);
                         }
+                        hashValue = rs.getObject(2);
                     }
                 }
             }
@@ -472,6 +581,7 @@ public class MonitorService {
             result.put("sid", sSid);
             result.put("serial", sSerial);
             result.put("sql_id", sSqlId);
+            result.put("hash_value", hashValue);
             result.put("sql_fulltext", sqlText);
             result.put("plan_text", planText);
             result.put("binds", binds);
@@ -572,6 +682,12 @@ public class MonitorService {
         String listenerStatus = "Not Alive";
         String dbName = target.sid();
         String errorMessage = null;
+        Integer maxSessions = null;
+        Integer activeSessions = null;
+        Integer inactiveSessions = null;
+        Integer maxProcesses = null;
+        Integer dedicatedSessions = null;
+        Integer sharedSessions = null;
 
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
             listenerStatus = "Alive";
@@ -585,6 +701,39 @@ public class MonitorService {
             }
             try (ResultSet rs = st.executeQuery("SELECT instance_name FROM v$instance WHERE 1=1")) {
                 if (rs.next()) dbName = rs.getString(1);
+            }
+
+            // Best-effort: the db-mini-status bar's Max Session/Process tiles. Kept separate from the
+            // instance/listener check above so a missing grant on v$parameter (unlikely, but possible
+            // for a locked-down app account) only blanks these tiles instead of misreporting the DB
+            // as down.
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$parameter WHERE name = 'sessions'")) {
+                if (rs.next()) maxSessions = rs.getInt(1);
+            } catch (SQLException ignored) {
+            }
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$parameter WHERE name = 'processes'")) {
+                if (rs.next()) maxProcesses = rs.getInt(1);
+            } catch (SQLException ignored) {
+            }
+            try (ResultSet rs = st.executeQuery(
+                    "SELECT status, COUNT(*) FROM v$session WHERE type != 'BACKGROUND' AND status IN ('ACTIVE', 'INACTIVE') GROUP BY status")) {
+                activeSessions = 0;
+                inactiveSessions = 0;
+                while (rs.next()) {
+                    if ("ACTIVE".equals(rs.getString(1))) activeSessions = rs.getInt(2);
+                    else inactiveSessions = rs.getInt(2);
+                }
+            } catch (SQLException ignored) {
+            }
+            try (ResultSet rs = st.executeQuery(
+                    "SELECT server, COUNT(*) FROM v$session WHERE type != 'BACKGROUND' AND server IN ('DEDICATED', 'SHARED') GROUP BY server")) {
+                dedicatedSessions = 0;
+                sharedSessions = 0;
+                while (rs.next()) {
+                    if ("DEDICATED".equals(rs.getString(1))) dedicatedSessions = rs.getInt(2);
+                    else sharedSessions = rs.getInt(2);
+                }
+            } catch (SQLException ignored) {
             }
         } catch (SQLException e) {
             errorMessage = e.getMessage();
@@ -617,6 +766,12 @@ public class MonitorService {
         result.put("listener_status", listenerStatus);
         result.put("db_name", dbName);
         result.put("error_message", errorMessage);
+        result.put("max_sessions", maxSessions);
+        result.put("active_sessions", activeSessions);
+        result.put("inactive_sessions", inactiveSessions);
+        result.put("max_processes", maxProcesses);
+        result.put("dedicated_sessions", dedicatedSessions);
+        result.put("shared_sessions", sharedSessions);
         return result;
     }
 

@@ -70,6 +70,19 @@ public class MonitorController {
         }
     }
 
+    @GetMapping("/session_extra")
+    public ResponseEntity<Object> sessionExtra(@RequestParam(required = false) String db_id,
+                                                @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        try {
+            return ResponseEntity.ok(monitorService.getSessionExtra(configService.resolve(db_id)));
+        } catch (SQLException e) {
+            return dbError(e);
+        }
+    }
+
     @GetMapping("/tablespace")
     public ResponseEntity<Object> tablespaces(@RequestParam(required = false) String db_id,
                                                @RequestParam(required = false) String token) {

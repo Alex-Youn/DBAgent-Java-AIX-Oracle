@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DB 관리</title>
+    <link rel="stylesheet" href="style.css?v=16">
+    <script>
+        (function () {
+            const saved = localStorage.getItem('dbagent_theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
+    <style>
+        html, body { height: 100%; }
+        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); box-sizing: border-box; }
+        /* width:100% already comes from the base .login-card rule in style.css - just raise the cap
+           and let it track the popup window's actual width as the user resizes it (native window
+           resize via the resizable=yes the popup was opened with), instead of a fixed max-width. */
+        .login-card { max-width: 1200px; margin: 0; max-height: none; box-sizing: border-box; }
+        /* auto-fit/minmax reflows the column count to whatever fits - no fixed breakpoint needed, so
+           narrowing/widening the popup window continuously adjusts how many fields sit per row instead
+           of just scaling a fixed 2-column (or 5-column) grid down until it's cramped or overflows. */
+        .field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+        .field-row-5 { display: grid; grid-template-columns: repeat(auto-fit, minmax(70px, 1fr)); gap: 10px; }
+        /* .db-account-row inputs aren't inside a .login-form-group, so they missed that rule's
+           styling entirely and rendered as tiny unstyled native inputs. Match .login-form-group
+           input's look explicitly instead. */
+        .db-account-row input {
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: rgba(15, 23, 42, 0.6);
+            color: var(--text-main);
+            font-size: 1rem;
+        }
+        .db-account-row input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+        }
+        /* The dropdown-select DB picker below reuses .login-form-group input's field look for the
+           <select> itself, so it reads as one design language with the rest of the form. */
+        .login-form-group select {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: rgba(15, 23, 42, 0.6);
+            color: var(--text-main);
+            font-size: 1rem;
+        }
+        .login-form-group select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <div id="content">불러오는 중...</div>
+    <script>
+        (function () {
+            const contentEl = document.getElementById('content');
+            if (!window.opener || window.opener.closed) {
+                contentEl.innerHTML = '<h3 style="color: var(--danger);">메인 화면이 닫혀 있어 열 수 없습니다.</h3>';
+                return;
+            }
+            // Gear-dropdown button hiding is only a UI convenience - this page does real DB config
+            // mutations, so it needs its own check in case a non-admin opens the URL directly.
+            if (sessionStorage.getItem('dbagent_role') !== 'admin') {
+                contentEl.innerHTML = '<h3 style="color: var(--danger);">관리자만 접근할 수 있습니다.</h3>';
+                return;
+            }
+            const token = sessionStorage.getItem('dbagent_token');
+
+            // 대시보드 기본값(app.js DEFAULT_SESSION_THRESHOLDS)과 동일 - 입력 안 하면 이 기본값이 적용됨.
+            const THRESHOLD_PLACEHOLDERS = [60, 70, 80, 90, 100];
+            function thresholdFieldsHtml(prefix) {
+                return THRESHOLD_PLACEHOLDERS.map((ph, i) => `
+                    <input type="number" id="${prefix}-threshold-${i}" placeholder="${ph}" min="1" style="width:100%;">
+                `).join('');
+            }
+
+            function reloadOpenerAndClose() {
+                if (window.opener && !window.opener.closed) window.opener.location.reload();
+                window.close();
+            }
+
+            function addAccountRow(container, user, password) {
+                const row = document.createElement('div');
+                row.className = 'db-account-row';
+                row.style.cssText = 'display:flex; gap:8px; align-items:center;';
+                row.innerHTML = `
+                    <input type="text" class="db-account-user" placeholder="계정명" value="${user || ''}" style="flex:1;">
+                    <input type="password" class="db-account-password" placeholder="비밀번호${user ? ' (비워두면 유지)' : ''}" value="${password || ''}" style="flex:1;" autocomplete="new-password">
+                    <button type="button" class="login-btn" style="width:auto; margin-top:0; padding:10px 14px; background:#dc2626;">×</button>
+                `;
+                row.querySelector('button').addEventListener('click', () => row.remove());
+                container.appendChild(row);
+            }
+            function renderAccountRows(container, accounts) {
+                container.innerHTML = '';
+                (accounts || []).forEach(acc => addAccountRow(container, acc.user, ''));
+            }
+            function collectAccountRows(container) {
+                const accounts = [];
+                container.querySelectorAll('.db-account-row').forEach(row => {
+                    const user = row.querySelector('.db-account-user').value.trim();
+                    const password = row.querySelector('.db-account-password').value;
+                    if (user) accounts.push({ user, password });
+                });
+                return accounts;
+            }
+
+            // Returns null (don't override - nothing entered) or an array of 5 ints, or 'invalid' if
+            // only some of the 5 fields were filled in (all-or-nothing, matching the backend's rule).
+            function collectThresholds(prefix) {
+                const values = THRESHOLD_PLACEHOLDERS.map((_, i) => document.getElementById(`${prefix}-threshold-${i}`).value.trim());
+                const filled = values.filter(v => v !== '');
+                if (filled.length === 0) return null;
+                if (filled.length !== 5) return 'invalid';
+                return values.map(v => parseInt(v, 10));
+            }
+            function fillThresholds(prefix, thresholds) {
+                THRESHOLD_PLACEHOLDERS.forEach((_, i) => {
+                    document.getElementById(`${prefix}-threshold-${i}`).value = (thresholds && thresholds[i] != null) ? thresholds[i] : '';
+                });
+            }
+
+            const dbFormFieldsHtml = (prefix, withGroupAndId) => `
+                ${withGroupAndId ? `
+                <div class="field-row">
+                    <div class="login-form-group">
+                        <label>그룹명</label>
+                        <input type="text" id="${prefix}-group" list="db-group-options" required autocomplete="off">
+                        <datalist id="db-group-options"></datalist>
+                    </div>
+                    <div class="login-form-group">
+                        <label>ID (고유값)</label>
+                        <input type="text" id="${prefix}-id" required autocomplete="off">
+                    </div>
+                </div>` : ''}
+                <div class="field-row">
+                    <div class="login-form-group">
+                        <label>표시 이름</label>
+                        <input type="text" id="${prefix}-name" required autocomplete="off">
+                    </div>
+                    <div class="login-form-group">
+                        <label>Host (비워두면 tnsnames.ora의 SID를 별칭으로 사용)</label>
+                        <input type="text" id="${prefix}-host" autocomplete="off">
+                    </div>
+                </div>
+                <div class="field-row">
+                    <div class="login-form-group">
+                        <label>Port</label>
+                        <input type="number" id="${prefix}-port" value="1521" required>
+                    </div>
+                    <div class="login-form-group">
+                        <label>SID</label>
+                        <input type="text" id="${prefix}-sid" required autocomplete="off">
+                    </div>
+                </div>
+                <div class="field-row">
+                    <div class="login-form-group">
+                        <label>계정</label>
+                        <input type="text" id="${prefix}-user" required autocomplete="off">
+                    </div>
+                    <div class="login-form-group">
+                        <label>비밀번호${withGroupAndId ? '' : ' (비워두면 기존 값 유지)'}</label>
+                        <input type="password" id="${prefix}-password" ${withGroupAndId ? 'required' : ''} autocomplete="new-password">
+                    </div>
+                </div>
+                <div class="field-row">
+                    <div class="login-form-group">
+                        <label>Pool Min Idle (선택)</label>
+                        <input type="number" id="${prefix}-pool-min" min="0">
+                    </div>
+                    <div class="login-form-group">
+                        <label>Pool Max Size (선택)</label>
+                        <input type="number" id="${prefix}-pool-max" min="1">
+                    </div>
+                </div>
+                <div class="login-form-group">
+                    <label>세션 임계치 1~5단계 (선택, 5개 모두 입력 - 비워두면 기본값 [${THRESHOLD_PLACEHOLDERS.join(', ')}] 사용)</label>
+                    <div class="field-row-5">${thresholdFieldsHtml(prefix)}</div>
+                </div>
+                <div style="margin-bottom: 16px; text-align:left;">
+                    <label style="display:block; margin-bottom:8px; color: var(--text-muted); font-size:0.9rem;">추가 로그인 계정 (선택 - 기본 계정 외에 이 DB로 전환 접속할 수 있는 계정${withGroupAndId ? '' : ', 비밀번호를 비워두면 그 계정은 기존 비밀번호 유지'})</label>
+                    <div id="${prefix}-accounts" style="display:flex; flex-direction:column; gap:10px;"></div>
+                    <button type="button" id="${prefix}-account-add-btn" class="login-btn" style="width:auto; margin-top:10px; padding:8px 14px; font-size:0.85rem; background:#475569;">+ 계정 추가</button>
+                </div>
+            `;
+
+            // Landing view is just a compact dropdown (같은 방식으로 그룹명 입력 - 화살표로 목록 펼쳐서 고르는
+            // UX 요청) instead of listing every DB as an expanded row, so the popup reads at a glance.
+            contentEl.innerHTML = `
+                <div class="login-card">
+                    <div id="db-mgmt-main-view">
+                        <h3 style="margin-bottom: 20px;">DB 관리</h3>
+                        <div class="login-form-group">
+                            <label>DB 선택</label>
+                            <select id="db-select"></select>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-top: 15px;">
+                            <button type="button" class="login-btn" id="db-mgmt-edit-open-btn" style="margin-top: 0; width:auto; padding:12px 24px;">선택한 DB 수정</button>
+                            <button type="button" class="login-btn" id="db-mgmt-delete-btn" style="margin-top: 0; width:auto; padding:12px 24px; background:#dc2626;">선택한 DB 삭제</button>
+                        </div>
+                        <hr style="border-color: var(--border-color); margin: 24px 0;">
+                        <div style="display: flex; gap: 10px;">
+                            <button type="button" class="login-btn" id="db-mgmt-create-open-btn" style="margin-top: 0; width:auto; padding:12px 24px;">+ 새 DB 추가</button>
+                            <button type="button" class="login-btn" id="db-mgmt-close-btn" style="margin-top: 0; width:auto; padding:12px 24px; background: #64748b;">닫기</button>
+                        </div>
+                        <div id="db-mgmt-main-error" class="login-error"></div>
+                    </div>
+
+                    <div id="db-mgmt-create-view" style="display: none;">
+                        <h3 style="margin-bottom: 20px;">새 DB 추가</h3>
+                        <form id="create-db-form">
+                            ${dbFormFieldsHtml('new-db', true)}
+                            <div style="display: flex; gap: 10px; margin-top: 15px;">
+                                <button type="submit" class="login-btn" style="margin-top: 0; width:auto; padding:12px 28px;">DB 추가</button>
+                                <button type="button" class="login-btn" id="create-db-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #64748b;">취소</button>
+                            </div>
+                            <div id="db-mgmt-error" class="login-error"></div>
+                        </form>
+                    </div>
+
+                    <div id="db-mgmt-edit-view" style="display: none;">
+                        <h3 style="margin-bottom: 20px;">DB 수정 - <span id="edit-db-id"></span></h3>
+                        ${dbFormFieldsHtml('edit-db', false)}
+                        <div style="display: flex; gap: 10px; margin-top: 15px;">
+                            <button type="button" class="login-btn" id="edit-db-save-btn" style="margin-top: 0; width:auto; padding:12px 28px;">저장</button>
+                            <button type="button" class="login-btn" id="edit-db-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #64748b;">취소</button>
+                        </div>
+                        <div id="edit-db-error" class="login-error"></div>
+                    </div>
+                </div>
+            `;
+
+            const dbMgmtError = document.getElementById('db-mgmt-error');
+            const dbMgmtMainError = document.getElementById('db-mgmt-main-error');
+            const dbSelect = document.getElementById('db-select');
+            let instanceById = {}; // populated by loadDbConfigList(), read by the edit/delete buttons
+
+            // Switching views toggles display:none/block on siblings but the window's own scroll
+            // position doesn't reset itself - since the form views are tall, going back to a view
+            // scrolled halfway down looked like nothing happened.
+            function showView(id) {
+                ['db-mgmt-main-view', 'db-mgmt-create-view', 'db-mgmt-edit-view'].forEach(v => {
+                    document.getElementById(v).style.display = (v === id) ? 'block' : 'none';
+                });
+                window.scrollTo(0, 0);
+            }
+
+            document.getElementById('new-db-account-add-btn').addEventListener('click', () => {
+                addAccountRow(document.getElementById('new-db-accounts'));
+            });
+            document.getElementById('edit-db-account-add-btn').addEventListener('click', () => {
+                addAccountRow(document.getElementById('edit-db-accounts'));
+            });
+
+            async function loadDbConfigList() {
+                dbMgmtMainError.style.display = 'none';
+                dbSelect.innerHTML = '<option>불러오는 중...</option>';
+                try {
+                    const res = await fetch('/api/config');
+                    const data = await res.json();
+
+                    const groupOptions = document.getElementById('db-group-options');
+                    groupOptions.innerHTML = (data.groups || [])
+                        .map(g => `<option value="${g.group_name}"></option>`).join('');
+
+                    instanceById = {};
+                    dbSelect.innerHTML = '';
+                    (data.groups || []).forEach(group => {
+                        const optgroup = document.createElement('optgroup');
+                        optgroup.label = group.group_name;
+                        (group.instances || []).forEach(inst => {
+                            instanceById[inst.id] = inst;
+                            const opt = document.createElement('option');
+                            opt.value = inst.id;
+                            opt.textContent = `${inst.name} (${inst.id})`;
+                            optgroup.appendChild(opt);
+                        });
+                        dbSelect.appendChild(optgroup);
+                    });
+                    if (!dbSelect.options.length) {
+                        dbSelect.innerHTML = '<option>등록된 DB가 없습니다</option>';
+                    }
+                } catch (e) {
+                    dbSelect.innerHTML = '<option>목록 조회 실패</option>';
+                }
+            }
+
+            document.getElementById('db-mgmt-close-btn').addEventListener('click', () => window.close());
+            document.getElementById('db-mgmt-create-open-btn').addEventListener('click', () => {
+                document.getElementById('create-db-form').reset();
+                renderAccountRows(document.getElementById('new-db-accounts'), []);
+                dbMgmtError.style.display = 'none';
+                showView('db-mgmt-create-view');
+            });
+            document.getElementById('create-db-cancel-btn').addEventListener('click', () => showView('db-mgmt-main-view'));
+
+            document.getElementById('db-mgmt-edit-open-btn').addEventListener('click', () => {
+                const inst = instanceById[dbSelect.value];
+                if (!inst) {
+                    dbMgmtMainError.textContent = '수정할 DB를 선택하세요.';
+                    dbMgmtMainError.style.display = 'block';
+                    return;
+                }
+                showDbEditView(inst);
+            });
+            document.getElementById('db-mgmt-delete-btn').addEventListener('click', async () => {
+                const inst = instanceById[dbSelect.value];
+                if (!inst) {
+                    dbMgmtMainError.textContent = '삭제할 DB를 선택하세요.';
+                    dbMgmtMainError.style.display = 'block';
+                    return;
+                }
+                if (!confirm(`'${inst.name}' (${inst.id})를 삭제하시겠습니까?`)) return;
+                const delRes = await fetch(`/api/db_configs/${encodeURIComponent(inst.id)}?token=${encodeURIComponent(token)}`, { method: 'DELETE' });
+                const delData = await delRes.json();
+                if (!delRes.ok || !delData.success) {
+                    dbMgmtMainError.textContent = delData.message || '삭제 실패';
+                    dbMgmtMainError.style.display = 'block';
+                    return;
+                }
+                if (window.opener && !window.opener.closed) window.opener.location.reload();
+                loadDbConfigList();
+            });
+
+            document.getElementById('create-db-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const thresholds = collectThresholds('new-db');
+                if (thresholds === 'invalid') {
+                    dbMgmtError.textContent = '세션 임계치는 5개 값을 모두 입력하거나 모두 비워두세요.';
+                    dbMgmtError.style.display = 'block';
+                    return;
+                }
+                const body = {
+                    token,
+                    group_name: document.getElementById('new-db-group').value.trim(),
+                    id: document.getElementById('new-db-id').value.trim(),
+                    name: document.getElementById('new-db-name').value.trim(),
+                    host: document.getElementById('new-db-host').value.trim(),
+                    port: parseInt(document.getElementById('new-db-port').value, 10) || 1521,
+                    sid: document.getElementById('new-db-sid').value.trim(),
+                    user: document.getElementById('new-db-user').value.trim(),
+                    password: document.getElementById('new-db-password').value,
+                    pool_min_idle: document.getElementById('new-db-pool-min').value ? parseInt(document.getElementById('new-db-pool-min').value, 10) : null,
+                    pool_max_size: document.getElementById('new-db-pool-max').value ? parseInt(document.getElementById('new-db-pool-max').value, 10) : null,
+                    accounts: collectAccountRows(document.getElementById('new-db-accounts')),
+                    session_thresholds: thresholds
+                };
+                try {
+                    const res = await fetch('/api/db_configs', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+                    const data = await res.json();
+                    if (res.ok && data.success) {
+                        reloadOpenerAndClose();
+                    } else {
+                        dbMgmtError.textContent = data.message || 'DB 추가 실패';
+                        dbMgmtError.style.display = 'block';
+                    }
+                } catch (e2) {
+                    dbMgmtError.textContent = '서버 오류';
+                    dbMgmtError.style.display = 'block';
+                }
+            });
+
+            function showDbEditView(inst) {
+                document.getElementById('edit-db-id').textContent = `${inst.name} (${inst.id})`;
+                document.getElementById('edit-db-name').value = inst.name || '';
+                document.getElementById('edit-db-host').value = inst.host || '';
+                document.getElementById('edit-db-port').value = inst.port || 1521;
+                document.getElementById('edit-db-sid').value = inst.sid || '';
+                document.getElementById('edit-db-user').value = inst.user || '';
+                document.getElementById('edit-db-password').value = '';
+                document.getElementById('edit-db-pool-min').value = inst.pool_min_idle != null ? inst.pool_min_idle : '';
+                document.getElementById('edit-db-pool-max').value = inst.pool_max_size != null ? inst.pool_max_size : '';
+                fillThresholds('edit-db', inst.session_thresholds);
+                renderAccountRows(document.getElementById('edit-db-accounts'), inst.accounts || []);
+                document.getElementById('edit-db-error').style.display = 'none';
+                document.getElementById('edit-db-save-btn').dataset.dbId = inst.id;
+                showView('db-mgmt-edit-view');
+            }
+
+            document.getElementById('edit-db-cancel-btn').addEventListener('click', () => showView('db-mgmt-main-view'));
+
+            document.getElementById('edit-db-save-btn').addEventListener('click', async () => {
+                const id = document.getElementById('edit-db-save-btn').dataset.dbId;
+                const editDbError = document.getElementById('edit-db-error');
+                const thresholds = collectThresholds('edit-db');
+                if (thresholds === 'invalid') {
+                    editDbError.textContent = '세션 임계치는 5개 값을 모두 입력하거나 모두 비워두세요.';
+                    editDbError.style.display = 'block';
+                    return;
+                }
+                const body = {
+                    token,
+                    name: document.getElementById('edit-db-name').value.trim(),
+                    host: document.getElementById('edit-db-host').value.trim(),
+                    port: parseInt(document.getElementById('edit-db-port').value, 10) || 1521,
+                    sid: document.getElementById('edit-db-sid').value.trim(),
+                    user: document.getElementById('edit-db-user').value.trim(),
+                    password: document.getElementById('edit-db-password').value,
+                    pool_min_idle: document.getElementById('edit-db-pool-min').value ? parseInt(document.getElementById('edit-db-pool-min').value, 10) : null,
+                    pool_max_size: document.getElementById('edit-db-pool-max').value ? parseInt(document.getElementById('edit-db-pool-max').value, 10) : null,
+                    accounts: collectAccountRows(document.getElementById('edit-db-accounts')),
+                    session_thresholds: thresholds
+                };
+                try {
+                    const res = await fetch(`/api/db_configs/${encodeURIComponent(id)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+                    const data = await res.json();
+                    if (res.ok && data.success) {
+                        reloadOpenerAndClose();
+                    } else {
+                        editDbError.textContent = data.message || '수정 실패';
+                        editDbError.style.display = 'block';
+                    }
+                } catch (e2) {
+                    editDbError.textContent = '서버 오류';
+                    editDbError.style.display = 'block';
+                }
+            });
+
+            loadDbConfigList();
+        })();
+    </script>
+</body>
+</html>

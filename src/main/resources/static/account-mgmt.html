@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>계정 관리</title>
+    <link rel="stylesheet" href="style.css?v=16">
+    <script>
+        (function () {
+            const saved = localStorage.getItem('dbagent_theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
+    <style>
+        html, body { height: 100%; }
+        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); box-sizing: border-box; }
+        .login-card { max-width: 1200px; margin: 0; max-height: none; box-sizing: border-box; }
+        .field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+        .login-form-group select {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: rgba(15, 23, 42, 0.6);
+            color: var(--text-main);
+            font-size: 1rem;
+        }
+        .login-form-group select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <div id="content">불러오는 중...</div>
+    <script>
+        (function () {
+            const contentEl = document.getElementById('content');
+            if (!window.opener || window.opener.closed) {
+                contentEl.innerHTML = '<h3 style="color: var(--danger);">메인 화면이 닫혀 있어 열 수 없습니다.</h3>';
+                return;
+            }
+            // Gear-dropdown button hiding is only a UI convenience - this page does real account
+            // mutations, so it needs its own check in case a non-admin opens the URL directly.
+            if (sessionStorage.getItem('dbagent_role') !== 'admin') {
+                contentEl.innerHTML = '<h3 style="color: var(--danger);">관리자만 접근할 수 있습니다.</h3>';
+                return;
+            }
+            const token = sessionStorage.getItem('dbagent_token');
+
+            function renderMenuCheckboxes(container, hiddenSet) {
+                container.innerHTML = '';
+                window.opener.document.querySelectorAll('.top-nav .nav-item[data-target]').forEach(item => {
+                    const target = item.getAttribute('data-target');
+                    if (target === 'dashboard') return;
+                    const label = item.querySelector('span') ? item.querySelector('span').innerText : target;
+                    const row = document.createElement('label');
+                    row.innerHTML = `<input type="checkbox" data-menu-target="${target}" ${hiddenSet.has(target) ? '' : 'checked'}><span>${label}</span>`;
+                    container.appendChild(row);
+                });
+            }
+            function renderDbCheckboxes(container, hiddenSet) {
+                container.innerHTML = '';
+                window.opener.document.querySelectorAll('#db-groups-container .instance-item[data-db-id]').forEach(item => {
+                    const dbId = item.getAttribute('data-db-id');
+                    const label = item.querySelector('span') ? item.querySelector('span').innerText : dbId;
+                    const row = document.createElement('label');
+                    row.innerHTML = `<input type="checkbox" data-db-target="${dbId}" ${hiddenSet.has(dbId) ? '' : 'checked'}><span>${label}</span>`;
+                    container.appendChild(row);
+                });
+            }
+            function collectHidden(container, attr) {
+                const hidden = [];
+                container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                    if (!cb.checked) hidden.push(cb.getAttribute(attr));
+                });
+                return hidden;
+            }
+
+            const accessFieldsHtml = (prefix) => `
+                <div style="margin-bottom: 16px;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-main); font-size: 0.95rem;">
+                        <input type="checkbox" id="${prefix}-is-admin" style="width: auto; accent-color: var(--primary);">
+                        <span>관리자(Admin) 권한 부여</span>
+                    </label>
+                </div>
+                <div class="field-row">
+                    <div style="text-align: left;">
+                        <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">표시할 메뉴</label>
+                        <div id="${prefix}-menu-list" class="menu-checkbox-grid"></div>
+                    </div>
+                    <div style="text-align: left;">
+                        <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">접속 대상 DB</label>
+                        <div id="${prefix}-db-list" class="menu-checkbox-grid"></div>
+                    </div>
+                </div>
+            `;
+
+            // Landing view is a compact dropdown (같은 방식으로 DB 관리에서 쓴 패턴) instead of an
+            // always-expanded list, so the popup reads at a glance.
+            contentEl.innerHTML = `
+                <div class="login-card">
+                    <div id="account-mgmt-main-view">
+                        <h3 style="margin-bottom: 20px;">계정 관리</h3>
+                        <div class="login-form-group">
+                            <label>계정 선택</label>
+                            <select id="account-select"></select>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-top: 15px;">
+                            <button type="button" class="login-btn" id="account-mgmt-edit-open-btn" style="margin-top: 0; width:auto; padding:12px 24px;">선택한 계정 수정</button>
+                            <button type="button" class="login-btn" id="account-mgmt-delete-btn" style="margin-top: 0; width:auto; padding:12px 24px; background:#dc2626;">선택한 계정 삭제</button>
+                        </div>
+                        <hr style="border-color: var(--border-color); margin: 24px 0;">
+                        <div style="display: flex; gap: 10px;">
+                            <button type="button" class="login-btn" id="account-mgmt-create-open-btn" style="margin-top: 0; width:auto; padding:12px 24px;">+ 새 계정 추가</button>
+                            <button type="button" class="login-btn" id="account-mgmt-close-btn" style="margin-top: 0; width:auto; padding:12px 24px; background: #64748b;">닫기</button>
+                        </div>
+                        <div id="account-mgmt-main-error" class="login-error"></div>
+                    </div>
+
+                    <div id="account-mgmt-create-view" style="display: none;">
+                        <h3 style="margin-bottom: 20px;">새 계정 추가</h3>
+                        <form id="create-user-form">
+                            <div class="field-row">
+                                <div class="login-form-group">
+                                    <label>새 계정 아이디</label>
+                                    <input type="text" id="new-user-username" required autocomplete="off">
+                                </div>
+                                <div class="login-form-group">
+                                    <label>비밀번호</label>
+                                    <input type="password" id="new-user-password" required autocomplete="new-password">
+                                </div>
+                                <div class="login-form-group">
+                                    <label>비밀번호 확인</label>
+                                    <input type="password" id="new-user-password-confirm" required autocomplete="new-password">
+                                </div>
+                            </div>
+                            ${accessFieldsHtml('new-user')}
+                            <div style="display: flex; gap: 10px; margin-top: 15px;">
+                                <button type="submit" class="login-btn" style="margin-top: 0; width:auto; padding:12px 28px;">계정 생성</button>
+                                <button type="button" class="login-btn" id="create-user-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #64748b;">취소</button>
+                            </div>
+                            <div id="account-mgmt-error" class="login-error"></div>
+                        </form>
+                    </div>
+
+                    <div id="account-mgmt-edit-view" style="display: none;">
+                        <h3 style="margin-bottom: 20px;">권한 수정 - <span id="edit-user-username"></span></h3>
+                        ${accessFieldsHtml('edit-user')}
+                        <div style="display: flex; gap: 10px; margin-top: 15px;">
+                            <button type="button" class="login-btn" id="edit-user-save-btn" style="margin-top: 0; width:auto; padding:12px 28px;">저장</button>
+                            <button type="button" class="login-btn" id="edit-user-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #64748b;">취소</button>
+                        </div>
+                        <div id="edit-user-error" class="login-error"></div>
+                    </div>
+                </div>
+            `;
+
+            const acctError = document.getElementById('account-mgmt-error');
+            const acctMainError = document.getElementById('account-mgmt-main-error');
+            const editUserError = document.getElementById('edit-user-error');
+            const accountSelect = document.getElementById('account-select');
+            let userByUsername = {}; // populated by loadUserList(), read by the edit/delete buttons
+
+            // Switching views toggles display:none/block on siblings but the window's own scroll
+            // position doesn't reset itself, which can strand the user mid-scroll on a hidden view.
+            function showView(id) {
+                ['account-mgmt-main-view', 'account-mgmt-create-view', 'account-mgmt-edit-view'].forEach(v => {
+                    document.getElementById(v).style.display = (v === id) ? 'block' : 'none';
+                });
+                window.scrollTo(0, 0);
+            }
+
+            async function loadUserList() {
+                acctMainError.style.display = 'none';
+                accountSelect.innerHTML = '<option>불러오는 중...</option>';
+                try {
+                    const res = await fetch(`/api/users?token=${encodeURIComponent(token)}`);
+                    const data = await res.json();
+                    if (!res.ok) {
+                        accountSelect.innerHTML = '<option>목록 조회 실패</option>';
+                        return;
+                    }
+                    userByUsername = {};
+                    accountSelect.innerHTML = '';
+                    // admin is a protected, non-editable account (same as before) - excluded from the picker.
+                    (data.users || []).filter(u => u.username !== 'admin').forEach(u => {
+                        userByUsername[u.username] = u;
+                        const opt = document.createElement('option');
+                        opt.value = u.username;
+                        opt.textContent = `${u.username} (${u.role})`;
+                        accountSelect.appendChild(opt);
+                    });
+                    if (!accountSelect.options.length) {
+                        accountSelect.innerHTML = '<option>등록된 계정이 없습니다</option>';
+                    }
+                } catch (e) {
+                    accountSelect.innerHTML = '<option>목록 조회 실패</option>';
+                }
+            }
+
+            document.getElementById('account-mgmt-close-btn').addEventListener('click', () => window.close());
+            document.getElementById('account-mgmt-create-open-btn').addEventListener('click', () => {
+                document.getElementById('create-user-form').reset();
+                renderMenuCheckboxes(document.getElementById('new-user-menu-list'), new Set());
+                renderDbCheckboxes(document.getElementById('new-user-db-list'), new Set());
+                acctError.style.display = 'none';
+                showView('account-mgmt-create-view');
+            });
+            document.getElementById('create-user-cancel-btn').addEventListener('click', () => showView('account-mgmt-main-view'));
+
+            document.getElementById('account-mgmt-edit-open-btn').addEventListener('click', () => {
+                const user = userByUsername[accountSelect.value];
+                if (!user) {
+                    acctMainError.textContent = '수정할 계정을 선택하세요.';
+                    acctMainError.style.display = 'block';
+                    return;
+                }
+                showEditView(user);
+            });
+            document.getElementById('account-mgmt-delete-btn').addEventListener('click', async () => {
+                const user = userByUsername[accountSelect.value];
+                if (!user) {
+                    acctMainError.textContent = '삭제할 계정을 선택하세요.';
+                    acctMainError.style.display = 'block';
+                    return;
+                }
+                if (!confirm(`'${user.username}' 계정을 삭제하시겠습니까?`)) return;
+                const delRes = await fetch(`/api/users/${encodeURIComponent(user.username)}?token=${encodeURIComponent(token)}`, { method: 'DELETE' });
+                const delData = await delRes.json();
+                if (!delRes.ok || !delData.success) {
+                    acctMainError.textContent = delData.message || '삭제 실패';
+                    acctMainError.style.display = 'block';
+                    return;
+                }
+                loadUserList();
+            });
+
+            document.getElementById('create-user-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const username = document.getElementById('new-user-username').value.trim();
+                const password = document.getElementById('new-user-password').value;
+                const confirmPwd = document.getElementById('new-user-password-confirm').value;
+                if (password !== confirmPwd) {
+                    acctError.textContent = '비밀번호가 일치하지 않습니다.';
+                    acctError.style.display = 'block';
+                    return;
+                }
+                const role = document.getElementById('new-user-is-admin').checked ? 'admin' : 'user';
+                const hiddenMenus = collectHidden(document.getElementById('new-user-menu-list'), 'data-menu-target');
+                const hiddenDbs = collectHidden(document.getElementById('new-user-db-list'), 'data-db-target');
+                try {
+                    const res = await fetch('/api/users', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token, username, password, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs })
+                    });
+                    const data = await res.json();
+                    if (res.ok && data.success) {
+                        showView('account-mgmt-main-view');
+                        loadUserList();
+                    } else {
+                        acctError.textContent = data.message || '계정 생성 실패';
+                        acctError.style.display = 'block';
+                    }
+                } catch (e2) {
+                    acctError.textContent = '서버 오류';
+                    acctError.style.display = 'block';
+                }
+            });
+
+            function showEditView(user) {
+                document.getElementById('edit-user-username').textContent = user.username;
+                document.getElementById('edit-user-is-admin').checked = user.role === 'admin';
+                renderMenuCheckboxes(document.getElementById('edit-user-menu-list'), new Set(user.hidden_menus || []));
+                renderDbCheckboxes(document.getElementById('edit-user-db-list'), new Set(user.hidden_dbs || []));
+                document.getElementById('edit-user-error').style.display = 'none';
+                document.getElementById('edit-user-save-btn').dataset.username = user.username;
+                showView('account-mgmt-edit-view');
+            }
+
+            document.getElementById('edit-user-cancel-btn').addEventListener('click', () => showView('account-mgmt-main-view'));
+            document.getElementById('edit-user-save-btn').addEventListener('click', async (e) => {
+                const username = e.target.dataset.username;
+                const role = document.getElementById('edit-user-is-admin').checked ? 'admin' : 'user';
+                const hiddenMenus = collectHidden(document.getElementById('edit-user-menu-list'), 'data-menu-target');
+                const hiddenDbs = collectHidden(document.getElementById('edit-user-db-list'), 'data-db-target');
+                try {
+                    const res = await fetch(`/api/users/${encodeURIComponent(username)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token, role, hidden_menus: hiddenMenus, hidden_dbs: hiddenDbs })
+                    });
+                    const data = await res.json();
+                    if (res.ok && data.success) {
+                        showView('account-mgmt-main-view');
+                        loadUserList();
+                    } else {
+                        editUserError.textContent = data.message || '수정 실패';
+                        editUserError.style.display = 'block';
+                    }
+                } catch (e2) {
+                    editUserError.textContent = '서버 오류';
+                    editUserError.style.display = 'block';
+                }
+            });
+
+            loadUserList();
+        })();
+    </script>
+</body>
+</html>
