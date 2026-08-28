@@ -4,6 +4,8 @@ import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
 import com.dbagent.util.Maps;
 import com.dbagent.util.Strings;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.sql.Clob;
@@ -20,6 +22,8 @@ import java.util.Map;
 /** Java port of the Oracle-monitoring routes in api_server.py (session/lock/tablespace/dashboard/etc). */
 @Service
 public class MonitorService {
+
+    private static final Logger log = LoggerFactory.getLogger(MonitorService.class);
 
     private final OracleConnectionPoolManager poolManager;
     private final OracleQueryHelper queryHelper;
@@ -313,6 +317,25 @@ public class MonitorService {
              ResultSet rs = st.executeQuery("SELECT COUNT(DISTINCT sid) as cnt FROM v$lock WHERE request > 0")) {
             if (rs.next()) {
                 return rs.getInt("cnt");
+            }
+        } catch (SQLException ignored) {
+        }
+        return 0;
+    }
+
+    // Fleet Overview's per-instance card metric (replaces a v$lock-based lock-wait count there - 사용자가
+    // 실측: 이 환경 일부 인스턴스에서 v$lock 스캔 자체가 49초씩 걸림, enqueue 해시체인이 김). v$sysmetric
+    // is a lightweight in-memory metric snapshot, no v$lock scan involved. intsize_csec is measured
+    // elapsed centiseconds for the bucket, not always exactly 6000, hence the range instead of equality;
+    // 5900~6100 covers both the 60s bucket's normal jitter. Value is per-second, scaled to per-minute
+    // since that's the more readable unit for a dashboard card.
+    private long queryTxnPerMinute(Connection conn) {
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT value FROM v$sysmetric WHERE metric_name = 'User Transaction Per Sec' " +
+                     "AND intsize_csec BETWEEN 5900 AND 6100")) {
+            if (rs.next()) {
+                return Math.round(rs.getDouble(1) * 60);
             }
         } catch (SQLException ignored) {
         }
@@ -834,6 +857,7 @@ public class MonitorService {
     private static final double UPTIME_FULL_DAYS = 30.0;
 
     public Map<String, Object> getFleetStatus(TargetDbConfig target) {
+        long startedAt = System.currentTimeMillis();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", target.id());
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
@@ -880,23 +904,28 @@ public class MonitorService {
                 if (rs.next()) activeSessions = rs.getInt(1);
             }
 
-            int lockWait = queryLockWaitCount(conn);
+            long txnPerMin = queryTxnPerMinute(conn);
             double uptimePct = Math.min(100.0, Math.round((uptimeDays / UPTIME_FULL_DAYS) * 10000.0) / 100.0);
 
-            // v1 threshold: CPU high, memory high, or any lock waiter at all reads as "경고" - same
-            // spirit as the dashboard's own CPU/MEM mini-bar coloring (60%/80% breakpoints), just
-            // rolled up into one status instead of per-metric.
-            boolean warning = cpuPct >= 60 || memPct >= 80 || lockWait > 0;
+            // v1 threshold: CPU high or memory high reads as "경고", rolled up into one status instead
+            // of per-metric. CPU bumped 60→80 (사용자 요청) - no longer matches the dashboard's own
+            // CPU mini-bar coloring breakpoint, which is a separate, unrelated display. Used to also
+            // flag on any lock waiter (v$lock-based), dropped when that metric was swapped for
+            // txnPerMin (사용자가 겪은 문제: 이 인스턴스에서 v$lock 스캔 자체가 49초씩 걸림 -
+            // v$sysmetric 기반의 분당 트랜잭션 수로 교체, 트랜잭션 양 자체는 경고 신호가 아니므로 임계값 없음).
+            boolean warning = cpuPct >= 80 || memPct >= 80;
 
             result.put("status", warning ? "degraded" : "alive");
             result.put("cpuPct", cpuPct);
             result.put("memPct", memPct);
             result.put("activeSession", activeSessions);
-            result.put("lockWait", lockWait);
+            result.put("txnPerMin", txnPerMin);
             result.put("uptimePct", uptimePct);
         } catch (Exception e) {
             result.put("status", "down");
             result.put("errorMessage", friendlyDownMessage(e));
+            log.warn("fleet_status failed for db_id={} after {}ms: {}",
+                    target.id(), System.currentTimeMillis() - startedAt, e.toString());
         }
         return result;
     }

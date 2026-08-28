@@ -112,6 +112,21 @@ body {
     height: 28px;
 }
 
+.sidebar-header h2 {
+    font-size: 1.2rem;
+    white-space: nowrap;
+    margin: 0;
+}
+
+.sidebar-brand-link {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+}
+
 .sidebar-nav {
     padding: 20px 0;
     flex: 1;

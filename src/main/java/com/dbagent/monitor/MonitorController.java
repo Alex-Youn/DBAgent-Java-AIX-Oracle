@@ -5,22 +5,33 @@ import com.dbagent.util.Maps;
 import com.dbagent.util.Strings;
 import com.dbagent.oracle.DatabaseConfigService;
 import com.dbagent.oracle.TargetDbConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api")
 public class MonitorController {
+
+    private static final Logger log = LoggerFactory.getLogger(MonitorController.class);
 
     private final MonitorService monitorService;
     private final DatabaseConfigService configService;
@@ -121,6 +132,61 @@ public class MonitorController {
     // many instances/concurrent requests actually show up.
     private static final ExecutorService FLEET_STATUS_EXECUTOR = Executors.newCachedThreadPool();
 
+    // Backs withTimeout() below - a single daemon-ish scheduler is enough since it only ever holds a
+    // cheap "fire a timeout" callback per in-flight fleet_status call, never any real work.
+    private static final ScheduledExecutorService FLEET_STATUS_TIMEOUT_SCHEDULER = Executors.newSingleThreadScheduledExecutor();
+
+    // Hard ceiling on top of MonitorService.getFleetStatus()'s own connect-timeout-bounded query: a
+    // safety net for cases the pool-level timeout doesn't cover (DNS resolution hanging before the
+    // socket connect even starts, for one - 사용자가 겪은 ORA-17002 사례에서, 막힌 DB 하나가 전체
+    // fleet_status 응답을 계속 물고 있는 것처럼 보였던 문제). Past this bound the instance just
+    // reports "down" instead of holding up every other instance's already-ready result.
+    @Value("${dbagent.fleet-status.timeout-seconds:5}")
+    private long fleetStatusTimeoutSeconds;
+
+    // Java 8 has no CompletableFuture.orTimeout() (added in 9) - this is the manual equivalent: race
+    // a *derived view* of the source future against a scheduled failure, whichever completes first
+    // wins. Deliberately not completing `source` itself here - `source` may be the shared in-flight
+    // future every concurrent poll for a db_id is watching (see fleetStatusFor()/fleetStatusInFlight
+    // below). If one poll's timeout completed the shared future directly, it would look "done" to
+    // fleetStatusInFlight and get evicted while the real query is still running underneath, defeating
+    // the de-dupe entirely (the very next poll would just start a second overlapping query again).
+    private static <T> CompletableFuture<T> withTimeout(CompletableFuture<T> source, long timeout, TimeUnit unit) {
+        CompletableFuture<T> view = new CompletableFuture<>();
+        java.util.concurrent.ScheduledFuture<?> timeoutTask = FLEET_STATUS_TIMEOUT_SCHEDULER.schedule(
+                () -> view.completeExceptionally(new TimeoutException("timed out after " + timeout + " " + unit)),
+                timeout, unit);
+        source.whenComplete((value, error) -> {
+            timeoutTask.cancel(false);
+            if (error != null) {
+                view.completeExceptionally(error);
+            } else {
+                view.complete(value);
+            }
+        });
+        return view;
+    }
+
+    // De-dupes overlapping polls per DB: the timeout above only makes the *caller* stop waiting - it
+    // doesn't cancel the underlying query, which keeps running against the real DB. If a slow instance
+    // takes longer than one polling interval to answer, the next poll used to fire a whole new
+    // getFleetStatus() call on top of the still-running one, and the one after that on top of that -
+    // every cycle stacking another copy of the same query (사용자가 DB 쪽에서 직접 확인:
+    // queryLockWaitCount()의 v$lock 카운트 쿼리가 계속 쌓이는 게 보임). Now every poll for a given
+    // db_id just attaches to whatever's already in flight instead of starting a second one, so at most
+    // one real query per instance is ever running at a time no matter how many polls land while it's
+    // still slow.
+    private final Map<String, CompletableFuture<Map<String, Object>>> fleetStatusInFlight = new ConcurrentHashMap<>();
+
+    private CompletableFuture<Map<String, Object>> fleetStatusFor(TargetDbConfig inst) {
+        return fleetStatusInFlight.computeIfAbsent(inst.id(), id -> {
+            CompletableFuture<Map<String, Object>> f =
+                    CompletableFuture.supplyAsync(() -> monitorService.getFleetStatus(inst), FLEET_STATUS_EXECUTOR);
+            f.whenComplete((result, error) -> fleetStatusInFlight.remove(id, f));
+            return f;
+        });
+    }
+
     // Fleet Overview (fleet-overview-test-blue.html): one status snapshot per configured instance.
     // Checked concurrently, not in a loop - a single down/slow DB would otherwise stall every
     // instance queued after it. Respects the same per-account DB visibility as everywhere else
@@ -133,7 +199,16 @@ public class MonitorController {
         }
         List<CompletableFuture<Map<String, Object>>> futures = configService.listAllInstances().stream()
                 .filter(inst -> authService.canAccessDb(token, inst.id()))
-                .map(inst -> CompletableFuture.supplyAsync(() -> monitorService.getFleetStatus(inst), FLEET_STATUS_EXECUTOR))
+                .map(inst -> withTimeout(fleetStatusFor(inst), fleetStatusTimeoutSeconds, TimeUnit.SECONDS)
+                        .exceptionally(ex -> {
+                            log.warn("fleet_status timed out after {}s for db_id={}: {}",
+                                    fleetStatusTimeoutSeconds, inst.id(), ex.toString());
+                            Map<String, Object> fallback = new LinkedHashMap<>();
+                            fallback.put("id", inst.id());
+                            fallback.put("status", "down");
+                            fallback.put("errorMessage", "상태 조회 시간 초과");
+                            return fallback;
+                        }))
                 .collect(Collectors.toList());
         List<Map<String, Object>> results = new ArrayList<>(futures.size());
         for (CompletableFuture<Map<String, Object>> f : futures) {

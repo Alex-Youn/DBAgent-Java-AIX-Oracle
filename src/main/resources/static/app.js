@@ -414,8 +414,9 @@ function getToken() {
                             window.currentSessionThresholds = Array.isArray(inst.session_thresholds) ? inst.session_thresholds : null;
                             if (typeof resetAllDashboardWidgets === 'function') resetAllDashboardWidgets();
                             if (typeof resetSessionMonitor === 'function') resetSessionMonitor();
-                            switchTab('dashboard');
-                            fetchDashboard();
+                            // DB를 바꿔도 지금 보고 있던 메뉴에 그대로 머무르도록 - 대시보드로 강제 이동하지 않음.
+                            const activeNav = document.querySelector('.nav-item.active');
+                            switchTab(activeNav ? activeNav.getAttribute('data-target') : 'dashboard');
                         });
                         
                         instancesDiv.appendChild(instLink);
