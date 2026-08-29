@@ -11,12 +11,13 @@ function isLightTheme() {
     return document.documentElement.getAttribute('data-theme') === 'light';
 }
 
-// Chart.js configs below hardcode axis/grid colors as shades of white for the dark theme; this
-// returns the equivalent shade of near-black when the light theme is active instead, so text/grid
-// lines stay legible against the now-light chart background. Only for chart chrome (ticks/grid/
-// borders/titles), not series colors (those stay theme-neutral).
+// Chart.js configs below hardcode axis/grid colors as shades of white. Both theme slots are dark
+// backgrounds now (2026-08-28: the "light" toggle slot was changed from white back to the original
+// navy dark palette per user request), so this always returns the white-based shade regardless of
+// isLightTheme() - there is no longer an actual light/white background to contrast against. Only
+// for chart chrome (ticks/grid/borders/titles), not series colors (those stay theme-neutral).
 function chartLineColor(alpha) {
-    return isLightTheme() ? `rgba(15, 23, 42, ${alpha})` : `rgba(255, 255, 255, ${alpha})`;
+    return `rgba(255, 255, 255, ${alpha})`;
 }
 
 // --- Auth Logic ---
@@ -81,6 +82,19 @@ function getToken() {
 
 ;(async function initApp() {
     try {
+        // Caps Lock 상태 안내 (로그인 비밀번호 입력창)
+        const loginPasswordInput = document.getElementById('login-password');
+        const loginCapslockHint = document.getElementById('login-password-capslock');
+        if (loginPasswordInput && loginCapslockHint) {
+            const updateCapslockHint = (e) => {
+                const isOn = typeof e.getModifierState === 'function' && e.getModifierState('CapsLock');
+                loginCapslockHint.style.display = isOn ? 'block' : 'none';
+            };
+            loginPasswordInput.addEventListener('keydown', updateCapslockHint);
+            loginPasswordInput.addEventListener('keyup', updateCapslockHint);
+            loginPasswordInput.addEventListener('blur', () => { loginCapslockHint.style.display = 'none'; });
+        }
+
         // Attach auth event listeners
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -154,13 +168,9 @@ function getToken() {
         });
 
         const themeToggleBtn = document.getElementById('theme-toggle-btn');
-        const applyThemeIcon = () => {
-            if (!themeToggleBtn) return;
-            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-            themeToggleBtn.querySelector('i').setAttribute('data-lucide', isLight ? 'moon' : 'sun');
-            if (typeof lucide !== 'undefined') lucide.createIcons();
-        };
-        applyThemeIcon();
+        // 2026-08-28 사용자 요청: 화면배색 버튼 아이콘을 sun/moon 상태 전환 방식에서 고정된 palette
+        // 아이콘으로 변경 - 더 이상 라이트/다크를 아이콘으로 구분해서 보여줄 필요가 없어짐 (palette
+        // 아이콘 자체는 index.html에 고정 마크업으로 이미 존재, 여기서는 클릭 시 배색만 전환).
         themeToggleBtn?.addEventListener('click', () => {
             const isLight = document.documentElement.getAttribute('data-theme') === 'light';
             localStorage.setItem('dbagent_theme', isLight ? 'dark' : 'light');
@@ -381,7 +391,7 @@ function getToken() {
                         instLink.style.display = isRestricted ? 'none' : 'flex';
                         instLink.style.alignItems = 'center';
                         instLink.style.gap = '8px';
-                        instLink.style.color = 'var(--text-muted)';
+                        instLink.style.color = 'var(--primary)';
                         instLink.style.textDecoration = 'none';
                         instLink.style.padding = '5px';
                         instLink.style.borderRadius = '4px';
@@ -389,22 +399,25 @@ function getToken() {
                         instLink.style.cursor = 'pointer';
                         
                         instLink.innerHTML = `
-                            <i data-lucide="database" style="width: 16px; height: 16px;"></i>
+                            <i data-lucide="database" class="instance-icon-static" style="width: 16px; height: 16px;"></i>
+                            <i data-lucide="activity" class="instance-icon-live" style="width: 16px; height: 16px;"></i>
                             <span style="font-weight: bold; font-size: 0.95rem;">${inst.name}</span>
                         `;
                         
                         instLink.addEventListener('click', (e) => {
                             e.preventDefault();
                             
-                            // Reset all links colors
+                            // Reset all links colors (unselected instances shown in blue, not muted gray)
                             document.querySelectorAll('.instance-item').forEach(el => {
-                                el.style.color = 'var(--text-muted)';
+                                el.style.color = 'var(--primary)';
+                                el.classList.remove('active-monitoring');
                                 const svg = el.querySelector('svg');
-                                if(svg) svg.style.color = 'var(--text-muted)';
+                                if(svg) svg.style.color = 'var(--primary)';
                             });
                             
                             // Set active color
                             instLink.style.color = 'var(--success)';
+                            instLink.classList.add('active-monitoring');
                             const svg = instLink.querySelector('svg');
                             if(svg) svg.style.color = 'var(--success)';
                             
@@ -937,7 +950,7 @@ function getToken() {
 
                 // 2. 검색 대상 테이블 (Root)
                 treeHTML += `
-                    <div class="tree-card root" style="border: 2px solid var(--primary-color); box-shadow: 0 0 10px rgba(52, 152, 219, 0.3); cursor: pointer;" onclick="if(window.showTableInfoModal) window.showTableInfoModal('${tableName}')">
+                    <div class="tree-card root" style="border: 2px solid var(--primary-color); box-shadow: 0 0 10px rgba(57, 135, 229, 0.3); cursor: pointer;" onclick="if(window.showTableInfoModal) window.showTableInfoModal('${tableName}')">
                         <div class="table-name"><i data-lucide="table"></i> ${tableName}</div>
                         <div class="relation-type">Selected Table (검색 대상)</div>
                     </div>
@@ -1151,7 +1164,7 @@ let layoutHTML = "";
                 if (response.ok) {
                     const data = await response.json();
                     if (data.error) {
-                        tsTbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center; padding: 30px;">DB Error: ${data.error}</td></tr>`;
+                        tsTbody.innerHTML = `<tr><td colspan="6" style="color:#d03b3b; text-align:center; padding: 30px;">DB Error: ${data.error}</td></tr>`;
                     } else if (data.length === 0) {
                         tsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 30px;">테이블 스페이스 정보가 없습니다.</td></tr>';
                     } else {
@@ -1188,11 +1201,11 @@ let layoutHTML = "";
                         });
                     }
                 } else {
-                    tsTbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center; padding: 30px;">API 서버 오류가 발생했습니다.</td></tr>`;
+                    tsTbody.innerHTML = `<tr><td colspan="6" style="color:#d03b3b; text-align:center; padding: 30px;">API 서버 오류가 발생했습니다.</td></tr>`;
                 }
             } catch (error) {
                 console.error('Tablespace fetch error:', error);
-                tsTbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+                tsTbody.innerHTML = `<tr><td colspan="6" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
             }
             if (icon) icon.classList.remove('spinning');
             if (tsLoadingOverlay) tsLoadingOverlay.style.display = 'none';
@@ -1247,7 +1260,7 @@ let layoutHTML = "";
             data.forEach(holder => {
                 // Add Holder
                 tableHtml += `
-                    <tr class="tmlock-row clickable-session-row" data-sid="${holder.sid}" style="background-color: #ffebee; color: #000; cursor: pointer;">
+                    <tr class="tmlock-row clickable-session-row" data-sid="${holder.sid}" style="background-color: rgba(208, 59, 59, 0.15); color: var(--text-main); cursor: pointer;">
                         <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${holder.sid}" data-serial="${holder.serial}" onclick="event.stopPropagation();"></td>
                         <td><strong><i data-lucide="lock" style="width: 16px; height: 16px; margin-right: 4px; vertical-align: middle;"></i>${holder.sid}</strong></td>
                         <td>${holder.inst_id}</td>
@@ -1269,7 +1282,7 @@ let layoutHTML = "";
                     holder.waiters.forEach(waiter => {
                         // Add Waiter
                         tableHtml += `
-                            <tr class="tmlock-row clickable-session-row" data-sid="${waiter.sid}" style="background-color: #fff3cd; color: #000; cursor: pointer;">
+                            <tr class="tmlock-row clickable-session-row" data-sid="${waiter.sid}" style="background-color: rgba(250, 178, 25, 0.15); color: var(--text-main); cursor: pointer;">
                                 <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${waiter.sid}" data-serial="${waiter.serial}" onclick="event.stopPropagation();"></td>
                                 <td style="padding-left: 20px;"><i data-lucide="corner-down-right" style="width: 16px; height: 16px; margin-right: 4px; vertical-align: middle;"></i>${waiter.sid}</td>
                                 <td>${waiter.inst_id}</td>
@@ -1498,8 +1511,8 @@ let layoutHTML = "";
                                 {
                                     label: 'ACTIVE TRANSACTION',
                                     data: sessionHistory.activeTx,
-                                    borderColor: '#10b981',
-                                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                    borderColor: '#0ca30c',
+                                    backgroundColor: 'rgba(12, 163, 12, 0.1)',
                                     borderWidth: 1.5,
                                     pointRadius: 1.5,
                                     pointHoverRadius: 3,
@@ -1520,8 +1533,8 @@ let layoutHTML = "";
                                 {
                                     label: '2PC PENDING TRANSACTION',
                                     data: sessionHistory.pending2pc,
-                                    borderColor: '#3b82f6',
-                                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                    borderColor: '#3987e5',
+                                    backgroundColor: 'rgba(57, 135, 229, 0.1)',
                                     borderWidth: 1.5,
                                     pointRadius: 1.5,
                                     pointHoverRadius: 3,
@@ -1751,7 +1764,7 @@ let layoutHTML = "";
                     const statusClass = 'online';
                     const durationVal = session.duration_time !== null ? Number(session.duration_time) : 0;
                     const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
-                    const durationHtml = session.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3498db; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
+                    const durationHtml = session.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
                     html += `
                         <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${session.sid}" data-sql_id="${session.sql_id || ''}">
                             <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="session-checkbox" data-sid="${session.sid}" data-serial="${session.serial}"></td>
@@ -1764,9 +1777,9 @@ let layoutHTML = "";
                             <td>${(() => {
                                 let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
                                 if (session.session_wait_pct && session.session_wait_pct.includes(',')) {
-                                    const [cpu, uio, sio, other] = session.session_wait_pct.split(',').map(Number);
-                                    if (cpu + uio + sio + other > 0) {
-                                        waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
+                                    const [cpu, uio, sio, latch, txlock, tmlock, other] = session.session_wait_pct.split(',').map(Number);
+                                    if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
+                                        waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #e91e63;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #e74c3c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
                                     }
                                 }
                                 return waitHtml;
@@ -1797,7 +1810,7 @@ let layoutHTML = "";
             if (icon) icon.classList.remove('spinning');
         } catch (error) {
             console.error('Error fetching sessions:', error);
-            sessionTbody.innerHTML = `<tr><td colspan="7" style="color:red; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+            sessionTbody.innerHTML = `<tr><td colspan="7" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
         }
     }
 
@@ -1907,8 +1920,8 @@ let layoutHTML = "";
                 b.style.fontWeight = '500';
             });
             btn.classList.add('active');
-            btn.style.borderBottom = '2px solid #3b82f6';
-            btn.style.color = '#3b82f6';
+            btn.style.borderBottom = '2px solid #3987e5';
+            btn.style.color = '#3987e5';
             btn.style.fontWeight = '600';
 
             const targetId = btn.getAttribute('data-sesslist-tab');
@@ -1969,12 +1982,12 @@ let layoutHTML = "";
 
     function getSessColor(count, thresholds) {
         const t = (thresholds && thresholds.length === 5) ? thresholds : DEFAULT_SESSION_THRESHOLDS;
-        if (count >= t[4]) return '#7f1d1d';
-        if (count >= t[3]) return '#b91c1c';
-        if (count >= t[2]) return '#ef4444';
-        if (count >= t[1]) return '#f59e0b';
-        if (count >= t[0]) return '#eab308';
-        return '#10b981';
+        if (count >= t[4]) return '#6e1f1f';
+        if (count >= t[3]) return '#9e2d2d';
+        if (count >= t[2]) return '#d03b3b';
+        if (count >= t[1]) return '#fab219';
+        if (count >= t[0]) return '#d9a72f';
+        return '#0ca30c';
     }
 
     function createSegmentedDoughnutChart(ctx, value, activeColor) {
@@ -2120,8 +2133,8 @@ let layoutHTML = "";
                 
                 if (dashCpuVal) {
                     dashCpuVal.innerText = `${data.cpu}%`;
-                    if (data.cpu >= 90) dashCpuVal.style.color = '#ef4444';
-                    else if (data.cpu >= 80) dashCpuVal.style.color = '#f59e0b';
+                    if (data.cpu >= 90) dashCpuVal.style.color = '#d03b3b';
+                    else if (data.cpu >= 80) dashCpuVal.style.color = '#fab219';
                     else dashCpuVal.style.color = 'var(--text-main)';
                 }
                 if (dashMemVal) dashMemVal.innerText = `${data.memory}%`;
@@ -2132,8 +2145,8 @@ let layoutHTML = "";
                 
                 // Update Memory color based on usage
                 if (dashMemVal) {
-                    if (data.memory >= 90) dashMemVal.style.color = '#ef4444';
-                    else if (data.memory >= 80) dashMemVal.style.color = '#f59e0b';
+                    if (data.memory >= 90) dashMemVal.style.color = '#d03b3b';
+                    else if (data.memory >= 80) dashMemVal.style.color = '#fab219';
                     else dashMemVal.style.color = 'var(--text-main)';
                 }
                 
@@ -2154,9 +2167,9 @@ let layoutHTML = "";
                 const sessCtx = document.getElementById('dash-sess-chart');
                 
                 if (cpuCtx) {
-                    let cpuColor = '#3b82f6';
-                    if (data.cpu >= 90) cpuColor = '#ef4444';
-                    else if (data.cpu >= 80) cpuColor = '#f59e0b';
+                    let cpuColor = '#3987e5';
+                    if (data.cpu >= 90) cpuColor = '#d03b3b';
+                    else if (data.cpu >= 80) cpuColor = '#fab219';
                     
                     const segments = 10;
                     const activeSegments = Math.round((data.cpu / 100) * segments);
@@ -2173,9 +2186,9 @@ let layoutHTML = "";
                     }
                 }
                 if (memCtx) {
-                    let memColor = '#3b82f6';
-                    if (data.memory >= 90) memColor = '#ef4444';
-                    else if (data.memory >= 80) memColor = '#f59e0b';
+                    let memColor = '#3987e5';
+                    if (data.memory >= 90) memColor = '#d03b3b';
+                    else if (data.memory >= 80) memColor = '#fab219';
                     
                     const segments = 10;
                     const activeSegments = Math.round((data.memory / 100) * segments);
@@ -2226,15 +2239,15 @@ let layoutHTML = "";
             const elInstCirc = document.getElementById('mini-status-instance-circle');
             if (elInst && elInstCirc) {
                 elInst.innerText = 'Not Alive';
-                elInst.style.color = '#ef4444';
-                elInstCirc.style.backgroundColor = '#ef4444';
+                elInst.style.color = '#d03b3b';
+                elInstCirc.style.backgroundColor = '#d03b3b';
             }
             const elList = document.getElementById('mini-status-listener');
             const elListCirc = document.getElementById('mini-status-listener-circle');
             if (elList && elListCirc) {
                 elList.innerText = 'Not Alive';
-                elList.style.color = '#ef4444';
-                elListCirc.style.backgroundColor = '#ef4444';
+                elList.style.color = '#d03b3b';
+                elListCirc.style.backgroundColor = '#d03b3b';
             }
             ['mini-status-max-session', 'mini-status-active-session', 'mini-status-inactive-session',
              'mini-status-max-process', 'mini-status-dedicated-session', 'mini-status-shared-session'].forEach(id => {
@@ -2254,7 +2267,7 @@ let layoutHTML = "";
                     
                     // 'Busy' = self-inflicted pool contention/cooldown, not a real outage - shown in
                     // amber so it isn't mistaken for the DB actually being down.
-                    const statusColor = (status) => status === 'Alive' ? '#3b82f6' : (status === 'Busy' ? '#f59e0b' : '#ef4444');
+                    const statusColor = (status) => status === 'Alive' ? '#3987e5' : (status === 'Busy' ? '#fab219' : '#d03b3b');
 
                     const elInst = document.getElementById('mini-status-instance');
                     const elInstCirc = document.getElementById('mini-status-instance-circle');
@@ -2362,9 +2375,9 @@ let layoutHTML = "";
                     if (incidentBtn) incidentBtn.style.display = (percentage >= 80 && isAdmin()) ? 'block' : 'none';
 
 
-                    let failColor = '#10b981';
-                    if (percentage >= 70) failColor = '#ef4444';
-                    else if (percentage >= 50) failColor = '#f59e0b';
+                    let failColor = '#0ca30c';
+                    if (percentage >= 70) failColor = '#d03b3b';
+                    else if (percentage >= 50) failColor = '#fab219';
                     
                     const segments = 10;
                     const activeSegments = Math.round((percentage / 100) * segments);
@@ -2407,7 +2420,7 @@ let layoutHTML = "";
                                 activeSess.forEach(s => {
                                     const durationVal = s.duration_time !== null ? Number(s.duration_time) : 0;
                                     const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
-                                    const durationHtml = s.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3498db; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
+                                    const durationHtml = s.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
                                     html += `<tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
                                         <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="dash-sess-checkbox" data-sid="${s.sid}" data-serial="${s.serial}"></td>
                                         <td>${s.db_name || '-'}</td>
@@ -2419,9 +2432,9 @@ let layoutHTML = "";
                                         <td>${(() => {
                                             let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
                                             if (s.session_wait_pct && s.session_wait_pct.includes(',')) {
-                                                const [cpu, uio, sio, other] = s.session_wait_pct.split(',').map(Number);
-                                                if (cpu + uio + sio + other > 0) {
-                                                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
+                                                const [cpu, uio, sio, latch, txlock, tmlock, other] = s.session_wait_pct.split(',').map(Number);
+                                                if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
+                                                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #e91e63;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #e74c3c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
                                                 }
                                             }
                                             return waitHtml;
@@ -2544,8 +2557,8 @@ let layoutHTML = "";
             });
             
             btn.classList.add('active');
-            btn.style.borderBottom = '2px solid #3b82f6';
-            btn.style.color = '#3b82f6';
+            btn.style.borderBottom = '2px solid #3987e5';
+            btn.style.color = '#3987e5';
             btn.style.fontWeight = '600';
             
             const targetId = btn.getAttribute('data-dash-tab');
@@ -3462,7 +3475,7 @@ let historySortAsc = true;
             .then(data => {
                 sqlTuningBtn.disabled = false;
                 if (data.success === false) {
-                    sqlTuningResult.innerHTML = `<div style="color: red;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
+                    sqlTuningResult.innerHTML = `<div style="color: #d03b3b;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
                     return;
                 }
                 const formatted = formatSqlTuningAnswer(data.answer);
@@ -3470,7 +3483,7 @@ let historySortAsc = true;
             })
             .catch(() => {
                 sqlTuningBtn.disabled = false;
-                sqlTuningResult.innerHTML = '<div style="color: red;">서버 통신 오류가 발생했습니다. (SQL 튜닝 모델 서버가 켜져 있는지 확인하세요)</div>';
+                sqlTuningResult.innerHTML = '<div style="color: #d03b3b;">서버 통신 오류가 발생했습니다. (SQL 튜닝 모델 서버가 켜져 있는지 확인하세요)</div>';
             });
         };
 
@@ -3634,7 +3647,7 @@ let historySortAsc = true;
         .then(data => {
             btn.disabled = false;
             if (data.success === false) {
-                sqlTuningResult.innerHTML = `<div style="color: red;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
+                sqlTuningResult.innerHTML = `<div style="color: #d03b3b;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
                 return;
             }
             const formatted = formatSqlTuningAnswer(data.answer);
@@ -3645,7 +3658,7 @@ let historySortAsc = true;
         })
         .catch(() => {
             btn.disabled = false;
-            sqlTuningResult.innerHTML = '<div style="color: red;">서버 통신 오류가 발생했습니다.</div>';
+            sqlTuningResult.innerHTML = '<div style="color: #d03b3b;">서버 통신 오류가 발생했습니다.</div>';
         });
     }
 
@@ -3696,14 +3709,14 @@ let historySortAsc = true;
             .then(data => {
                 sqlTuningQuickCheckBtn.disabled = false;
                 if (data.success === false) {
-                    sqlTuningResult.innerHTML = `<div style="color: red;">${data.message || '점검 중 오류가 발생했습니다.'}</div>`;
+                    sqlTuningResult.innerHTML = `<div style="color: #d03b3b;">${data.message || '점검 중 오류가 발생했습니다.'}</div>`;
                     return;
                 }
                 sqlTuningResult.innerHTML = `<div style="font-size: 0.85rem; color: var(--text-muted); background: var(--bg-card); padding: 12px; border-radius: 4px; white-space: pre-wrap; font-family: 'Consolas', 'D2Coding', monospace;">${data.plan}</div>`;
             })
             .catch(() => {
                 sqlTuningQuickCheckBtn.disabled = false;
-                sqlTuningResult.innerHTML = '<div style="color: red;">서버 통신 오류가 발생했습니다.</div>';
+                sqlTuningResult.innerHTML = '<div style="color: #d03b3b;">서버 통신 오류가 발생했습니다.</div>';
             });
         });
     }
@@ -3782,12 +3795,12 @@ let historySortAsc = true;
                         </div>
                     `;
                 } else if (data.error) {
-                    errorSearchResult.innerHTML = `<div style="color: red; text-align: center; margin-top: 50px;">오류: ${data.error}</div>`;
+                    errorSearchResult.innerHTML = `<div style="color: #d03b3b; text-align: center; margin-top: 50px;">오류: ${data.error}</div>`;
                 } else {
                     errorSearchResult.innerHTML = `<div style="color: var(--text-secondary); text-align: center; margin-top: 50px;">${data.message || '결과를 찾을 수 없습니다.'}</div>`;
                 }
             } catch (err) {
-                errorSearchResult.innerHTML = `<div style="color: red; text-align: center; margin-top: 50px;">서버 통신 오류가 발생했습니다.</div>`;
+                errorSearchResult.innerHTML = `<div style="color: #d03b3b; text-align: center; margin-top: 50px;">서버 통신 오류가 발생했습니다.</div>`;
             }
         };
 
@@ -3914,7 +3927,7 @@ let historySortAsc = true;
 
                 if (!data.success) {
                     sqlRunnerStatus.textContent = '';
-                    sqlRunnerResult.innerHTML = `<div style="color: #ef4444; padding: 15px; background: var(--bg-card); border-radius: 6px; white-space: pre-wrap;">오류: ${escapeHtml(data.message || '알 수 없는 오류')}</div>`;
+                    sqlRunnerResult.innerHTML = `<div style="color: #d03b3b; padding: 15px; background: var(--bg-card); border-radius: 6px; white-space: pre-wrap;">오류: ${escapeHtml(data.message || '알 수 없는 오류')}</div>`;
                     return;
                 }
 
@@ -3949,7 +3962,7 @@ let historySortAsc = true;
                 sqlRunnerResult.innerHTML = html;
             } catch (err) {
                 sqlRunnerStatus.textContent = '';
-                sqlRunnerResult.innerHTML = '<div style="color: #ef4444; text-align:center; margin-top:30px;">서버 통신 오류가 발생했습니다.</div>';
+                sqlRunnerResult.innerHTML = '<div style="color: #d03b3b; text-align:center; margin-top:30px;">서버 통신 오류가 발생했습니다.</div>';
             } finally {
                 sqlRunnerBtn.disabled = false;
             }

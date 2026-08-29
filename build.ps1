@@ -36,6 +36,23 @@ function Get-MvnExe {
     throw "mvn not found in PATH and no bundled maven39\ found."
 }
 
+# mvn.cmd builds under whatever JDK $env:JAVA_HOME points at, not the bundled JDK Get-JavaExe uses to
+# *run* the jar - so without this, a stale/older system JAVA_HOME (or none at all) silently makes
+# Maven compile/repackage with the wrong JDK. Force it to the bundled jdk17\ here too, same reasoning
+# as Get-JavaExe in start.ps1.
+function Set-BundledJavaHome {
+    $bundled = Join-Path $PSScriptRoot "jdk17"
+    if (Test-Path (Join-Path $bundled "bin\javac.exe")) {
+        $env:JAVA_HOME = $bundled
+        return
+    }
+    if ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\bin\javac.exe")) {
+        Write-Output "WARNING: bundled jdk17\ not found, falling back to system JAVA_HOME ($env:JAVA_HOME) - verify it is Java 17+."
+        return
+    }
+    throw "No JDK found: bundled jdk17\ is missing and JAVA_HOME is not set to a valid JDK."
+}
+
 $wasRunning = $false
 if (Test-Path $pidFile) {
     $existingPid = Get-Content $pidFile
@@ -48,7 +65,8 @@ if (Test-Path $pidFile) {
 }
 
 $mvnExe = Get-MvnExe
-Write-Output "Building with Maven ($mvnExe) ..."
+Set-BundledJavaHome
+Write-Output "Building with Maven ($mvnExe) using JAVA_HOME=$env:JAVA_HOME ..."
 & $mvnExe -q -DskipTests package
 if ($LASTEXITCODE -ne 0) {
     throw "Maven build failed (exit code $LASTEXITCODE). See the Maven output above."

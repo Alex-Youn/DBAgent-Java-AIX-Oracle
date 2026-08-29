@@ -17,7 +17,7 @@
     <div id="login-overlay">
         <div class="login-showcase">
             <div class="login-topbar">
-                <i data-lucide="database"></i>
+                <i data-lucide="activity" class="brand-icon-pulse"></i>
                 <span>DB InsightFlow</span>
             </div>
             <div class="login-body">
@@ -34,7 +34,7 @@
                         <div class="login-form-group">
                             <label>Password</label>
                             <input type="password" id="login-password" required autocomplete="current-password">
-                            <div id="login-password-capslock" style="display:none; color:#fbbf24; font-size:0.8rem; margin-top:4px;">⚠ Caps Lock이 켜져 있습니다</div>
+                            <div id="login-password-capslock" style="display:none; color:#fab219; font-size:0.8rem; margin-top:4px;">⚠ Caps Lock이 켜져 있습니다</div>
                         </div>
                         <button type="submit" class="login-btn">Sign in</button>
                         <div id="login-error" class="login-error"></div>
@@ -47,7 +47,7 @@
                 <div class="login-art-panel">
                     <div class="login-preview-card">
                         <div class="login-preview-topbar">
-                            <div class="login-preview-brand"><i data-lucide="database"></i>DB InsightFlow</div>
+                            <div class="login-preview-brand"><i data-lucide="activity" class="brand-icon-pulse"></i>DB InsightFlow</div>
                             <div class="login-preview-user"><i data-lucide="user-circle"></i>Admin</div>
                         </div>
                         <div class="login-preview-title">실시간 <b>대시보드</b></div>
@@ -60,11 +60,11 @@
                         <div class="login-preview-chart">
                             <svg viewBox="0 0 300 90" preserveAspectRatio="none">
                                 <path d="M0,60 C30,20 60,70 90,45 C120,20 150,55 180,35 C210,15 240,50 270,25 L300,10 L300,90 L0,90 Z" fill="url(#loginChartFill)"></path>
-                                <path d="M0,60 C30,20 60,70 90,45 C120,20 150,55 180,35 C210,15 240,50 270,25 L300,10" fill="none" stroke="#3b82f6" stroke-width="2"></path>
+                                <path d="M0,60 C30,20 60,70 90,45 C120,20 150,55 180,35 C210,15 240,50 270,25 L300,10" fill="none" stroke="#3987e5" stroke-width="2"></path>
                                 <defs>
                                     <linearGradient id="loginChartFill" x1="0" y1="0" x2="0" y2="1">
-                                        <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.35"></stop>
-                                        <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"></stop>
+                                        <stop offset="0%" stop-color="#3987e5" stop-opacity="0.35"></stop>
+                                        <stop offset="100%" stop-color="#3987e5" stop-opacity="0"></stop>
                                     </linearGradient>
                                 </defs>
                             </svg>
@@ -100,7 +100,7 @@
                 </div>
                 <div style="display: flex; gap: 10px; margin-top: 15px;">
                     <button type="submit" class="login-btn" style="margin-top: 0;">변경</button>
-                    <button type="button" class="login-btn" id="pwd-cancel-btn" style="margin-top: 0; background: #64748b;">취소</button>
+                    <button type="button" class="login-btn" id="pwd-cancel-btn" style="margin-top: 0; background: #3a3a37;">취소</button>
                 </div>
                 <div id="pwd-error" class="login-error"></div>
             </form>
@@ -112,7 +112,7 @@
         <aside class="sidebar">
             <div class="sidebar-header" style="flex-direction: column; align-items: flex-start; gap: 15px;">
                 <a href="fleet-overview-test-blue.html" class="sidebar-brand-link" title="Fleet Overview로 이동">
-                    <i data-lucide="database" class="logo-icon"></i>
+                    <i data-lucide="activity" class="logo-icon brand-icon-pulse"></i>
                     <h2>DB InsightFlow</h2>
                 </a>
                 <div style="display: flex; align-items: center; gap: 10px; padding-left: 5px;">
@@ -151,7 +151,7 @@
                         </label>
                         <button class="icon-btn" id="change-pwd-trigger" title="비밀번호 변경"><i data-lucide="key"></i></button>
                         <button class="icon-btn" id="logout-btn" title="로그아웃"><i data-lucide="log-out"></i></button>
-                        <button class="icon-btn" id="theme-toggle-btn" title="화면 배색 전환"><i data-lucide="sun"></i></button>
+                        <button class="icon-btn" id="theme-toggle-btn" title="화면 배색 전환"><i data-lucide="palette"></i></button>
                         <div class="gear-menu-wrap admin-only" style="position: relative;">
                             <button class="icon-btn" id="gear-trigger" title="설정"><i data-lucide="settings"></i></button>
                             <div id="gear-dropdown" class="gear-dropdown">
@@ -214,26 +214,26 @@
                     <div class="db-mini-status" style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border-color); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);">
                         <div style="display: flex; gap: 30px; align-items: center; flex-wrap: wrap; row-gap: 8px;">
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-secondary);">인스턴스</span>
+                                <span style="font-weight: 600; font-size: 1.05rem; color: var(--text-secondary);">인스턴스</span>
                                 <div id="mini-status-instance-circle" style="width: 12px; height: 12px; border-radius: 50%; background-color: var(--text-muted);"></div>
-                                <span id="mini-status-instance" style="font-weight: bold; color: var(--text-main);">--</span>
+                                <span id="mini-status-instance" style="font-weight: bold; color: var(--text-main); font-size: 1.1rem;">--</span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-secondary);">리스너</span>
+                                <span style="font-weight: 600; font-size: 1.05rem; color: var(--text-secondary);">리스너</span>
                                 <div id="mini-status-listener-circle" style="width: 12px; height: 12px; border-radius: 50%; background-color: var(--text-muted);"></div>
-                                <span id="mini-status-listener" style="font-weight: bold; color: var(--text-main);">--</span>
+                                <span id="mini-status-listener" style="font-weight: bold; color: var(--text-main); font-size: 1.1rem;">--</span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-secondary);">Max Session</span>
-                                <span id="mini-status-max-session" style="font-weight: bold; color: var(--text-main);">--</span>
-                                <span style="color: var(--text-secondary); font-size: 0.85rem;">EA</span>
-                                <span style="color: var(--text-muted); font-size: 0.85rem;">[Active <span id="mini-status-active-session" style="color: var(--text-main); font-weight: 600;">--</span> EA / Inactive <span id="mini-status-inactive-session" style="color: var(--text-main); font-weight: 600;">--</span> EA]</span>
+                                <span style="font-weight: 600; font-size: 1.05rem; color: var(--text-secondary);">Max Session</span>
+                                <span id="mini-status-max-session" style="font-weight: bold; color: var(--text-main); font-size: 1.1rem;">--</span>
+                                <span style="color: var(--text-secondary); font-size: 0.95rem;">EA</span>
+                                <span style="color: var(--text-muted); font-size: 0.95rem;">[Active <span id="mini-status-active-session" style="color: var(--text-main); font-weight: 600;">--</span> EA / Inactive <span id="mini-status-inactive-session" style="color: var(--text-main); font-weight: 600;">--</span> EA]</span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-secondary);">Max Process</span>
-                                <span id="mini-status-max-process" style="font-weight: bold; color: var(--text-main);">--</span>
-                                <span style="color: var(--text-secondary); font-size: 0.85rem;">EA</span>
-                                <span style="color: var(--text-muted); font-size: 0.85rem;">[Dedicate <span id="mini-status-dedicated-session" style="color: var(--text-main); font-weight: 600;">--</span> EA / Dispatcher <span id="mini-status-shared-session" style="color: var(--text-main); font-weight: 600;">--</span> EA]</span>
+                                <span style="font-weight: 600; font-size: 1.05rem; color: var(--text-secondary);">Max Process</span>
+                                <span id="mini-status-max-process" style="font-weight: bold; color: var(--text-main); font-size: 1.1rem;">--</span>
+                                <span style="color: var(--text-secondary); font-size: 0.95rem;">EA</span>
+                                <span style="color: var(--text-muted); font-size: 0.95rem;">[Dedicate <span id="mini-status-dedicated-session" style="color: var(--text-main); font-weight: 600;">--</span> EA / Dispatcher <span id="mini-status-shared-session" style="color: var(--text-main); font-weight: 600;">--</span> EA]</span>
                             </div>
                         </div>
                     </div>
@@ -292,7 +292,7 @@
                     <div class="panel mt-4">
                         <div class="panel-header" style="border-bottom: none; padding-bottom: 0;">
                             <div class="tabs-container" style="display: flex; gap: 20px; border-bottom: 2px solid var(--border);">
-                                <div class="dash-tab-btn active" data-dash-tab="dash-active-sess" style="padding: 10px 20px; cursor: pointer; border-bottom: 2px solid #3b82f6; font-weight: 600; color: #3b82f6;">Active Session 목록</div>
+                                <div class="dash-tab-btn active" data-dash-tab="dash-active-sess" style="padding: 10px 20px; cursor: pointer; border-bottom: 2px solid #3987e5; font-weight: 600; color: #3987e5;">Active Session 목록</div>
                                 <div class="dash-tab-btn" data-dash-tab="dash-top-event" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">Top Event 목록</div>
                             </div>
                         </div>
@@ -395,7 +395,7 @@
                             <!-- 일반오류검색(Regex) 탭 -->
                             <div id="tab-error-search" class="aidba-tab-content" style="display: flex; flex-direction: column; height: 100%;">
                                 <div class="search-bar" style="display: flex; gap: 10px; margin-bottom: 15px;">
-                                    <input type="text" id="error-code-input" placeholder="오라클 에러 코드 입력 (예: ORA-01555)" style="flex: 1; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px;">
+                                    <input type="text" id="error-code-input" placeholder="오라클 에러 코드 입력 (예: ORA-01555)" style="flex: 1; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
                                     <button id="error-search-btn" class="primary-btn" style="padding: 0 20px; border-radius: 6px;">
                                         <i data-lucide="search"></i> 검색
                                     </button>
@@ -658,11 +658,11 @@
                                 </div>
                                 <div style="flex: 1; position: relative;" id="scatter-container">
                                     <canvas id="session-scatter-chart"></canvas>
-                                    <div id="scatter-selection-box" style="position: absolute; border: 1px dashed #3498db; background: rgba(52,152,219,0.2); pointer-events: none; display: none; z-index: 10;"></div>
+                                    <div id="scatter-selection-box" style="position: absolute; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10;"></div>
                                 </div>
                             </div>
                             <div class="tabs-container" style="display: flex; gap: 20px; border-bottom: 2px solid var(--border); margin-bottom: 10px;">
-                                <div class="sesslist-tab-btn active" data-sesslist-tab="sesslist-active-session" style="padding: 10px 20px; cursor: pointer; border-bottom: 2px solid #3b82f6; font-weight: 600; color: #3b82f6;">Active Session</div>
+                                <div class="sesslist-tab-btn active" data-sesslist-tab="sesslist-active-session" style="padding: 10px 20px; cursor: pointer; border-bottom: 2px solid #3987e5; font-weight: 600; color: #3987e5;">Active Session</div>
                                 <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-active-tx" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">Active Transaction</div>
                                 <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-parallel" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">Parallel Session</div>
                                 <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-2pc" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">2pc Pending Transaction</div>
@@ -788,12 +788,12 @@
                                 <select id="history-users" class="form-input" style="max-width: 150px; display: inline-block; padding: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-main); margin-right: 10px;"></select>
 <div style="display: flex; align-items: center; gap: 5px;">
                                     <label style="color: var(--text-secondary); font-size: 0.9rem;">시작:</label>
-                                    <input type="datetime-local" id="history-start-time" class="form-input" style="padding: 6px; border: 2px solid #007bff; border-radius: 4px; background-color: #ffffff !important; color: #000000 !important; font-weight: bold; outline: none;">
+                                    <input type="datetime-local" id="history-start-time" class="form-input" style="padding: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-main); font-weight: bold; outline: none; color-scheme: dark;">
                                 </div>
                                 <span style="align-self: center; color: var(--text-secondary);">~</span>
                                 <div style="display: flex; align-items: center; gap: 5px;">
                                     <label style="color: var(--text-secondary); font-size: 0.9rem;">종료:</label>
-                                    <input type="datetime-local" id="history-end-time" class="form-input" style="padding: 6px; border: 2px solid #007bff; border-radius: 4px; background-color: #ffffff !important; color: #000000 !important; font-weight: bold; outline: none;">
+                                    <input type="datetime-local" id="history-end-time" class="form-input" style="padding: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-main); font-weight: bold; outline: none; color-scheme: dark;">
                                 </div>
                                 <button id="history-search-btn" class="primary-btn"><i data-lucide="search"></i> 조회</button>
                             </div>
@@ -805,7 +805,7 @@
                             </div>
                             <div style="height: 300px; position: relative; margin-bottom: 20px;" id="history-scatter-container">
                                 <canvas id="history-scatter-chart"></canvas>
-                                <div id="history-scatter-selection-box" style="position: absolute; border: 1px dashed #3498db; background: rgba(52,152,219,0.2); pointer-events: none; display: none; z-index: 10;"></div>
+                                <div id="history-scatter-selection-box" style="position: absolute; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10;"></div>
                             </div>
                             
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">

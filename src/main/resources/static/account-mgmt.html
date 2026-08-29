@@ -21,14 +21,14 @@
             padding: 12px;
             border-radius: 8px;
             border: 1px solid var(--border);
-            background: rgba(15, 23, 42, 0.6);
+            background: rgba(13, 13, 13, 0.6);
             color: var(--text-main);
             font-size: 1rem;
         }
         .login-form-group select:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+            box-shadow: 0 0 0 2px rgba(57, 135, 229, 0.3);
         }
     </style>
 </head>
@@ -115,12 +115,12 @@
                         </div>
                         <div style="display: flex; gap: 10px; margin-top: 15px;">
                             <button type="button" class="login-btn" id="account-mgmt-edit-open-btn" style="margin-top: 0; width:auto; padding:12px 24px;">선택한 계정 수정</button>
-                            <button type="button" class="login-btn" id="account-mgmt-delete-btn" style="margin-top: 0; width:auto; padding:12px 24px; background:#dc2626;">선택한 계정 삭제</button>
+                            <button type="button" class="login-btn" id="account-mgmt-delete-btn" style="margin-top: 0; width:auto; padding:12px 24px; background:#d03b3b;">선택한 계정 삭제</button>
                         </div>
                         <hr style="border-color: var(--border-color); margin: 24px 0;">
                         <div style="display: flex; gap: 10px;">
                             <button type="button" class="login-btn" id="account-mgmt-create-open-btn" style="margin-top: 0; width:auto; padding:12px 24px;">+ 새 계정 추가</button>
-                            <button type="button" class="login-btn" id="account-mgmt-close-btn" style="margin-top: 0; width:auto; padding:12px 24px; background: #64748b;">닫기</button>
+                            <button type="button" class="login-btn" id="account-mgmt-close-btn" style="margin-top: 0; width:auto; padding:12px 24px; background: #3a3a37;">닫기</button>
                         </div>
                         <div id="account-mgmt-main-error" class="login-error"></div>
                     </div>
@@ -145,7 +145,7 @@
                             ${accessFieldsHtml('new-user')}
                             <div style="display: flex; gap: 10px; margin-top: 15px;">
                                 <button type="submit" class="login-btn" style="margin-top: 0; width:auto; padding:12px 28px;">계정 생성</button>
-                                <button type="button" class="login-btn" id="create-user-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #64748b;">취소</button>
+                                <button type="button" class="login-btn" id="create-user-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #3a3a37;">취소</button>
                             </div>
                             <div id="account-mgmt-error" class="login-error"></div>
                         </form>
@@ -156,7 +156,7 @@
                         ${accessFieldsHtml('edit-user')}
                         <div style="display: flex; gap: 10px; margin-top: 15px;">
                             <button type="button" class="login-btn" id="edit-user-save-btn" style="margin-top: 0; width:auto; padding:12px 28px;">저장</button>
-                            <button type="button" class="login-btn" id="edit-user-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #64748b;">취소</button>
+                            <button type="button" class="login-btn" id="edit-user-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #3a3a37;">취소</button>
                         </div>
                         <div id="edit-user-error" class="login-error"></div>
                     </div>

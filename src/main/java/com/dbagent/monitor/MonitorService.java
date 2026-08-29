@@ -171,12 +171,17 @@ public class MonitorService {
                 "ROUND(SUM(CASE WHEN session_state = 'ON CPU' THEN 1 ELSE 0 END) / COUNT(*) * 100) as cpu_pct, " +
                 "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND wait_class = 'User I/O' THEN 1 ELSE 0 END) / COUNT(*) * 100) as user_io_pct, " +
                 "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND wait_class = 'System I/O' THEN 1 ELSE 0 END) / COUNT(*) * 100) as system_io_pct, " +
-                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND wait_class NOT IN ('User I/O', 'System I/O', 'Idle') THEN 1 ELSE 0 END) / COUNT(*) * 100) as other_pct " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND event LIKE 'latch%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as latch_pct, " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND event LIKE 'enq: TX%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as tx_lock_pct, " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND event LIKE 'enq: TM%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as tm_lock_pct, " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND wait_class NOT IN ('User I/O', 'System I/O', 'Idle') " +
+                "AND event NOT LIKE 'latch%' AND event NOT LIKE 'enq: TX%' AND event NOT LIKE 'enq: TM%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as other_pct " +
                 "FROM v$active_session_history WHERE sample_time >= SYSDATE - 1/24/60 GROUP BY session_id, session_serial#) " +
                 "SELECT (SELECT instance_name FROM v$instance) as db_name, s.status, s.sid, s.serial#, p.spid as server_pid, " +
                 "s.machine as machine_name, NVL(s.username, 'BACKGROUND') as username, s.program as program_name, " +
                 "s.last_call_et as duration_time, " +
-                "NVL(a.cpu_pct, 0) || ',' || NVL(a.user_io_pct, 0) || ',' || NVL(a.system_io_pct, 0) || ',' || NVL(a.other_pct, 0) as session_wait_pct, " +
+                "NVL(a.cpu_pct, 0) || ',' || NVL(a.user_io_pct, 0) || ',' || NVL(a.system_io_pct, 0) || ',' || " +
+                "NVL(a.latch_pct, 0) || ',' || NVL(a.tx_lock_pct, 0) || ',' || NVL(a.tm_lock_pct, 0) || ',' || NVL(a.other_pct, 0) as session_wait_pct, " +
                 "s.sql_id, s.event as event_name, sq.plan_hash_value, sq.sql_text, s.taddr, s.command, s.osuser, " +
                 "TO_CHAR(SYSDATE, 'YYYY-MM-DD HH24:MI:SS') as capture_time " +
                 "FROM v$session s " +

@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Fleet Overview</title>
+<script>
+    (function () {
+        const saved = localStorage.getItem('dbagent_theme') || 'dark';
+        if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+</script>
 <!--
   This is now the real post-login landing screen (사용자 결정, 2026-08-27) - app.js's login-form
   submit handler redirects here on successful login instead of reloading index.html (see the comment
@@ -33,30 +39,30 @@
         /* Palette lifted from 색감1.jpg (CryptiQ-style navy fintech dashboard) - crisper and flatter
            than the violet variant: a single solid blue accent (no multi-stop rainbow gradient),
            visible-but-thin blue-tinted borders (that reference's active sidebar item has a distinct
-           blue outline box), and a page background close enough to the design doc's own #0f172a
+           blue outline box), and a page background close enough to the design doc's own #0d0d0d
            that its exact verified-contrast status hex values are used unchanged here. */
-        --bg-page: #0a1628;
-        --bg-page-2: #0d1e35;
-        --bg-card: #0f1f38;
-        --bg-hover: #14294a;
+        --bg-page: #0d0d0d;
+        --bg-page-2: #131312;
+        --bg-card: #1a1a19;
+        --bg-hover: #202120;
         --border: rgba(255,255,255,0.08);
-        --border-strong: rgba(59,130,246,0.4);
-        --text-primary: #f2f6ff;
-        --text-secondary: #9fb0c9;
-        --text-muted: #6b7f9c;
+        --border-strong: rgba(57,135,229,0.4);
+        --text-primary: #ffffff;
+        --text-secondary: #c3c2b7;
+        --text-muted: #898781;
 
         /* Same blue as this app's own --primary (style.css), on purpose - 색감1's accent blue lands
            almost exactly on it, so this variant doubles as "what if Fleet Overview matched the rest
            of DB Agent's existing color instead of introducing a new brand hue". */
-        --brand: #3b82f6;
-        --brand-hover: #2563eb;
-        --brand-teal: #60a5fa;
-        --brand-sky: #3b82f6;
-        --brand-gradient: linear-gradient(135deg, #2f6fed, #60a5fa);
+        --brand: #3987e5;
+        --brand-hover: #2f6cb8;
+        --brand-teal: #5fa3e8;
+        --brand-sky: #3987e5;
+        --brand-gradient: linear-gradient(135deg, #3987e5, #5fa3e8);
 
         /* Status colors are reserved exclusively for DB health, per the design doc's explicit
            rule - never reused for metric-category coloring elsewhere on this page. Kept at the
-           design doc's own verified-contrast hex values (measured against #0f172a) since this
+           design doc's own verified-contrast hex values (measured against #0d0d0d) since this
            variant's background is close enough to that tone, unlike the violet variant. */
         --status-good: #0ca30c;
         --status-warning: #fab219;
@@ -68,7 +74,7 @@
 
         /* Frame/card backgrounds get a subtle top-lighter-to-base diagonal gradient instead of a
            flat fill (사용자 피드백: "각 프레임들을 약간 밝은 톤으로 그라데이션 처리"). */
-        --card-gradient: linear-gradient(160deg, #235078 0%, var(--bg-card) 60%);
+        --card-gradient: linear-gradient(160deg, #262622 0%, var(--bg-card) 60%);
 
         --radius-card: 20px;
         --radius-pill: 999px;
@@ -76,9 +82,54 @@
         --radius-md: 12px;
 
         /* KPI summary cards - "Left Accent" 스타일 (kpi-cards-left-accent.md) */
-        --kpi-bg: #0d1420;
-        --kpi-label: #8b97a6;
-        --kpi-value-muted: #5b6674;
+        --kpi-bg: #141413;
+        --kpi-label: #a19f97;
+        --kpi-value-muted: #6b6a64;
+
+        /* Named so the light theme below can override them too - these used to be inline rgba(57,135,229,...)
+           literals scattered across body/.test-banner/.brand-icon/.engine-icon/.group-badge, which meant
+           they'd stay dark-theme-blue even after switching to the light palette (사용자 요청: 배색 전환 가능하게). */
+        --brand-glow-14: rgba(57,135,229,0.14);
+        --brand-glow-18: rgba(57,135,229,0.18);
+        --brand-banner-strong: rgba(57,135,229,0.22);
+        --brand-banner-soft: rgba(57,135,229,0.05);
+    }
+
+    /* 2026-08-28 사용자 요청: FO(Fleet Overview) 화면에도 팔레트 버튼을 추가해서 배색을 바꿀 수 있게 -
+       index.html/style.css의 data-theme="light" 슬롯과 동일하게, 리팩토링 이전의 기존 네이비 다크
+       배색으로 전환. 이 페이지는 style.css를 쓰지 않는 완전히 독립된 페이지라 그 값들을 그대로
+       가져와 이 페이지 고유의 변수 이름에 맞게 매핑했다. */
+    :root[data-theme="light"] {
+        --bg-page: #0f172a;
+        --bg-page-2: #14213d;
+        --bg-card: #1e293b;
+        --bg-hover: #263449;
+        --border: rgba(255,255,255,0.1);
+        --border-strong: rgba(59,130,246,0.4);
+        --text-primary: #f8fafc;
+        --text-secondary: #cbd5e1;
+        --text-muted: #94a3b8;
+
+        --brand: #3b82f6;
+        --brand-hover: #2563eb;
+        --brand-teal: #60a5fa;
+        --brand-sky: #3b82f6;
+        --brand-gradient: linear-gradient(135deg, #3b82f6, #60a5fa);
+
+        --status-good: #10b981;
+        --status-warning: #f59e0b;
+        --status-critical: #ef4444;
+
+        --card-gradient: linear-gradient(160deg, #2d3f5c 0%, var(--bg-card) 60%);
+
+        --kpi-bg: #182338;
+        --kpi-label: #94a3b8;
+        --kpi-value-muted: #64748b;
+
+        --brand-glow-14: rgba(59,130,246,0.14);
+        --brand-glow-18: rgba(59,130,246,0.18);
+        --brand-banner-strong: rgba(59,130,246,0.22);
+        --brand-banner-soft: rgba(59,130,246,0.05);
     }
 
     * { box-sizing: border-box; }
@@ -86,7 +137,7 @@
     body {
         margin: 0;
         background:
-            radial-gradient(720px 420px at 15% -10%, rgba(59,130,246,0.14), transparent 60%),
+            radial-gradient(720px 420px at 15% -10%, var(--brand-glow-14), transparent 60%),
             var(--bg-page);
         color: var(--text-primary);
         font-family: var(--font-body);
@@ -94,7 +145,7 @@
     }
 
     .test-banner {
-        background: linear-gradient(90deg, rgba(59,130,246,0.22), rgba(59,130,246,0.05));
+        background: linear-gradient(90deg, var(--brand-banner-strong), var(--brand-banner-soft));
         border-bottom: 1px solid var(--border);
         color: var(--text-secondary);
         font-size: 12.5px;
@@ -124,8 +175,8 @@
     .brand-icon {
         width: 34px; height: 34px;
         border-radius: var(--radius-sm);
-        background: rgba(59,130,246,0.14);
-        border: 1px solid rgba(59,130,246,0.4);
+        background: var(--brand-glow-14);
+        border: 1px solid var(--border-strong);
         display: flex; align-items: center; justify-content: center;
         color: var(--brand);
     }
@@ -170,7 +221,7 @@
         padding: 16px 18px;
         box-shadow: 0 12px 28px -18px rgba(0,0,0,0.65);
     }
-    .summary-tile .label { font-size: 16px; font-weight: 800; color: #f5f7fa; margin-bottom: 6px; }
+    .summary-tile .label { font-size: 16px; font-weight: 800; color: #ffffff; margin-bottom: 6px; }
     .summary-tile .value { font-family: var(--font-mono); font-weight: 700; font-size: 26px; color: var(--text-primary); }
     .summary-tile.total { border-left-color: var(--brand-teal); }
     .summary-tile.good { border-left-color: var(--status-good); }
@@ -268,16 +319,16 @@
     .engine-icon {
         width: 30px; height: 30px; border-radius: var(--radius-sm); flex: none;
         display: flex; align-items: center; justify-content: center;
-        background: rgba(59,130,246,0.18); color: var(--brand);
+        background: var(--brand-glow-18); color: var(--brand);
     }
-    .db-card.status-down .engine-icon { background: rgba(135,125,156,0.14); color: var(--text-muted); }
+    .db-card.status-down .engine-icon { background: rgba(137,135,129,0.14); color: var(--text-muted); }
     .card-name-block { min-width: 0; display: flex; align-items: center; height: 30px; }
     .db-name { font-family: var(--font-mono); font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .group-badge {
         font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em;
         padding: 3px 9px; border-radius: var(--radius-pill); flex: none;
-        background: rgba(59,130,246,0.14); color: var(--text-secondary); border: 1px solid var(--border);
+        background: var(--brand-glow-14); color: var(--text-secondary); border: 1px solid var(--border);
     }
 
     .status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
@@ -305,7 +356,7 @@
 
     .mini-bar-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
     .mini-bar-row .mb-label { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); width: 30px; flex: none; }
-    .mini-bar-track { flex: 1; height: 5px; border-radius: var(--radius-pill); background: rgba(159,176,201,0.14); overflow: hidden; }
+    .mini-bar-track { flex: 1; height: 5px; border-radius: var(--radius-pill); background: rgba(195,194,183,0.14); overflow: hidden; }
     .mini-bar-fill { height: 100%; border-radius: var(--radius-pill); }
     .mini-bar-row .mb-pct { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); width: 34px; text-align: right; flex: none; }
 
@@ -335,7 +386,7 @@
     table.db-table th {
         text-align: left; padding: 12px 16px; font-size: 11px; color: var(--text-muted);
         text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid var(--border);
-        background: rgba(159,176,201,0.05);
+        background: rgba(195,194,183,0.05);
     }
     table.db-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
     table.db-table tbody tr { cursor: pointer; }
@@ -369,7 +420,7 @@
         width: 20px; height: 20px; border-radius: 50%; flex: none;
         display: flex; align-items: center; justify-content: center;
         font-family: var(--font-mono); font-size: 10.5px; font-weight: 700;
-        background: rgba(159,176,201,0.14); color: var(--text-secondary);
+        background: rgba(195,194,183,0.14); color: var(--text-secondary);
     }
     .rank-info { min-width: 0; flex: 1; }
     .rank-name { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -392,7 +443,7 @@
     <!-- Shown only when this tab has no dbagent_token yet - GET /api/fleet_status needs one (same
          canAccessDb gate as everywhere else) or every instance falls back to a "조회 실패" card, which
          read as "모든 DB가 죽었다" rather than "로그인이 안 돼 있다" (사용자 피드백). -->
-    <div class="test-banner" id="login-warning-banner" style="display:none; background: linear-gradient(90deg, rgba(244,63,94,0.22), rgba(244,63,94,0.05));">
+    <div class="test-banner" id="login-warning-banner" style="display:none; background: linear-gradient(90deg, rgba(208,59,59,0.22), rgba(208,59,59,0.05));">
         <span>⚠️</span>
         <span>로그인 정보가 없어 DB 상태를 조회할 수 없습니다 - 아래 카드는 전부 "조회 실패"로 보이는 게 정상입니다. <a href="index.html" style="color:#fff; font-weight:600;">index.html에서 먼저 로그인</a>한 뒤 이 탭에서 새로고침해주세요.</span>
     </div>
@@ -407,6 +458,7 @@
             </div>
             <div class="header-actions">
                 <button class="icon-btn" id="refresh-btn" title="새로고침"></button>
+                <button class="icon-btn" id="theme-toggle-btn" title="화면 배색 전환"></button>
                 <div class="avatar">KIPI</div>
             </div>
         </header>
@@ -483,8 +535,8 @@
                     <div style="display:flex; align-items:center; justify-content:center; height:100vh; text-align:center; padding:24px; font-family:'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;">
                         <div>
                             <h2 style="margin:0 0 8px;">Fleet Overview 접근 권한이 없습니다</h2>
-                            <p style="color:#94a3b8;">관리자에게 계정 관리 &gt; "Fleet Overview 접근 허용" 권한을 요청하세요.</p>
-                            <a href="index.html" style="color:#3b82f6; font-weight:600;">대시보드로 돌아가기</a>
+                            <p style="color:var(--text-muted);">관리자에게 계정 관리 &gt; "Fleet Overview 접근 허용" 권한을 요청하세요.</p>
+                            <a href="index.html" style="color:var(--brand); font-weight:600;">대시보드로 돌아가기</a>
                         </div>
                     </div>
                 `;
@@ -494,9 +546,20 @@
             const ENGINE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>';
             const WARNING_ICON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
             const REFRESH_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>';
+            // Same "palette" glyph index.html's own theme-toggle button uses (via lucide's data-lucide="palette"),
+            // just inlined as a raw SVG string to match this page's own icon-loading style (no lucide.js here).
+            const PALETTE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"></path><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"></circle><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"></circle><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"></circle><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"></circle></svg>';
 
             document.getElementById('brand-icon').innerHTML = ENGINE_ICON_SVG;
             document.getElementById('refresh-btn').innerHTML = REFRESH_ICON_SVG;
+            document.getElementById('theme-toggle-btn').innerHTML = PALETTE_ICON_SVG;
+            // 2026-08-28 사용자 요청: index.html의 화면배색 버튼과 동일한 방식 - 클릭 시
+            // data-theme="light" 슬롯(리팩토링 이전 네이비 다크 배색)과 기본 다크 배색을 토글.
+            document.getElementById('theme-toggle-btn').addEventListener('click', () => {
+                const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+                localStorage.setItem('dbagent_theme', isLight ? 'dark' : 'light');
+                location.reload();
+            });
 
             const STATUS_META = {
                 alive: { label: 'ALIVE', color: 'var(--status-good)', pulse: true },
