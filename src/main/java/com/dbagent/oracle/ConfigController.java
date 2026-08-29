@@ -16,7 +16,7 @@ public class ConfigController {
     @Value("${dbagent.ui.polling-interval-ms:2000}")
     private int pollingIntervalMs;
 
-    // Fleet Overview auto-refresh interval, read once by fleet-overview-test(-blue).html on load - see
+    // Fleet Overview auto-refresh interval, read once by fleet-overview.html on load - see
     // application.properties for the default and tuning notes.
     @Value("${dbagent.fleet-overview.polling-interval-ms:3000}")
     private int fleetOverviewPollingIntervalMs;

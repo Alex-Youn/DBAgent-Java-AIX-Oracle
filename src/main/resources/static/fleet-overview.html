@@ -15,7 +15,9 @@
   submit handler redirects here on successful login instead of reloading index.html (see the comment
   next to that redirect). Chosen color variant (사용자 선택, over the violet fleet-overview-test.html,
   which has since been brought up to full feature parity with it - 동일 기능, 색상만 다름, see that
-  file's own header comment). Palette lifted from 색감1.jpg (CryptiQ-style navy fintech dashboard).
+  file's own header comment). Renamed from fleet-overview-test-blue.html to fleet-overview.html
+  (2026-08-29, 사용자 요청: "이제 테스트가 아니니") once this became the real, non-prototype screen.
+  Palette lifted from 색감1.jpg (CryptiQ-style navy fintech dashboard).
 
   Card/row clicks navigate to index.html?db_id=<id>, and app.js's "Load config and build tree" step
   reads that query param to auto-select the matching instance (falls back to its old "first instance"
@@ -218,7 +220,7 @@
     }
     .summary-tile {
         /* "Left Accent" 스타일 (kpi-cards-left-accent.md): 4개 카드 배경을 동일한 중립 다크 톤으로
-           통일하고, 좌측 accent bar만 상태별로 다르게 칠해서 의미를 전달한다. */
+           통일하고, 좌측 3px accent bar만 상태별로 다르게 칠해서 의미를 전달한다. */
         background: var(--kpi-bg);
         border: 1px solid var(--border);
         border-left: 5px solid transparent;
@@ -241,7 +243,9 @@
     /* ---------- Layout: list column + insight column, independently top-aligned ---------- */
     .layout {
         display: grid;
-        grid-template-columns: 1fr 320px;
+        /* 360px(구 320px) - 사용자 요청(2026-08-30): "Top 5 카드 프레임 커져도 되니 폰트/굵기를
+           시인성 좋게 크게" - 아래 rank-name/rank-meta/rank-cpu 폰트를 키운 만큼 여유 확보. */
+        grid-template-columns: 1fr 360px;
         gap: 18px;
         align-items: start;
     }
@@ -294,7 +298,9 @@
     /* ---------- Card grid ---------- */
     .card-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        /* 340px(구 300px) - 사용자 요청(2026-08-29): "인스턴스 카드 크기를 조금 크게" - 아래
+           stat-value/uptime-value/db-meta 폰트를 키운 만큼 줄바꿈 없이 여유있게 들어가도록. */
+        grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
         gap: 16px;
     }
     .db-card {
@@ -302,7 +308,7 @@
         border: 1px solid var(--border);
         border-left: 3px solid var(--status-good);
         border-radius: var(--radius-card);
-        padding: 18px 20px;
+        padding: 20px 22px;
         cursor: pointer;
         box-shadow: 0 16px 32px -22px rgba(0,0,0,0.7);
         transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
@@ -327,8 +333,21 @@
         background: var(--brand-glow-18); color: var(--brand);
     }
     .db-card.status-down .engine-icon { background: rgba(137,135,129,0.14); color: var(--text-muted); }
-    .card-name-block { min-width: 0; display: flex; align-items: center; height: 30px; }
+    /* DB 아이콘을 "동작 중"일 때만 은은하게 pulse - 사용자 요청(2026-08-30: "인스턴스 카드 DB
+       아이콘 동적으로"). status-dot.pulse와 같은 관례(움직임 = 살아있음/접속 시도 중)를 따라
+       down 카드는 애니메이션 없이 정지 상태로 둔다 - cardHtml/tableRowHtml이 아니라 JS에서
+       d.status !== 'down'일 때만 이 클래스를 붙인다. */
+    @keyframes enginePulse {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.15); }
+    }
+    .engine-icon.pulse { animation: enginePulse 2.4s ease-in-out infinite; }
+    .card-name-block { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
     .db-name { font-family: var(--font-mono); font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* SID/Oracle 버전 (사용자 요청, 2026-08-29: "각 인스턴스 프레임에 DB 정보와 버전을 보여줬으면
+       좋겠어") - SID는 /api/config 목록에 이미 있어 즉시 표시되고, 버전은 /api/fleet_status가
+       실제 접속해 v$instance.version을 읽어와야 하므로 로딩/다운 상태에서는 비어 있다. */
+    .db-meta { font-family: var(--font-mono); font-size: 12.5px; font-weight: 700; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .group-badge {
         font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em;
@@ -349,21 +368,28 @@
 
     .uptime-row { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
     .uptime-ring { flex: none; }
-    .uptime-label { font-size: 10.5px; color: var(--text-muted); margin-bottom: 4px; }
-    .uptime-value { font-family: var(--font-mono); font-weight: 700; font-size: 21px; color: var(--text-primary); }
+    /* "Uptime(%)" 라벨 - Active Session/CPU/MEM 라벨과 같은 요청인데 누락됐던 것 (2026-08-30). */
+    .uptime-label { font-size: 13px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+    /* Active Session/분당 트랜잭션/CPU/MEM/Uptime - 사용자 요청(2026-08-30): 12.5px(db-meta와
+       통일한 크기)로도 "여전히 작다", 이번엔 그래프(mini-bar-track)가 커져도 상관없다고 확인받아서
+       텍스트뿐 아니라 CPU/MEM 바 자체 두께도 함께 키움. */
+    .uptime-value { font-family: var(--font-mono); font-weight: 800; font-size: 22px; color: var(--text-primary); }
 
-    .stat-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 14px; }
-    .stat-cell .stat-label { font-size: 10.5px; color: var(--text-muted); margin-bottom: 3px; }
-    .stat-cell .stat-value { font-family: var(--font-mono); font-weight: 700; font-size: 15px; color: var(--text-primary); }
+    .stat-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 14px; }
+    /* "Active Session"/"분당 트랜잭션" 라벨 자체 크기 - 사용자 요청(2026-08-30): 값(.stat-value)이
+       아니라 이 라벨 텍스트가 작다는 지적, 값 크기는 그대로 유지. */
+    .stat-cell .stat-label { font-size: 13px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+    .stat-cell .stat-value { font-family: var(--font-mono); font-weight: 800; font-size: 16px; color: var(--text-primary); }
     .stat-cell .stat-value.muted { color: var(--text-muted); font-weight: 500; }
     .stat-cell .stat-value.warn { color: var(--status-warning); }
     .stat-cell .stat-value.crit { color: var(--status-critical); }
 
-    .mini-bar-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-    .mini-bar-row .mb-label { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); width: 30px; flex: none; }
-    .mini-bar-track { flex: 1; height: 5px; border-radius: var(--radius-pill); background: rgba(195,194,183,0.14); overflow: hidden; }
+    .mini-bar-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    /* "CPU"/"MEM" 라벨 자체 크기 - 위 .stat-label과 같은 요청, 값(.mb-pct)은 그대로 유지. */
+    .mini-bar-row .mb-label { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-muted); width: 36px; flex: none; }
+    .mini-bar-track { flex: 1; height: 8px; border-radius: var(--radius-pill); background: rgba(195,194,183,0.14); overflow: hidden; }
     .mini-bar-fill { height: 100%; border-radius: var(--radius-pill); }
-    .mini-bar-row .mb-pct { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); width: 34px; text-align: right; flex: none; }
+    .mini-bar-row .mb-pct { font-family: var(--font-mono); font-weight: 800; font-size: 14px; color: var(--text-secondary); width: 44px; text-align: right; flex: none; }
 
     .down-banner {
         display: flex; align-items: flex-start; gap: 8px;
@@ -410,27 +436,32 @@
     /* ---------- Top 5 insight panel ---------- */
     .insight-panel {
         background: var(--card-gradient); border: 1px solid var(--border); border-radius: var(--radius-card);
-        padding: 18px;
+        padding: 20px;
     }
     .insight-panel h3 {
-        margin: 0 0 4px; font-family: var(--font-display); font-size: 14px; font-weight: 600;
+        margin: 0 0 4px; font-family: var(--font-display); font-size: 16px; font-weight: 700;
     }
-    .insight-panel .insight-sub { font-size: 11px; color: var(--text-muted); margin-bottom: 14px; }
+    .insight-panel .insight-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 14px; }
+    /* Top 5 항목 전체 확대 - 사용자 요청(2026-08-30): "Top 5 카드 프레임 커져도 되니까 폰트 및
+       굵기 좀 시인성 좋게 조금 더 크게". 행 패딩도 늘어난 글자 높이에 맞춰 함께 키움. */
     .rank-row {
-        display: flex; align-items: center; gap: 10px; padding: 9px 0;
+        display: flex; align-items: center; gap: 12px; padding: 11px 0;
         border-bottom: 1px solid var(--border); cursor: pointer;
     }
     .rank-row:last-child { border-bottom: none; }
     .rank-num {
-        width: 20px; height: 20px; border-radius: 50%; flex: none;
+        width: 24px; height: 24px; border-radius: 50%; flex: none;
         display: flex; align-items: center; justify-content: center;
-        font-family: var(--font-mono); font-size: 10.5px; font-weight: 700;
+        font-family: var(--font-mono); font-size: 12px; font-weight: 800;
         background: rgba(195,194,183,0.14); color: var(--text-secondary);
     }
     .rank-info { min-width: 0; flex: 1; }
-    .rank-name { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .rank-sub { font-size: 10.5px; color: var(--text-muted); }
-    .rank-cpu { font-family: var(--font-mono); font-weight: 700; font-size: 13px; flex: none; }
+    .rank-name { font-family: var(--font-mono); font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rank-sub { font-size: 12px; color: var(--text-muted); }
+    /* SID/DB 종류/버전 - 사용자 요청(2026-08-29): "주의 필요 Top 5에서 DB SID와 DB 종류, version
+       정보가 들어가야 할거 같아". 이 앱은 Oracle 전용이라 "종류"는 고정 문구로 표시. */
+    .rank-meta { font-family: var(--font-mono); font-size: 12.5px; font-weight: 700; color: var(--text-secondary); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rank-cpu { font-family: var(--font-mono); font-weight: 800; font-size: 16px; flex: none; }
 
     /* ---------- Responsive ---------- */
     @media (max-width: 1180px) {
@@ -603,6 +634,19 @@
             };
             const STATUS_RANK = { down: 0, degraded: 1, alive: 2 };
 
+            // DB 정보(SID)/DB 종류/버전 표시줄 (사용자 요청, 2026-08-29/30) - "SID : ORCL[Oracle 21c]"
+            // 형식. SID는 d.sid(=/api/config, 항상 있음), 코드네임은 d.versionCodename(=/api/
+            // fleet_status가 v$version.banner에서 뽑아온 "21c"/"11g" 식 표기, 접속 성공 후에만
+            // 채워짐 - MonitorService.getFleetStatus 참고)을 우선 쓰고, 못 뽑았으면 raw 버전
+            // 문자열(d.version)로 대체한다. withType=true(Top 5 패널)면 버전을 아직 모를 때도
+            // "[Oracle]"만 표시 - 카드 쪽은 engine-icon이 이미 종류를 시각적으로 나타내므로 생략.
+            function metaText(d, withType) {
+                if (!d.sid) return '';
+                const codename = d.versionCodename || d.version;
+                if (codename) return `SID : ${d.sid}[Oracle ${codename}]`;
+                return withType ? `SID : ${d.sid}[Oracle]` : `SID : ${d.sid}`;
+            }
+
             function barColor(pct) {
                 if (pct > 80) return 'var(--status-critical)';
                 if (pct >= 60) return 'var(--status-warning)';
@@ -621,7 +665,7 @@
                 const pct = d.uptimePct != null ? Math.min(100, Math.max(0, d.uptimePct)) : 0;
                 const offset = UPTIME_RING_CIRC * (1 - pct / 100);
                 return `
-                    <svg class="uptime-ring" width="56" height="56" viewBox="0 0 64 64">
+                    <svg class="uptime-ring" width="68" height="68" viewBox="0 0 64 64">
                         <defs>
                             <linearGradient id="${gradId}" x1="0%" y1="0%" x2="100%" y2="100%">
                                 <stop offset="0%" stop-color="#2dd4bf"/>
@@ -742,6 +786,7 @@
                         <div class="rank-info">
                             <div class="rank-name">${d.name}</div>
                             <div class="rank-sub">${d.group_name}</div>
+                            <div class="rank-meta">${metaText(d, true)}</div>
                         </div>
                         <div class="rank-cpu" style="color:${barColor(d.cpuPct)}">${d.cpuPct}%</div>
                     </div>
@@ -761,9 +806,10 @@
                         <div class="db-card" data-db-id="${d.id}" style="border-left-color: var(--border);">
                             <div class="card-head">
                                 <div class="card-head-left">
-                                    <div class="engine-icon">${ENGINE_ICON_SVG}</div>
+                                    <div class="engine-icon pulse">${ENGINE_ICON_SVG}</div>
                                     <div class="card-name-block">
                                         <div class="db-name">${d.name}</div>
+                                        <div class="db-meta">${metaText(d)}</div>
                                     </div>
                                 </div>
                                 <div class="group-badge">${d.group_name}</div>
@@ -800,9 +846,10 @@
                     <div class="db-card status-${d.status}" data-db-id="${d.id}">
                         <div class="card-head">
                             <div class="card-head-left">
-                                <div class="engine-icon">${ENGINE_ICON_SVG}</div>
+                                <div class="engine-icon${d.status === 'down' ? '' : ' pulse'}">${ENGINE_ICON_SVG}</div>
                                 <div class="card-name-block">
                                     <div class="db-name">${d.name}</div>
+                                    <div class="db-meta">${metaText(d)}</div>
                                 </div>
                             </div>
                             <div class="group-badge">${d.group_name}</div>

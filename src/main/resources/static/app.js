@@ -118,7 +118,7 @@ function getToken() {
                     sessionStorage.setItem('dbagent_fleet_overview', data.fleet_overview ? 'true' : 'false');
                     sessionStorage.setItem('dbagent_fleet_overview_auto_redirect', data.fleet_overview_auto_redirect ? 'true' : 'false');
                     document.querySelector('.user-name').textContent = data.username;
-                    // Fleet Overview (fleet-overview-test-blue.html) is the post-login landing screen
+                    // Fleet Overview (fleet-overview.html) is the post-login landing screen
                     // (사용자 결정), but only for accounts with access (admin, or granted via 계정 관리 >
                     // "Fleet Overview 접근 허용") AND who haven't personally turned the auto-jump off
                     // (사용자 요청: "admin 권한도 진입 옵션 선택할 수 있나" - a personal preference,
@@ -127,7 +127,7 @@ function getToken() {
                     // feature existed. Only fires on a fresh login submit; reloads elsewhere (logout,
                     // theme toggle, password change) intentionally still land back on this page.
                     if (canFleetOverview() && wantsFleetOverviewAutoRedirect()) {
-                        window.location.href = 'fleet-overview-test-blue.html';
+                        window.location.href = 'fleet-overview.html';
                     } else {
                         location.reload();
                     }
@@ -142,7 +142,7 @@ function getToken() {
         });
         
         document.getElementById('fleet-overview-btn')?.addEventListener('click', () => {
-            window.location.href = 'fleet-overview-test-blue.html';
+            window.location.href = 'fleet-overview.html';
         });
 
         document.getElementById('logout-btn')?.addEventListener('click', async () => {
@@ -351,7 +351,7 @@ function getToken() {
                 let isFirstInstance = true;
                 // ?db_id=... jumps straight to that instance instead of the usual "first
                 // non-restricted instance" default - used by the Fleet Overview page's card-click
-                // navigation (fleet-overview-test-blue.html opens index.html?db_id=<id>).
+                // navigation (fleet-overview.html opens index.html?db_id=<id>).
                 const jumpToDbId = new URLSearchParams(window.location.search).get('db_id');
                 // Admins always see every DB; other accounts don't see ones an admin restricted
                 // for them when the account was created (or later, via 계정 관리 > 수정).

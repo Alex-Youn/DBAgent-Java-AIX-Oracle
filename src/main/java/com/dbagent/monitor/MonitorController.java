@@ -203,7 +203,7 @@ public class MonitorController {
         });
     }
 
-    // Fleet Overview (fleet-overview-test-blue.html): one status snapshot per configured instance.
+    // Fleet Overview (fleet-overview.html): one status snapshot per configured instance.
     // Checked concurrently, not in a loop - a single down/slow DB would otherwise stall every
     // instance queued after it. Respects the same per-account DB visibility as everywhere else
     // (canAccessDb) - an instance the caller can't see just doesn't appear in the response, same as

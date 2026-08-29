@@ -18,6 +18,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Java port of the Oracle-monitoring routes in api_server.py (session/lock/tablespace/dashboard/etc). */
 @Service
@@ -880,7 +882,7 @@ public class MonitorService {
     }
 
     // ------------------------------------------------------- fleet_status
-    // Feeds the "Fleet Overview" landing page (fleet-overview-test-blue.html): one compact status
+    // Feeds the "Fleet Overview" landing page (fleet-overview.html): one compact status
     // snapshot per configured instance, everything in a single connection/round of queries to keep
     // the fan-out across possibly many DBs cheap. MonitorController runs one of these per instance
     // concurrently (see its fleetStatus()) rather than looping sequentially, since a slow/down DB
@@ -897,6 +899,13 @@ public class MonitorService {
     // former.
     private static final double UPTIME_FULL_DAYS = 30.0;
 
+    // v$version.banner still spells out the marketing codename right after "Database" on every
+    // release we've seen (11g/12c/18c/19c/21c/23ai) - e.g. "Oracle Database 21c Enterprise Edition
+    // Release 21.0.0.0.0 - Production" - so this is read off the DB itself instead of hardcoding a
+    // "major version number -> g/c" lookup table that would need updating for every future release
+    // (사용자 요청, 2026-08-30: "버전 표시는 21c, 11g 이런식으론 못 나타내나").
+    private static final Pattern VERSION_CODENAME_PATTERN = Pattern.compile("Database\\s+(\\S+)");
+
     public Map<String, Object> getFleetStatus(TargetDbConfig target) {
         long startedAt = System.currentTimeMillis();
         Map<String, Object> result = new LinkedHashMap<>();
@@ -904,16 +913,36 @@ public class MonitorService {
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
             String instanceStatus = "down";
             double uptimeDays = 0;
-            try (ResultSet rs = st.executeQuery("SELECT status, (SYSDATE - startup_time) AS uptime_days FROM v$instance")) {
+            String version = null;
+            try (ResultSet rs = st.executeQuery("SELECT status, (SYSDATE - startup_time) AS uptime_days, version FROM v$instance")) {
                 if (rs.next()) {
                     instanceStatus = "OPEN".equals(rs.getString("status")) ? "alive" : "down";
                     uptimeDays = rs.getDouble("uptime_days");
+                    version = rs.getString("version");
                 }
             }
             if (!"alive".equals(instanceStatus)) {
                 result.put("status", "down");
                 result.put("errorMessage", "인스턴스가 OPEN 상태가 아닙니다.");
+                // 명시적으로 null을 넣어야 프런트가 Object.assign으로 이전 폴링의 alive 응답과
+                // 병합할 때 예전 버전 정보가 안 지워지고 남는 걸 막을 수 있다 (사용자에게 옛
+                // "[Oracle 21c]" 태그가 다운 카드에 그대로 남아있는 것처럼 보이는 버그 방지).
+                result.put("version", null);
+                result.put("versionCodename", null);
                 return result;
+            }
+
+            // v$version 조회 실패(예: 계정에 v$version SELECT 권한이 없는 경우)가 전체 상태 조회를
+            // 실패시키지 않도록 별도 try/catch로 격리 - CPU/MEM/세션 등 나머지 지표는 이 쿼리와
+            // 무관하게 정상 조회되어야 한다.
+            String versionCodename = null;
+            try (ResultSet rs = st.executeQuery("SELECT banner FROM v$version WHERE banner LIKE 'Oracle Database%'")) {
+                if (rs.next()) {
+                    Matcher m = VERSION_CODENAME_PATTERN.matcher(rs.getString("banner"));
+                    if (m.find()) versionCodename = m.group(1);
+                }
+            } catch (Exception e) {
+                log.warn("v$version lookup failed for db_id={}: {}", target.id(), e.toString());
             }
 
             double numCpus = 1;
@@ -957,6 +986,8 @@ public class MonitorService {
             boolean warning = cpuPct >= 80 || memPct >= 80;
 
             result.put("status", warning ? "degraded" : "alive");
+            result.put("version", version);
+            result.put("versionCodename", versionCodename);
             result.put("cpuPct", cpuPct);
             result.put("memPct", memPct);
             result.put("activeSession", activeSessions);
