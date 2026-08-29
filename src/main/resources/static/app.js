@@ -173,13 +173,20 @@ function getToken() {
         // 아이콘 자체는 index.html에 고정 마크업으로 이미 존재, 여기서는 클릭 시 배색만 전환).
         themeToggleBtn?.addEventListener('click', () => {
             const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-            localStorage.setItem('dbagent_theme', isLight ? 'dark' : 'light');
-            // Full reload rather than an in-place toggle: several Chart.js instances (session trend,
-            // scatter, AWR history) bake their axis/grid colors into options at creation time via
-            // chartLineColor() and only get touched again through .update() on data, not on theme
-            // change - a reload is the simplest way to guarantee every chart repaints with the new
-            // theme's colors instead of tracking down and re-applying options on each instance.
-            location.reload();
+            const next = isLight ? 'dark' : 'light';
+            localStorage.setItem('dbagent_theme', next);
+            // 예전엔 여기서 location.reload()를 했음 - Chart.js 색상(chartLineColor())이 라이트/다크에
+            // 따라 달라지던 시절엔 차트를 다시 칠하려면 리로드가 제일 간단했음. 그런데 2026-08-28에 두
+            // 테마 슬롯이 전부 어두운 배경으로 바뀌면서 chartLineColor()가 테마와 무관하게 항상 흰색
+            // 계열을 반환하도록 바뀌었고(isLightTheme()도 이제 다른 곳에서 안 쓰임), 리로드가 아무 실익
+            // 없이 현재 조회 결과(예: Table Parent/Child 관계 조회)만 날려버리는 부작용만 남았던 것
+            // (사용자 확인, 2026-08-29). data-theme 속성만 바꾸면 나머지는 전부 CSS 변수라 즉시 다시
+            // 칠해지므로, applySavedTheme()과 동일한 방식으로 속성만 토글.
+            if (next === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+            }
         });
 
         const pwdModal = document.getElementById('change-pwd-modal');
@@ -411,14 +418,17 @@ function getToken() {
                             document.querySelectorAll('.instance-item').forEach(el => {
                                 el.style.color = 'var(--primary)';
                                 el.classList.remove('active-monitoring');
-                                const svg = el.querySelector('svg');
+                                // querySelector('svg') 대신 명시적으로 static 아이콘을 지정 - 두 아이콘(static/live)이
+                                // 함께 렌더링되기 시작한 뒤로 'svg'는 DOM 순서상 항상 static을 먼저 찾기 때문에,
+                                // 여기선 우연히 맞지만 아래 active 쪽에서는 틀린 아이콘을 잡던 문제를 함께 바로잡음.
+                                const svg = el.querySelector('.instance-icon-static');
                                 if(svg) svg.style.color = 'var(--primary)';
                             });
-                            
+
                             // Set active color
                             instLink.style.color = 'var(--success)';
                             instLink.classList.add('active-monitoring');
-                            const svg = instLink.querySelector('svg');
+                            const svg = instLink.querySelector('.instance-icon-live');
                             if(svg) svg.style.color = 'var(--success)';
                             
                             window.currentDbId = inst.id;
@@ -592,292 +602,6 @@ function getToken() {
         mermaid.initialize({ startOnLoad: false, theme: 'dark' });
     }
 
-    // ERD Logic
-    const erdSearchBtn = document.getElementById('erd-search-btn');
-    const erdSearchInput = document.getElementById('erd-search-input');
-    const erdEmptyState = document.getElementById('erd-empty-state');
-    const erdContainer = document.getElementById('erd-container');
-    const mermaidGraph = document.getElementById('mermaid-graph');
-
-    if (erdSearchBtn) {
-        erdSearchBtn.addEventListener('click', async () => {
-            const tableName = erdSearchInput.value.trim().toUpperCase();
-            if (!tableName) {
-                alert('테이블명을 입력해주세요.');
-                return;
-            }
-            
-            erdEmptyState.style.display = 'none';
-            erdContainer.style.display = 'flex';
-            mermaidGraph.innerHTML = '<p style="color: #666;">ERD 데이터를 불러오고 렌더링 중입니다...</p>';
-            
-            // Generate dynamic ERD considering Parent/Child relationships
-            let erdDefinition = `erDiagram\n`;
-            
-            if (tableName === 'EMPLOYEES') {
-                erdDefinition += `
-                    DEPARTMENTS ||--|{ EMPLOYEES : "has"
-                    EMPLOYEES ||--o{ EMPLOYEES : "manages"
-                    JOBS ||--|{ EMPLOYEES : "assigned_to"
-                    
-                    EMPLOYEES {
-                        NUMBER employee_id PK
-                        VARCHAR2 first_name
-                        VARCHAR2 last_name
-                        VARCHAR2 email
-                        DATE hire_date
-                        VARCHAR2 job_id FK
-                        NUMBER department_id FK
-                    }
-                    
-                    DEPARTMENTS {
-                        NUMBER department_id PK
-                        VARCHAR2 department_name
-                    }
-                    
-                    JOBS {
-                        VARCHAR2 job_id PK
-                        VARCHAR2 job_title
-                    }
-                `;
-            } else {
-                // Dynamic Parent/Child Generation
-                const parent1 = `${tableName}_GRP`;
-                const parent2 = `${tableName}_TYPE`;
-                const child1 = `${tableName}_DTL`;
-                const child2 = `${tableName}_HIST`;
-                
-                erdDefinition += `
-                    ${parent1} ||--o{ ${tableName} : "belongs_to"
-                    ${parent2} ||--o{ ${tableName} : "categorized_by"
-                    ${tableName} ||--o{ ${child1} : "has_details"
-                    ${tableName} ||--o{ ${child2} : "tracks_history"
-                    
-                    ${tableName} {
-                        NUMBER ID PK
-                        VARCHAR2 NAME
-                        VARCHAR2 STATUS
-                        NUMBER GRP_ID FK
-                        NUMBER TYPE_ID FK
-                        DATE REG_DATE
-                    }
-                    
-                    ${parent1} {
-                        NUMBER GRP_ID PK
-                        VARCHAR2 GRP_NAME
-                        VARCHAR2 USE_YN
-                    }
-                    
-                    ${parent2} {
-                        NUMBER TYPE_ID PK
-                        VARCHAR2 TYPE_NAME
-                        VARCHAR2 DESCRIPTION
-                    }
-                    
-                    ${child1} {
-                        NUMBER DTL_ID PK
-                        NUMBER ID FK
-                        NUMBER SEQ
-                        VARCHAR2 ITEM_VAL
-                        NUMBER AMOUNT
-                    }
-                    
-                    ${child2} {
-                        NUMBER HIST_ID PK
-                        NUMBER ID FK
-                        VARCHAR2 ACTION_CD
-                        DATE ACTION_DT
-                        VARCHAR2 REG_USER
-                    }
-                `;
-            }
-            
-            try {
-                const { svg } = await mermaid.render('mermaid-svg-' + Date.now(), erdDefinition);
-                mermaidGraph.innerHTML = svg;
-                const svgElement = mermaidGraph.querySelector('svg');
-                if (svgElement) {
-                    svgElement.style.maxWidth = '100%';
-                    svgElement.style.height = 'auto';
-                    svgElement.style.cursor = 'zoom-in';
-                    svgElement.addEventListener('click', () => {
-                        const modal = document.getElementById('image-modal');
-                        const modalContent = document.getElementById('modal-content');
-                        if(modal && modalContent) {
-                            modalContent.innerHTML = svgElement.outerHTML;
-                            const popupSvg = modalContent.querySelector('svg');
-                            if(popupSvg) {
-                                popupSvg.style.width = '100%';
-                                popupSvg.style.height = 'auto';
-                                popupSvg.style.maxWidth = 'none';
-                            }
-                            modal.style.display = 'block';
-                        }
-                    });
-                }
-            } catch (error) {
-                console.error("Mermaid rendering error:", error);
-                mermaidGraph.innerHTML = `<p style="color:red">ERD 렌더링 중 오류가 발생했습니다.</p>`;
-            }
-        });
-        
-        erdSearchInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                erdSearchBtn.click();
-            }
-        });
-        
-        // Domain ERD Logic
-        const domainBtns = document.querySelectorAll('.domain-btn');
-        
-        domainBtns.forEach(btn => {
-            btn.addEventListener('click', async () => {
-                // Remove active class from all
-                domainBtns.forEach(b => b.classList.remove('primary-btn'));
-                domainBtns.forEach(b => b.classList.add('secondary-btn'));
-                // Make this active
-                btn.classList.remove('secondary-btn');
-                btn.classList.add('primary-btn');
-                
-                const prefix = btn.getAttribute('data-prefix');
-                const ownerName = 'KIPOADM';
-                
-                erdEmptyState.style.display = 'none';
-                erdContainer.style.display = 'flex';
-                mermaidGraph.innerHTML = `<p style="color: #666;">${prefix} 업무 영역 데이터를 불러오는 중입니다...</p>`;
-                
-                try {
-                    const response = await fetch(`/api/erd/schema?owner=${ownerName}&prefix=${prefix}`);
-                    if (!response.ok) throw new Error('Network response was not ok');
-                    const data = await response.json();
-                    
-                    if (data.error) {
-                        throw new Error(data.error);
-                    }
-                    
-                    if (!data.tables || data.tables.length === 0) {
-                        mermaidGraph.innerHTML = `<p style="color:red">해당 업무 영역(${prefix})에 테이블이 없습니다.</p>`;
-                        return;
-                    }
-                    
-                    mermaidGraph.innerHTML = '<p style="color: #666;">ERD를 청크(10개씩) 단위로 렌더링 중입니다...</p>';
-                    
-                    // Function to sanitize table names for Mermaid (only alphanumeric and underscores)
-                    const sanitize = (name) => name.replace(/[^a-zA-Z0-9_]/g, '_');
-                    
-                    const chunkSize = 10;
-                    mermaidGraph.innerHTML = ''; // Clear loading text
-                    
-                    // Loop through tables in chunks of 10
-                    for (let i = 0; i < data.tables.length; i += chunkSize) {
-                        const chunkTables = data.tables.slice(i, i + chunkSize);
-                        let erdDefinition = `erDiagram\n`;
-                        
-                        chunkTables.forEach(t => {
-                            erdDefinition += `    ${sanitize(t)} {\n    }\n`;
-                        });
-                        
-                        // Add relationships only if both tables are in the current chunk
-                        if (data.relationships && data.relationships.length > 0) {
-                            data.relationships.forEach(rel => {
-                                if (chunkTables.includes(rel.parent) && chunkTables.includes(rel.child)) {
-                                    erdDefinition += `    ${sanitize(rel.parent)} ||--o{ ${sanitize(rel.child)} : "FK"\n`;
-                                }
-                            });
-                        }
-                        
-                        // Create a wrapper for this chunk
-                        const chunkId = 'mermaid-chunk-' + i + '-' + Date.now();
-                        const chunkDiv = document.createElement('div');
-                        chunkDiv.style.marginBottom = '40px';
-                        chunkDiv.style.border = '1px solid #eee';
-                        chunkDiv.style.padding = '20px';
-                        chunkDiv.style.borderRadius = '8px';
-                        chunkDiv.style.background = '#fff';
-                        
-                        const title = document.createElement('h4');
-                        title.innerText = `${prefix} 업무 영역 Part ${Math.floor(i / chunkSize) + 1} (${i + 1} ~ ${Math.min(i + chunkSize, data.tables.length)} 테이블) ▾`;
-                        title.style.marginBottom = '15px';
-                        title.style.color = '#333';
-                        title.style.cursor = 'pointer';
-                        title.style.userSelect = 'none';
-                        title.style.padding = '10px';
-                        title.style.background = '#f8f9fa';
-                        title.style.borderRadius = '4px';
-                        chunkDiv.appendChild(title);
-                        
-                        const graphDiv = document.createElement('div');
-                        graphDiv.id = chunkId;
-                        graphDiv.className = 'erd-chunk-graph';
-                        
-                        // By default, show only the first part, hide the rest
-                        if (i === 0) {
-                            graphDiv.style.display = 'block';
-                            title.innerText = title.innerText.replace('▾', '▴');
-                        } else {
-                            graphDiv.style.display = 'none';
-                        }
-                        
-                        title.addEventListener('click', () => {
-                            // Hide all other graphs and reset their arrows
-                            const allGraphs = mermaidGraph.querySelectorAll('.erd-chunk-graph');
-                            const allTitles = mermaidGraph.querySelectorAll('h4');
-                            
-                            const isCurrentlyVisible = graphDiv.style.display === 'block';
-                            
-                            allGraphs.forEach(g => g.style.display = 'none');
-                            allTitles.forEach(t => {
-                                if(t.innerText.includes('▴')) t.innerText = t.innerText.replace('▴', '▾');
-                            });
-                            
-                            // Toggle current
-                            if (!isCurrentlyVisible) {
-                                graphDiv.style.display = 'block';
-                                title.innerText = title.innerText.replace('▾', '▴');
-                            }
-                        });
-                        
-                        chunkDiv.appendChild(graphDiv);
-                        
-                        mermaidGraph.appendChild(chunkDiv);
-                        
-                        try {
-                            const { svg } = await mermaid.render(chunkId + '-svg', erdDefinition);
-                            graphDiv.innerHTML = svg;
-                            const svgElement = graphDiv.querySelector('svg');
-                            if (svgElement) {
-                                svgElement.style.maxWidth = '100%';
-                                svgElement.style.height = 'auto';
-                                svgElement.style.cursor = 'zoom-in';
-                                svgElement.addEventListener('click', () => {
-                                    const modal = document.getElementById('image-modal');
-                                    const modalContent = document.getElementById('modal-content');
-                                    if(modal && modalContent) {
-                                        modalContent.innerHTML = svgElement.outerHTML;
-                                        const popupSvg = modalContent.querySelector('svg');
-                                        if(popupSvg) {
-                                            popupSvg.style.width = '100%';
-                                            popupSvg.style.height = 'auto';
-                                            popupSvg.style.maxWidth = 'none';
-                                        }
-                                        modal.style.display = 'block';
-                                    }
-                                });
-                            }
-                        } catch (error) {
-                            console.error(`Mermaid rendering error for chunk ${i}:`, error);
-                            graphDiv.innerHTML = `<p style="color:red">이 파트의 ERD 렌더링 중 오류가 발생했습니다.</p>`;
-                        }
-                    }
-                    
-                } catch (error) {
-                    console.error("Error fetching domain ERD:", error);
-                    mermaidGraph.innerHTML = `<p style="color:red">데이터를 불러오는 데 실패했습니다: ${error.message}</p>`;
-                }
-            });
-        });
-    }
-
     // Relation Logic
     const relationSearchBtn = document.getElementById('relation-search-btn');
     const relationSearchInput = document.getElementById('relation-search-input');
@@ -1018,7 +742,7 @@ let layoutHTML = "";
                                 ${treeHTML}
                             </div>
                             <div style="width: 100%; border-top: 2px solid var(--border-color); padding-top: 30px; text-align: center;">
-                                <h3 id="erd-popup-btn" style="margin-top: 0; margin-bottom: 15px; font-size: 1.2rem; color: var(--primary); text-align: center; cursor: pointer; text-decoration: underline;" title="클릭하면 팝업창에서 더 크게 볼 수 있습니다. (Ctrl+마우스 휠로 확대/축소 가능)"><i data-lucide="maximize-2" style="width: 18px; height: 18px; margin-right: 5px;"></i>ERD 형태 (크게 보기 - 클릭)</h3>
+                                <h3 id="erd-popup-btn" style="margin-top: 0; margin-bottom: 15px; font-size: 1.2rem; color: var(--primary); text-align: center; cursor: pointer; text-decoration: underline;" title="클릭하면 팝업창에서 더 크게 볼 수 있습니다. (Ctrl+마우스 휠로 확대/축소 가능)"><i data-lucide="maximize-2" style="width: 18px; height: 18px; margin-right: 5px;"></i>ERD 형태</h3>
                                 <div style="width: 100%; overflow-x: auto; padding: 20px; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);">
                                     <div class="mermaid" style="padding-bottom: 20px; text-align: center; display: flex; justify-content: center; min-width: 100%; width: max-content; margin: 0 auto;">
                                         ${mermaidSyntax}
@@ -1053,45 +777,50 @@ let layoutHTML = "";
                                 
                                 const popupBtn = document.getElementById('erd-popup-btn');
                                 if (popupBtn) {
+                                    // 인페이지 모달(#image-modal) 대신 실제 팝업창으로 변경 (사용자 요청,
+                                    // 2026-08-29) - session-detail.html 등 이 앱의 다른 팝업들과 같은 방식.
+                                    // ERD는 정적 페이지가 아니라 그때그때 렌더링되는 내용이라, 별도 HTML
+                                    // 파일로 빼는 대신 이미 렌더링된 svg.outerHTML을 빈 팝업에 그대로 써넣는다
+                                    // (Ctrl+휠 확대/축소도 팝업 자체 document에 새로 붙여야 동작함 - 부모
+                                    // 창의 핸들러는 별개의 document인 팝업에는 적용되지 않음).
                                     popupBtn.addEventListener('click', () => {
-                                        const modal = document.getElementById('image-modal');
-                                        const modalContent = document.getElementById('modal-content');
-                                        if (modal && modalContent) {
-                                            modalContent.innerHTML = svg.outerHTML;
-                                            const popupSvg = modalContent.querySelector('svg');
-                                            if (popupSvg) {
-                                                // 자연스러운 원본 크기 유지
-                                                popupSvg.style.width = 'auto';
-                                                popupSvg.style.height = 'auto';
-                                                popupSvg.style.maxWidth = 'none';
-                                                popupSvg.style.minWidth = '0';
-                                                popupSvg.style.margin = 'auto';
-                                                popupSvg.style.display = 'block';
-                                                
-                                                // 마우스 휠 줌(확대/축소) 기능 추가 (Ctrl + Wheel)
-                                                let scale = 1;
-                                                popupSvg.style.transition = 'transform 0.1s ease';
-                                                popupSvg.style.transformOrigin = 'center center';
-                                                
-                                                modalContent.onwheel = (e) => {
-                                                    if (e.ctrlKey) {
-                                                        e.preventDefault();
-                                                        scale += e.deltaY * -0.001;
-                                                        scale = Math.min(Math.max(0.125, scale), 4);
-                                                        popupSvg.style.transform = `scale(${scale})`;
-                                                    }
-                                                };
-                                            }
-                                            
-                                            // 모달 컨텐츠 중앙 정렬 및 스크롤 영역 확보를 위한 스타일 추가
-                                            modalContent.style.display = 'flex';
-                                            modalContent.style.justifyContent = 'center';
-                                            modalContent.style.alignItems = 'center';
-                                            modalContent.style.overflow = 'auto';
-                                            modalContent.style.padding = '50px';
-                                            
-                                            modal.style.display = 'block';
-                                        }
+                                        const popup = window.open('', 'dbagent_erd_popup', 'width=1200,height=800,resizable=yes,scrollbars=yes');
+                                        if (!popup) return;
+                                        popup.document.write(`
+                                            <!DOCTYPE html>
+                                            <html>
+                                            <head>
+                                                <meta charset="UTF-8">
+                                                <title>ERD 형태</title>
+                                                <style>
+                                                    /* mermaid.initialize가 theme:'dark'라서(app.js) 관계선/텍스트가 밝은 색으로
+                                                       나온다 - 흰 배경이면 테이블이 몇 개 안 될 땐 안 보이다가, 테이블이 늘어나
+                                                       선으로 서로 연결되면 그 선이 흰 배경에 묻혀 안 보이게 된다 (사용자 확인,
+                                                       2026-08-29). 본문 화면(var(--bg-main))과 같은 어두운 배경으로 맞춘다. */
+                                                    body { margin: 0; padding: 50px; display: flex; justify-content: center; align-items: center; min-height: 100vh; box-sizing: border-box; background: #0d0d0d; }
+                                                    svg { max-width: none; transition: transform 0.1s ease; transform-origin: center center; }
+                                                </style>
+                                            </head>
+                                            <body>
+                                                ${svg.outerHTML}
+                                                <script>
+                                                    (function () {
+                                                        var scale = 1;
+                                                        var svgEl = document.querySelector('svg');
+                                                        document.body.addEventListener('wheel', function (e) {
+                                                            if (e.ctrlKey) {
+                                                                e.preventDefault();
+                                                                scale += e.deltaY * -0.001;
+                                                                scale = Math.min(Math.max(0.125, scale), 4);
+                                                                svgEl.style.transform = 'scale(' + scale + ')';
+                                                            }
+                                                        }, { passive: false });
+                                                    })();
+                                                </script>
+                                            </body>
+                                            </html>
+                                        `);
+                                        popup.document.close();
                                     });
                                 }
                                 
@@ -1184,7 +913,7 @@ let layoutHTML = "";
 
                             const row = `
                                 <tr>
-                                    <td>${ts.tablespace_name}</td>
+                                    <td><a href="#" class="tablespace-name-link" style="color: var(--primary-color); text-decoration: underline; cursor: pointer;" onclick="window.showTablespaceDatafiles('${ts.tablespace_name}'); return false;">${ts.tablespace_name}</a></td>
                                     <td><span class="status-badge ${statusBadge}">${ts.status}</span></td>
                                     <td>${ts.total_mb.toLocaleString()}</td>
                                     <td>${ts.used_mb.toLocaleString()}</td>
@@ -2683,96 +2412,37 @@ let layoutHTML = "";
             }
         });
 
-    // --- Table Info Modal Logic ---
-    window.showTableInfoModal = async function(tableName) {
-        if (!tableName) return;
-        const modal = document.getElementById('table-info-modal');
-        const title = document.getElementById('table-info-title');
-        const commentDiv = document.getElementById('table-info-comment');
-        const colsTbody = document.getElementById('table-info-cols');
-        const idxsTbody = document.getElementById('table-info-idxs');
-        
-        if (!modal) return;
-        
-        title.textContent = `${tableName} 상세정보 조회중...`;
-        commentDiv.textContent = '데이터를 불러오는 중입니다...';
-        colsTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">조회중...</td></tr>';
-        idxsTbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">조회중...</td></tr>';
-        modal.style.display = 'block';
-        
-        try {
-            const response = await fetch(`/api/table_info?db_id=${window.currentDbId || ""}&table_name=${tableName}&token=${encodeURIComponent(getToken())}`);
-            if (!response.ok) throw new Error('API fetch failed');
-            const data = await response.json();
-            
-            if (data.error) throw new Error(data.error);
-            
-            title.textContent = `${data.table_name} 상세정보`;
-            commentDiv.textContent = data.table_comment ? `📝 ${data.table_comment}` : '등록된 테이블 코멘트가 없습니다.';
-            
-            // Render Columns
-            if (data.columns && data.columns.length > 0) {
-                colsTbody.innerHTML = '';
-                data.columns.forEach(c => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td style="font-weight: 500; color: var(--primary-color);">${c.column_name}</td>
-                        <td>${c.data_type}</td>
-                        <td>${c.data_length || '-'}</td>
-                        <td>${c.nullable === 'Y' ? '<span style="color:#ef4444; font-weight:bold;">Y</span>' : 'N'}</td>
-                        <td style="color: var(--text-secondary); font-size: 0.9em;">${c.comments || '-'}</td>
-                    `;
-                    colsTbody.appendChild(tr);
-                });
-            } else {
-                colsTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">컬럼 정보가 없습니다.</td></tr>';
-            }
-            
-            // Render Indexes
-            if (data.indexes && data.indexes.length > 0) {
-                idxsTbody.innerHTML = '';
-                data.indexes.forEach(i => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td>${i.index_name}</td>
-                        <td>${i.index_type}</td>
-                        <td>${i.column_name}</td>
-                        <td>${i.is_pk ? '<span style="background:#10b981; color:white; padding: 2px 6px; border-radius:4px; font-size:0.8em; font-weight:bold;">PK</span>' : '-'}</td>
-                    `;
-                    idxsTbody.appendChild(tr);
-                });
-            } else {
-                idxsTbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">인덱스 정보가 없습니다.</td></tr>';
-            }
-            
-        } catch (e) {
-            title.textContent = '조회 오류';
-            commentDiv.textContent = `오류 발생: ${e.message}`;
-            colsTbody.innerHTML = '';
-            idxsTbody.innerHTML = '';
-        }
-    };
-    
-    // Close Table Info Modal
-    const tableInfoModal = document.getElementById('table-info-modal');
-    const closeTableInfoBtn = document.getElementById('close-table-info');
-    if (closeTableInfoBtn && tableInfoModal) {
-        closeTableInfoBtn.addEventListener('click', () => {
-            tableInfoModal.style.display = 'none';
-        });
-        window.addEventListener('click', (event) => {
-            if (event.target === tableInfoModal) {
-                tableInfoModal.style.display = 'none';
-            }
-        });
-    }
-        
         window.addEventListener('keydown', (event) => {
             if (event.key === 'Escape' && modal.style.display === 'block') {
                 modal.style.display = 'none';
             }
         });
     }
+
+    // --- Table Info Popup ---
+    // 인페이지 모달(#table-info-modal) 대신 실제 팝업창으로 변경 (사용자 요청, 2026-08-29) -
+    // session-detail.html과 같은 패턴: table-info.html이 URL 쿼리스트링(db_id/table_name)과
+    // sessionStorage 토큰만으로 스스로 /api/table_info를 조회/렌더링한다. 트리 카드 클릭
+    // (onclick="window.showTableInfoModal(...)")과 ERD SVG 클릭 핸들러 양쪽에서 이 함수 이름을
+    // 그대로 참조하고 있어 함수명은 유지하고 내부 구현만 팝업으로 교체.
+    // 위 #image-modal(closeBtn) 존재 여부와는 무관한 별도 기능이라, 그 if 블록 밖에서 항상 등록한다
+    // (안에 있으면 #image-modal이 없는 페이지/향후 정리에서 이 함수들도 같이 사라지는 버그가 됨).
+    window.showTableInfoModal = function(tableName) {
+        if (!tableName) return;
+        const url = `table-info.html?db_id=${encodeURIComponent(window.currentDbId || '')}&table_name=${encodeURIComponent(tableName)}`;
+        const popup = window.open(url, `dbagent_table_info_${tableName}`, 'width=900,height=720,resizable=yes,scrollbars=yes');
+        if (popup) popup.focus();
+    };
+
+    // --- Tablespace Datafiles Popup ---
+    // 테이블스페이스 조회 결과에서 테이블스페이스명 클릭 시 해당 테이블스페이스에 할당된 데이터파일과
+    // 파일별 사용량을 보여주는 팝업 (사용자 요청, 2026-08-29) - table-info.html과 동일한 패턴.
+    window.showTablespaceDatafiles = function(tablespaceName) {
+        if (!tablespaceName) return;
+        const url = `tablespace-datafiles.html?db_id=${encodeURIComponent(window.currentDbId || '')}&tablespace_name=${encodeURIComponent(tablespaceName)}`;
+        const popup = window.open(url, `dbagent_ts_datafiles_${tablespaceName}`, 'width=1000,height=600,resizable=yes,scrollbars=yes');
+        if (popup) popup.focus();
+    };
 
 
 // Global delegate for clickable session rows - opens the session detail (SQL/Plan/Bind) in a
@@ -3759,6 +3429,28 @@ let historySortAsc = true;
             
             const targetId = btn.getAttribute('data-tab');
             document.getElementById(targetId).style.display = 'flex';
+
+            // AIX 이관본: 실 서버(폐쇄망)에는 Ollama가 없어 AI 챗봇은 항상 동작 불가 (사용자 요청,
+            // 2026-08-29) - SQL 튜닝 탭처럼 질문을 입력했다가 실패 응답을 받게 하는 대신, 탭을 열자마자
+            // 바로 안내하고 입력 자체를 막는다. "일반오류검색(Regex)" 탭은 Ollama 없이도 동작하므로
+            // 그대로 둔다.
+            if (targetId === 'tab-chat') {
+                const chatLogEl = document.getElementById('chat-log');
+                chatLogEl.innerHTML = `
+                    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; text-align:center; color: var(--text-secondary); gap: 10px;">
+                        <i data-lucide="server-off" style="width:32px; height:32px; color: var(--text-muted);"></i>
+                        <div style="font-weight:600; color: var(--text-primary);">sLLM 모델이 필요합니다</div>
+                        <div style="font-size:0.85rem; max-width: 360px;">이 환경(AIX)에는 AI 챗봇(Ollama) 서버가 연동되어 있지 않습니다. "일반오류검색(Regex)" 탭에서 에러 코드로 직접 검색해주세요.</div>
+                    </div>`;
+                if (typeof lucide !== 'undefined') lucide.createIcons({root: chatLogEl});
+                const chatInputEl = document.getElementById('chat-input');
+                const chatSendBtnEl = document.getElementById('chat-send-btn');
+                if (chatInputEl) {
+                    chatInputEl.disabled = true;
+                    chatInputEl.placeholder = 'AI 챗봇은 이 환경에서 사용할 수 없습니다';
+                }
+                if (chatSendBtnEl) chatSendBtnEl.disabled = true;
+            }
         });
     });
 

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>데이터파일 정보</title>
+    <link rel="stylesheet" href="style.css?v=14">
+    <script src="lib/lucide.js"></script>
+    <script>
+        // Match the main app's saved theme choice so this popup doesn't clash when kept open
+        // side-by-side with the dashboard on a second monitor (table-info.html과 동일 패턴).
+        (function () {
+            const saved = localStorage.getItem('dbagent_theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
+    <style>
+        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); }
+    </style>
+</head>
+<body>
+    <div id="content">불러오는 중...</div>
+    <script>
+        (function () {
+            function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
+            function qs(name) { return new URLSearchParams(window.location.search).get(name) || ''; }
+
+            const dbId = qs('db_id');
+            const tsName = qs('tablespace_name');
+            const contentEl = document.getElementById('content');
+
+            if (!getToken()) {
+                contentEl.innerHTML = '<h3 style="color: var(--danger);">인증 정보가 없습니다. 메인 화면에서 다시 열어주세요.</h3>';
+                return;
+            }
+            if (!tsName) {
+                contentEl.innerHTML = '<h3 style="color: var(--danger);">테이블스페이스명이 없습니다.</h3>';
+                return;
+            }
+
+            document.title = `${tsName} 데이터파일 정보`;
+
+            fetch(`/api/tablespace_datafiles?db_id=${encodeURIComponent(dbId)}&tablespace_name=${encodeURIComponent(tsName)}&token=${encodeURIComponent(getToken())}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        contentEl.innerHTML = `<h3 style="color: var(--danger);">조회 오류</h3><p>${data.error}</p>`;
+                        return;
+                    }
+
+                    const rowsHtml = (data.length > 0)
+                        ? data.map(f => {
+                            const numPct = Number(f.used_pct);
+                            const displayPct = numPct.toFixed(1);
+                            let barClass = '';
+                            if (numPct >= 90) barClass = 'danger';
+                            else if (numPct >= 80) barClass = 'warning';
+                            return `
+                                <tr>
+                                    <td style="font-family: monospace; font-size: 0.9em;">${f.file_name}</td>
+                                    <td><span class="status-badge ${f.status && f.status.toUpperCase() === 'AVAILABLE' ? 'online' : 'offline'}">${f.status}</span></td>
+                                    <td>${f.autoextensible === 'YES' ? 'Y' : 'N'}</td>
+                                    <td>${f.total_mb.toLocaleString()}</td>
+                                    <td>${f.used_mb.toLocaleString()}</td>
+                                    <td>${f.free_mb.toLocaleString()}</td>
+                                    <td>
+                                        <div class="progress-bar-container">
+                                            <div class="progress-bar ${barClass}" style="width: ${numPct}%;"></div>
+                                            <span>${displayPct}%</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            `;
+                        }).join('')
+                        : '<tr><td colspan="7" style="text-align:center;">데이터파일 정보가 없습니다.</td></tr>';
+
+                    contentEl.innerHTML = `
+                        <div style="color: var(--text-main); text-align: left;">
+                            <h2 style="margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; font-size: 1.5rem; color: var(--primary-color);">${tsName} 데이터파일 정보</h2>
+                            <div class="table-container" style="max-height: 500px; overflow-y: auto;">
+                                <table class="data-table" style="width: 100%;">
+                                    <thead>
+                                        <tr>
+                                            <th>파일명</th>
+                                            <th>상태</th>
+                                            <th>자동확장</th>
+                                            <th>총 크기 (MB)</th>
+                                            <th>사용량 (MB)</th>
+                                            <th>여유 공간 (MB)</th>
+                                            <th>사용률 (%)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>${rowsHtml}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    `;
+
+                    if (typeof lucide !== 'undefined') lucide.createIcons();
+                })
+                .catch(err => {
+                    contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${err.message}</p>`;
+                });
+        })();
+    </script>
+</body>
+</html>

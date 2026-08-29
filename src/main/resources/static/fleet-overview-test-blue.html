@@ -568,10 +568,18 @@
             document.getElementById('theme-toggle-btn').innerHTML = PALETTE_ICON_SVG;
             // 2026-08-28 사용자 요청: index.html의 화면배색 버튼과 동일한 방식 - 클릭 시
             // data-theme="light" 슬롯(리팩토링 이전 네이비 다크 배색)과 기본 다크 배색을 토글.
+            // 예전엔 여기서 location.reload()를 했는데, 이 페이지 색상은 전부 CSS 변수라 속성만
+            // 바꿔도 즉시 다시 칠해짐 - 리로드는 현재 조회/필터 상태만 날리는 부작용이었음
+            // (index.html의 동일 버튼에서 발견된 문제, 2026-08-29 - 여기도 같은 패턴이라 함께 수정).
             document.getElementById('theme-toggle-btn').addEventListener('click', () => {
                 const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-                localStorage.setItem('dbagent_theme', isLight ? 'dark' : 'light');
-                location.reload();
+                const next = isLight ? 'dark' : 'light';
+                localStorage.setItem('dbagent_theme', next);
+                if (next === 'light') {
+                    document.documentElement.setAttribute('data-theme', 'light');
+                } else {
+                    document.documentElement.removeAttribute('data-theme');
+                }
             });
 
             // DB 관리 진입 (사용자 요청, 2026-08-29): index.html 톱니바퀴 메뉴의 "DB 관리"와 동일하게

@@ -378,6 +378,42 @@ public class MonitorService {
         return tablespaces;
     }
 
+    // ------------------------------------------------------- tablespace datafiles
+    public List<Map<String, Object>> getTablespaceDatafiles(TargetDbConfig target, String tablespaceName) throws SQLException {
+        String query = "SELECT df.file_id, df.file_name, df.status, df.autoextensible, " +
+                "ROUND(df.bytes / 1048576) as total_mb, " +
+                "ROUND(df.bytes / 1048576) - NVL(fs.free_mb, 0) as used_mb, " +
+                "NVL(fs.free_mb, 0) as free_mb, " +
+                "ROUND(((ROUND(df.bytes / 1048576) - NVL(fs.free_mb, 0)) / ROUND(df.bytes / 1048576)) * 100, 2) as used_pct " +
+                "FROM dba_data_files df " +
+                "LEFT JOIN (SELECT file_id, ROUND(SUM(bytes) / 1048576) as free_mb FROM dba_free_space " +
+                "           WHERE tablespace_name = ? GROUP BY file_id) fs " +
+                "ON df.file_id = fs.file_id " +
+                "WHERE df.tablespace_name = ? ORDER BY df.file_name";
+
+        List<Map<String, Object>> datafiles = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             PreparedStatement ps = conn.prepareStatement(query)) {
+            ps.setString(1, tablespaceName);
+            ps.setString(2, tablespaceName);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("file_id", rs.getInt("file_id"));
+                    row.put("file_name", rs.getString("file_name"));
+                    row.put("status", rs.getString("status"));
+                    row.put("autoextensible", rs.getString("autoextensible"));
+                    row.put("total_mb", orZero(rs.getObject("total_mb")));
+                    row.put("used_mb", orZero(rs.getObject("used_mb")));
+                    row.put("free_mb", orZero(rs.getObject("free_mb")));
+                    row.put("used_pct", orZero(rs.getObject("used_pct")));
+                    datafiles.add(row);
+                }
+            }
+        }
+        return datafiles;
+    }
+
     // -------------------------------------------------------------- dashboard
     public Map<String, Object> getDashboardStats(TargetDbConfig target) throws SQLException {
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {

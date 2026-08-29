@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -112,6 +113,21 @@ public class MonitorController {
         }
     }
 
+    @GetMapping("/tablespace_datafiles")
+    public ResponseEntity<Object> tablespaceDatafiles(
+            @RequestParam(required = false) String db_id,
+            @RequestParam(required = false) String token,
+            @RequestParam(name = "tablespace_name", defaultValue = "") String tablespaceName) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        try {
+            return ResponseEntity.ok(monitorService.getTablespaceDatafiles(configService.resolve(db_id), tablespaceName.toUpperCase()));
+        } catch (SQLException e) {
+            return dbError(e);
+        }
+    }
+
     @GetMapping("/dashboard")
     public ResponseEntity<Object> dashboard(@RequestParam(required = false) String db_id,
                                              @RequestParam(required = false) String token) {
@@ -201,12 +217,23 @@ public class MonitorController {
                 .filter(inst -> authService.canAccessDb(token, inst.id()))
                 .map(inst -> withTimeout(fleetStatusFor(inst), fleetStatusTimeoutSeconds, TimeUnit.SECONDS)
                         .exceptionally(ex -> {
-                            log.warn("fleet_status timed out after {}s for db_id={}: {}",
-                                    fleetStatusTimeoutSeconds, inst.id(), ex.toString());
+                            // withTimeout()의 view는 직접 completeExceptionally()로 완료되므로 보통 원본
+                            // 예외를 그대로 받지만, source 쪽 체인 상황에 따라 CompletionException으로
+                            // 감싸져 올 수도 있어 한 겹 벗겨서 실제 원인으로 타임아웃 여부를 판단한다 -
+                            // 이전엔 모든 실패를 "timed out"으로 로깅/응답해서 실제 원인(DB 예외 등)이
+                            // 가려졌었다.
+                            Throwable cause = (ex instanceof CompletionException && ex.getCause() != null) ? ex.getCause() : ex;
+                            boolean isTimeout = cause instanceof TimeoutException;
+                            if (isTimeout) {
+                                log.warn("fleet_status timed out after {}s for db_id={}: {}",
+                                        fleetStatusTimeoutSeconds, inst.id(), cause.toString());
+                            } else {
+                                log.warn("fleet_status failed for db_id={}: {}", inst.id(), cause.toString());
+                            }
                             Map<String, Object> fallback = new LinkedHashMap<>();
                             fallback.put("id", inst.id());
                             fallback.put("status", "down");
-                            fallback.put("errorMessage", "상태 조회 시간 초과");
+                            fallback.put("errorMessage", isTimeout ? "상태 조회 시간 초과" : "상태 조회 실패");
                             return fallback;
                         }))
                 .collect(Collectors.toList());

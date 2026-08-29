@@ -12,8 +12,12 @@
 
   사용자가 색상 버전은 fleet-overview-test-blue.html(색감1.jpg 기반)로 선택해 그쪽을 먼저 실 데이터/
   네비게이션 연동 경로로 삼았지만, 이후 "이 violet 버전에도 blue에 적용된 기능 넣어줘" 요청에 따라
-  이 파일도 동일한 기능(아래 참고)을 갖췄다 - 색상 팔레트만 색감2.jpg 기반으로 다를 뿐, 기능은
-  fleet-overview-test-blue.html과 완전히 동일하다.
+  이 파일도 동일한 기능(아래 참고)을 갖췄다 - 색상 팔레트만 색감2.jpg 기반으로 다를 뿐, 핵심 기능은
+  fleet-overview-test-blue.html과 동일하다.
+  주의(2026-08-29): blue 쪽에 이후 추가된 "DB 관리" 진입 버튼, KIPI 로고 아바타, activity 펄스
+  브랜드 아이콘은 이 violet 버전에는 아직 이식되지 않았다 - 두 파일 모두 실제 로그인 흐름에서
+  연결되지 않는 프로토타입/비교용 파일이라 당장 기능 격차가 실사용에 영향을 주지는 않지만, 이
+  파일을 다시 손대게 되면 blue와 다시 맞춰줄 것.
 
   Card/row clicks navigate to index.html?db_id=<id>, and app.js's "Load config and build tree" step
   reads that query param to auto-select the matching instance (falls back to its old "first instance"
