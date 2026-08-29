@@ -171,12 +171,17 @@
         justify-content: space-between;
         margin-bottom: 24px;
     }
-    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand { display: flex; align-items: center; gap: 6px; }
+    /* index.html 사이드바 로고(activity 아이콘)와 동일한 펄스 애니메이션 - 커졌다 작아지며 색이
+       브랜드 블루 -> 시안으로 순환. style.css의 .brand-icon-pulse를 그대로 옮김(이 페이지는
+       style.css를 쓰지 않는 완전 독립 페이지라 값만 복제). */
+    @keyframes brand-icon-pulse {
+        0%, 100% { color: var(--brand); transform: scale(1); filter: none; }
+        50% { color: #22d3ee; transform: scale(1.18); filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.65)); }
+    }
+    .brand-icon-pulse { display: inline-block; animation: brand-icon-pulse 2s ease-in-out infinite; }
     .brand-icon {
         width: 34px; height: 34px;
-        border-radius: var(--radius-sm);
-        background: var(--brand-glow-14);
-        border: 1px solid var(--border-strong);
         display: flex; align-items: center; justify-content: center;
         color: var(--brand);
     }
@@ -459,7 +464,10 @@
             <div class="header-actions">
                 <button class="icon-btn" id="refresh-btn" title="새로고침"></button>
                 <button class="icon-btn" id="theme-toggle-btn" title="화면 배색 전환"></button>
-                <div class="avatar">KIPI</div>
+                <button class="icon-btn" id="open-db-mgmt-btn" title="DB 관리" style="display:none;"></button>
+                <div class="avatar" style="width: 30px; height: 30px; background: #ffffff; padding: 3px; box-sizing: border-box;">
+                    <img src="KIPI_Symbol.jpg" alt="한국특허정보원 로고" style="width: 100%; height: 100%; object-fit: contain;">
+                </div>
             </div>
         </header>
 
@@ -544,13 +552,18 @@
             }
 
             const ENGINE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>';
+            // lucide "activity" glyph, matching index.html 사이드바 로고(DB InsightFlow 좌측)의
+            // 펄스 애니메이션 아이콘과 동일 - 사용자 요청(2026-08-29)으로 헤더 brand-icon에도 적용.
+            const ACTIVITY_ICON_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="brand-icon-pulse"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path></svg>';
             const WARNING_ICON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
             const REFRESH_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>';
             // Same "palette" glyph index.html's own theme-toggle button uses (via lucide's data-lucide="palette"),
             // just inlined as a raw SVG string to match this page's own icon-loading style (no lucide.js here).
             const PALETTE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"></path><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"></circle><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"></circle><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"></circle><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"></circle></svg>';
+            // lucide "database" glyph, matching index.html gear-dropdown's "DB 관리" item icon.
+            const DB_MGMT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5V19A9 3 0 0 0 21 19V5"></path><path d="M3 12A9 3 0 0 0 21 12"></path></svg>';
 
-            document.getElementById('brand-icon').innerHTML = ENGINE_ICON_SVG;
+            document.getElementById('brand-icon').innerHTML = ACTIVITY_ICON_SVG;
             document.getElementById('refresh-btn').innerHTML = REFRESH_ICON_SVG;
             document.getElementById('theme-toggle-btn').innerHTML = PALETTE_ICON_SVG;
             // 2026-08-28 사용자 요청: index.html의 화면배색 버튼과 동일한 방식 - 클릭 시
@@ -559,6 +572,20 @@
                 const isLight = document.documentElement.getAttribute('data-theme') === 'light';
                 localStorage.setItem('dbagent_theme', isLight ? 'dark' : 'light');
                 location.reload();
+            });
+
+            // DB 관리 진입 (사용자 요청, 2026-08-29): index.html 톱니바퀴 메뉴의 "DB 관리"와 동일하게
+            // db-mgmt.html을 팝업으로 연다. db-mgmt.html은 opener DOM을 읽지 않고 window.opener가
+            // 살아있는지만 확인한 뒤 저장 시 opener.location.reload()만 호출하는 완전 독립형 팝업이라
+            // (account-mgmt.html/menu-visibility.html과 달리 index.html 전용 DOM에 의존하지 않음),
+            // 이 페이지에서 열어도 안전하게 동작한다 - 계정 관리/메뉴 표시 설정은 opener의 index.html
+            // 전용 DOM(top-nav, #db-groups-container)을 읽어서 FO에서 열면 빈 목록이 뜨므로 제외.
+            const dbMgmtBtn = document.getElementById('open-db-mgmt-btn');
+            dbMgmtBtn.innerHTML = DB_MGMT_ICON_SVG;
+            if (sessionRole === 'admin') dbMgmtBtn.style.display = 'flex';
+            dbMgmtBtn.addEventListener('click', () => {
+                const popup = window.open('db-mgmt.html', 'dbagent_db_mgmt', 'width=980,height=820,resizable=yes,scrollbars=yes');
+                if (popup) popup.focus();
             });
 
             const STATUS_META = {
