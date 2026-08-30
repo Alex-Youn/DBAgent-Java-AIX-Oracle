@@ -599,7 +599,9 @@ function getToken() {
 
     // Initialize Mermaid
     if (typeof mermaid !== 'undefined') {
-        mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+        // er.entityPadding: 기본값(15)에서는 폰트 측정-렌더링 오차로 테이블명 끝 글자가
+        // 박스 밖으로 살짝 잘려 보이는 경우가 있어 여유 폭을 넉넉히 확보함
+        mermaid.initialize({ startOnLoad: false, theme: 'dark', er: { entityPadding: 30, minEntityWidth: 120 } });
     }
 
     // Relation Logic
@@ -727,7 +729,7 @@ let layoutHTML = "";
                             </div>
                             <div style="flex: 1; min-width: 0; border-left: 1px solid var(--border-color); padding-left: 20px; text-align: center;">
                                 <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1rem; color: var(--text-primary); text-align: left;">ERD 형태</h3>
-                                <div class="mermaid">
+                                <div class="mermaid" style="opacity: 0; transition: opacity 0.15s ease;">
                                     ${mermaidSyntax}
                                 </div>
                             </div>
@@ -744,7 +746,7 @@ let layoutHTML = "";
                             <div style="width: 100%; border-top: 2px solid var(--border-color); padding-top: 30px; text-align: center;">
                                 <h3 id="erd-popup-btn" style="margin-top: 0; margin-bottom: 15px; font-size: 1.2rem; color: var(--primary); text-align: center; cursor: pointer; text-decoration: underline;" title="클릭하면 팝업창에서 더 크게 볼 수 있습니다. (Ctrl+마우스 휠로 확대/축소 가능)"><i data-lucide="maximize-2" style="width: 18px; height: 18px; margin-right: 5px;"></i>ERD 형태</h3>
                                 <div style="width: 100%; overflow-x: auto; padding: 20px; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);">
-                                    <div class="mermaid" style="padding-bottom: 20px; text-align: center; display: flex; justify-content: center; min-width: 100%; width: max-content; margin: 0 auto;">
+                                    <div class="mermaid" style="padding-bottom: 20px; text-align: center; display: flex; justify-content: center; min-width: 100%; width: max-content; margin: 0 auto; opacity: 0; transition: opacity 0.15s ease;">
                                         ${mermaidSyntax}
                                     </div>
                                 </div>
@@ -766,6 +768,68 @@ let layoutHTML = "";
                         setTimeout(() => {
                             const svg = document.querySelector('#relation-container .mermaid svg');
                             if (svg) {
+                                // 테이블명은 svg <text>가 아니라 <g class="label"><foreignObject><div>...</div></foreignObject></g>
+                                // 형태의 HTML 라벨로 렌더링되는데, mermaid가 foreignObject 폭을 실제 텍스트 폭보다
+                                // 좁게 계산하는 경우가 있어(내부 폭 측정 버그) 글자가 그 경계에서 잘려 보임.
+                                // → 각 foreignObject의 실제 내용 폭(scrollWidth)을 재보고 부족하면 foreignObject와
+                                //   같은 그룹의 엔티티 박스(rect)까지 함께 넓혀줌(가운데 정렬 유지).
+                                try {
+                                    svg.querySelectorAll('foreignObject').forEach(fo => {
+                                        const div = fo.querySelector('div');
+                                        if (!div) return;
+                                        const neededWidth = div.scrollWidth;
+                                        const curWidth = parseFloat(fo.getAttribute('width')) || 0;
+                                        if (neededWidth <= curWidth) return;
+                                        const extra = neededWidth - curWidth + 4;
+                                        const newWidth = curWidth + extra;
+                                        fo.setAttribute('width', newWidth);
+
+                                        const labelG = fo.parentElement;
+                                        const m = labelG && labelG.getAttribute('transform') &&
+                                            labelG.getAttribute('transform').match(/translate\(([-0-9.]+),\s*([-0-9.]+)\)/);
+                                        if (m) {
+                                            labelG.setAttribute('transform', `translate(${parseFloat(m[1]) - extra / 2}, ${m[2]})`);
+                                        }
+
+                                        const nodeG = labelG && labelG.parentElement;
+                                        const rect = nodeG && nodeG.querySelector('rect');
+                                        if (rect) {
+                                            const rectWidth = parseFloat(rect.getAttribute('width')) || 0;
+                                            if (newWidth > rectWidth) {
+                                                const rectExtra = newWidth - rectWidth;
+                                                rect.setAttribute('width', rectWidth + rectExtra);
+                                                rect.setAttribute('x', (parseFloat(rect.getAttribute('x')) || 0) - rectExtra / 2);
+                                            }
+                                        }
+                                    });
+                                } catch (labelErr) {
+                                    console.error('ERD 라벨 폭 보정 실패:', labelErr);
+                                }
+
+                                // 위에서 라벨/박스 폭을 넓혔으므로, svg 자체의 viewBox도 실제 렌더링된
+                                // 컨텐츠 전체를 다시 측정해서 맞춰준다(안 그러면 넓어진 박스가 기존
+                                // viewBox 경계 밖으로 나가 다시 잘려 보일 수 있음).
+                                try {
+                                    const rootG = svg.querySelector('g');
+                                    if (rootG) {
+                                        const bbox = rootG.getBBox();
+                                        const margin = 15;
+                                        svg.setAttribute('viewBox', `${bbox.x - margin} ${bbox.y - margin} ${bbox.width + margin * 2} ${bbox.height + margin * 2}`);
+                                        svg.setAttribute('width', bbox.width + margin * 2);
+                                        svg.setAttribute('height', bbox.height + margin * 2);
+                                    }
+                                } catch (bboxErr) {
+                                    console.error('ERD viewBox 보정 실패:', bboxErr);
+                                }
+
+                                // 잘린 채로 그려진 최초 박스가 눈에 보였다가 위 보정으로 뒤늦게
+                                // 정상 크기로 바뀌는 깜빡임(FOUC)을 막기 위해, 위 보정이 다 끝난
+                                // 지금 시점에만 컨테이너를 보이게 전환한다(그 전까지는 opacity:0으로 숨겨둠).
+                                const mermaidContainer = svg.closest('.mermaid');
+                                if (mermaidContainer) {
+                                    mermaidContainer.style.opacity = '1';
+                                }
+
                                 // Add pointer cursor specifically to boxes and text (not the whole SVG background)
                                 const clickableElements = svg.querySelectorAll('.entityBox, .node, text, span, foreignObject');
                                 clickableElements.forEach(el => {
@@ -854,11 +918,20 @@ let layoutHTML = "";
                                         }
                                     }
                                 });
+                            } else {
+                                // svg를 못 찾은 경우(렌더링 실패 등)에도 opacity:0으로 숨긴 컨테이너가
+                                // 영영 안 보이는 상태로 남지 않도록 안전망으로 다시 보이게 해준다.
+                                document.querySelectorAll('#relation-container .mermaid').forEach(el => {
+                                    el.style.opacity = '1';
+                                });
                             }
                         }, 500);
-                        
+
                     } catch (err) {
                         console.error('Mermaid render error:', err);
+                        document.querySelectorAll('#relation-container .mermaid').forEach(el => {
+                            el.style.opacity = '1';
+                        });
                     }
                 }
 
