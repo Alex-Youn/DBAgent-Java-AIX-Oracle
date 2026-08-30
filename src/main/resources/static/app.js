@@ -640,7 +640,7 @@ function getToken() {
                 const parentRelations = data.filter(item => item.child_table.toUpperCase() === tableName);
                 const childRelations = data.filter(item => item.parent_table.toUpperCase() === tableName);
                 
-                let treeHTML = `<div class="tree-node" style="display: flex; flex-direction: column; align-items: center;">`;
+                let treeHTML = `<div style="display: flex; flex-direction: column; align-items: center;">`;
 
                 let mermaidSyntax = "erDiagram\n";
                 let hasData = false;
@@ -725,7 +725,9 @@ let layoutHTML = "";
                         <div style="display: flex; gap: 20px; align-items: flex-start;">
                             <div style="flex: 1; min-width: 0;">
                                 <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1rem; color: var(--text-primary);">트리 형태</h3>
-                                ${treeHTML}
+                                <div style="padding: 20px; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);">
+                                    ${treeHTML}
+                                </div>
                             </div>
                             <div style="flex: 1; min-width: 0; border-left: 1px solid var(--border-color); padding-left: 20px; text-align: center;">
                                 <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1rem; color: var(--text-primary); text-align: left;">ERD 형태</h3>
@@ -741,7 +743,9 @@ let layoutHTML = "";
                         <div style="display: flex; flex-direction: column; gap: 40px; align-items: stretch;">
                             <div style="width: 100%;">
                                 <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1.2rem; color: var(--text-primary); text-align: center;">트리 형태</h3>
-                                ${treeHTML}
+                                <div style="width: 100%; overflow-x: auto; padding: 20px; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);">
+                                    ${treeHTML}
+                                </div>
                             </div>
                             <div style="width: 100%; border-top: 2px solid var(--border-color); padding-top: 30px; text-align: center;">
                                 <h3 id="erd-popup-btn" style="margin-top: 0; margin-bottom: 15px; font-size: 1.2rem; color: var(--primary); text-align: center; cursor: pointer; text-decoration: underline;" title="클릭하면 팝업창에서 더 크게 볼 수 있습니다. (Ctrl+마우스 휠로 확대/축소 가능)"><i data-lucide="maximize-2" style="width: 18px; height: 18px; margin-right: 5px;"></i>ERD 형태</h3>
@@ -3651,6 +3655,7 @@ let historySortAsc = true;
 
     const sqlRunnerInput = document.getElementById('sqlrunner-input');
     const sqlRunnerBtn = document.getElementById('sqlrunner-run-btn');
+    const sqlRunnerClearBtn = document.getElementById('sqlrunner-clear-btn');
     const sqlRunnerResult = document.getElementById('sqlrunner-result');
     const sqlRunnerStatus = document.getElementById('sqlrunner-status');
     const sqlRunnerRowLimitInput = document.getElementById('sqlrunner-rowlimit-input');
@@ -3741,6 +3746,16 @@ let historySortAsc = true;
         };
 
         sqlRunnerBtn.addEventListener('click', runSql);
+
+        if (sqlRunnerClearBtn) {
+            sqlRunnerClearBtn.addEventListener('click', () => {
+                sqlRunnerInput.value = '';
+                sqlRunnerStatus.textContent = '';
+                sqlRunnerResult.innerHTML = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">SQL을 입력하고 실행 버튼을 누르세요.</div>';
+                sqlRunnerInput.focus();
+            });
+        }
+
         sqlRunnerInput.addEventListener('keydown', (e) => {
             // Enter runs the query; Shift+Enter still inserts a newline for multi-line SQL.
             if (e.key === 'Enter' && !e.shiftKey) {
