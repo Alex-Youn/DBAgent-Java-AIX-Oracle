@@ -2327,7 +2327,14 @@ let layoutHTML = "";
             if (data.error) {
                 alert(`에러 발생: ${data.error}`);
             } else {
-                alert('세션 Kill 명령이 성공적으로 전송되었습니다.');
+                // data.results의 개별 세션 status를 확인하지 않고 무조건 "성공적으로 전송되었습니다"만
+                // 띄우던 버그 수정 (2026-08-30 실사용 테스트로 발견) - 예를 들어 세션이 인터럽트 불가능한
+                // PL/SQL 호출 중이어서 ORA-00031(session marked for kill)이 나도 사용자에게는 성공으로
+                // 보였음. TM Lock 탭(tmlockKillBtn)/장애조치 버튼(dash-incident-action-btn)과 동일하게
+                // 성공/실패 건수를 세어서 보여주도록 통일.
+                let successCount = 0, failCount = 0;
+                (data.results || []).forEach(r => (r.status === 'killed' ? successCount++ : failCount++));
+                alert(`처리 결과:\n성공: ${successCount}건\n실패: ${failCount}건`);
                 if (checkboxClass === 'session-checkbox') {
                     const btn = document.getElementById('session-refresh-btn');
                     if (btn) btn.click();
