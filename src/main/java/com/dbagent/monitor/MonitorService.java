@@ -192,12 +192,11 @@ public class MonitorService {
                 "LEFT JOIN v$sql sq ON s.sql_id = sq.sql_id AND s.sql_child_number = sq.child_number " +
                 // 사용자 요청(2026-08-31): 화면에 표시되던 "BACKGROUND"는 실제 계정이 아니라 이 쿼리가
                 // username이 NULL인 세션(내부 job/AQ 등 스키마와 무관한 세션)에 붙이던 표시용 문자열이었음
-                // - username IS NOT NULL로 아예 제외. 모니터링 계정 자신의 세션만 SID로 동적 제외(계정명
-                // 비교였을 때는 SQL Runner 등에서 같은 계정을 공유하는 다른 실사용자 세션까지 통째로
-                // 숨어버리는 버그가 있었음 - 코드리뷰로 발견/수정. SID 비교는 이 쿼리를 실행 중인 커넥션
-                // 자신의 세션 하나만 정확히 제외하므로 계정 공유 여부와 무관하게 안전함).
+                // - username IS NOT NULL로 아예 제외. 모니터링 계정(databases.json 설정 계정) 자신의
+                // 세션도 함께 제외 - 이 계정은 모니터링 전용이라 다른 실사용자가 쓸 일이 없음
+                // (monitoringAccountLiteral 참고).
                 "WHERE s.type != 'BACKGROUND' AND s.status = 'ACTIVE' " +
-                "AND s.username IS NOT NULL AND s.sid != SYS_CONTEXT('USERENV','SID') " +
+                "AND s.username IS NOT NULL AND s.username != " + monitoringAccountLiteral(target) + " " +
                 "ORDER BY s.last_call_et DESC";
 
         List<Map<String, Object>> sessions = new ArrayList<>();
@@ -238,7 +237,7 @@ public class MonitorService {
     public Map<String, Object> getSessionExtra(TargetDbConfig target) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("active_transactions", queryActiveTransactions(conn));
+            result.put("active_transactions", queryActiveTransactions(conn, target));
             result.put("parallel_sessions", queryParallelSessions(conn));
             result.put("pending_2pc", queryPending2pc(conn));
             // 사용자 요청(2026-08-31): Trace 그래프 점(개별 세션)을 Lock Wait 여부로도 색칠하려면 몇 명인지
@@ -254,7 +253,7 @@ public class MonitorService {
     // Column set intentionally mirrors getSessions()'s Active Session query (same ash_summary wait-%
     // breakdown, same v$process/v$sql joins) - Active Transaction is meant to show the identical
     // columns, just scoped to sessions that hold a transaction (v$transaction) instead of status='ACTIVE'.
-    private List<Map<String, Object>> queryActiveTransactions(Connection conn) {
+    private List<Map<String, Object>> queryActiveTransactions(Connection conn, TargetDbConfig target) {
         String query = "WITH ash_summary AS (" +
                 "SELECT session_id, session_serial#, " +
                 "ROUND(SUM(CASE WHEN session_state = 'ON CPU' THEN 1 ELSE 0 END) / COUNT(*) * 100) as cpu_pct, " +
@@ -280,10 +279,9 @@ public class MonitorService {
                 // 사용자 요청(2026-08-31): idle-in-transaction(커밋 안 하고 대기 중이라 status가
                 // INACTIVE로 바뀐) 세션은 이 탭에서 제외 - Active Session과 동일하게 ACTIVE만 표시.
                 // "BACKGROUND" 표시(username NULL)와 모니터링 계정 자신의 세션도 getSessions()와 동일한
-                // 이유로 함께 제외 - SID 기반 동적 자기제외라 계정을 공유하는 다른 세션(예: SQL Runner)은
-                // 그대로 남고 이 쿼리를 실행 중인 커넥션 자신의 세션만 정확히 빠진다.
+                // 이유로 함께 제외 (monitoringAccountLiteral 참고).
                 "WHERE s.status = 'ACTIVE' AND s.type != 'BACKGROUND' " +
-                "AND s.username IS NOT NULL AND s.sid != SYS_CONTEXT('USERENV','SID') " +
+                "AND s.username IS NOT NULL AND s.username != " + monitoringAccountLiteral(target) + " " +
                 "ORDER BY s.sid";
         List<Map<String, Object>> rows = new ArrayList<>();
         try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
@@ -492,10 +490,10 @@ public class MonitorService {
 
             int activeSessions = 0;
             // 사용자 요청(2026-08-31)으로 getSessions()가 제외하기 시작한 것과 동일한 대상(NULL
-            // username, 모니터링 계정 자신의 세션만 SID로 제외 - 계정 공유 세션은 유지)을 이 카운트에서도
-            // 빼서, Active Session 목록의 실제 행 개수와 여기 KPI 숫자가 어긋나지 않게 함.
+            // username, 모니터링 계정 자신)을 이 카운트에서도 빼서, Active Session 목록의 실제 행
+            // 개수와 여기 KPI 숫자가 어긋나지 않게 함.
             try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
-                    "AND username IS NOT NULL AND sid != SYS_CONTEXT('USERENV','SID')")) {
+                    "AND username IS NOT NULL AND username != " + monitoringAccountLiteral(target))) {
                 if (rs.next()) activeSessions = rs.getInt(1);
             }
 
@@ -510,11 +508,10 @@ public class MonitorService {
     // ------------------------------------------------------------- top_events
     public List<Map<String, Object>> getTopEvents(TargetDbConfig target) throws SQLException {
         // Dashboard의 "Active Session 목록" 탭 바로 옆 "Top Event 목록" 탭이라, 같은 세션 집합을
-        // 기준으로 집계해야 함 - getSessions()와 동일하게 NULL username 제외, 모니터링 계정 자신은
-        // SID로 제외(계정 공유 세션은 유지).
+        // 기준으로 집계해야 함 - getSessions()와 동일하게 NULL username/모니터링 계정 자신 제외.
         String query = "SELECT NVL(event, 'ON CPU') as event, COUNT(*) as cnt " +
                 "FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
-                "AND username IS NOT NULL AND sid != SYS_CONTEXT('USERENV','SID') " +
+                "AND username IS NOT NULL AND username != " + monitoringAccountLiteral(target) + " " +
                 "GROUP BY event ORDER BY cnt DESC";
         List<Map<String, Object>> events = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
@@ -1028,10 +1025,10 @@ public class MonitorService {
 
             int activeSessions = 0;
             // 사용자 요청(2026-08-31)으로 getSessions()가 제외하기 시작한 것과 동일한 대상(NULL
-            // username, 모니터링 계정 자신의 세션만 SID로 제외 - 계정 공유 세션은 유지)을 이 카운트에서도
-            // 빼서, Active Session 목록의 실제 행 개수와 여기 KPI 숫자가 어긋나지 않게 함.
+            // username, 모니터링 계정 자신)을 이 카운트에서도 빼서, Active Session 목록의 실제 행
+            // 개수와 여기 KPI 숫자가 어긋나지 않게 함.
             try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
-                    "AND username IS NOT NULL AND sid != SYS_CONTEXT('USERENV','SID')")) {
+                    "AND username IS NOT NULL AND username != " + monitoringAccountLiteral(target))) {
                 if (rs.next()) activeSessions = rs.getInt(1);
             }
 
@@ -1192,6 +1189,16 @@ public class MonitorService {
         }
         if (list.isEmpty()) return "";
         return " AND u.username IN (" + String.join(",", list) + ") ";
+    }
+
+    // 사용자 요청(2026-08-31/2026-09-01): 모니터링 계정 자신의 세션을 Active Session류 화면에서
+    // 제외할 때 SYS_CONTEXT('USERENV','SID') 방식(현재 커넥션 자신만 제외)을 써봤으나, 폐쇄망 실사용
+    // 테스트 결과 같은 모니터링 계정의 풀에 있는 "다른" 커넥션(동시에 도는 다른 폴링 쿼리)은 SID가
+    // 달라 제외되지 않고 Active Session 목록에 섞여 들어오는 문제가 발견됨. 이 계정은 모니터링
+    // 전용이라 실사용자가 쓸 일이 없으므로, databases.json에 설정된 계정명 자체로 걸러 그 계정의
+    // 세션을 전부(SID와 무관하게) 제외하는 원래 방식으로 되돌림.
+    private String monitoringAccountLiteral(TargetDbConfig target) {
+        return "'" + target.user().toUpperCase().replace("'", "''") + "'";
     }
 
     private Object orZero(Object value) {
