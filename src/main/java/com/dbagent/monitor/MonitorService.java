@@ -239,25 +239,51 @@ public class MonitorService {
         }
     }
 
+    // Column set intentionally mirrors getSessions()'s Active Session query (same ash_summary wait-%
+    // breakdown, same v$process/v$sql joins) - Active Transaction is meant to show the identical
+    // columns, just scoped to sessions that hold a transaction (v$transaction) instead of status='ACTIVE'.
     private List<Map<String, Object>> queryActiveTransactions(Connection conn) {
-        String query = "SELECT s.sid, s.serial#, s.username, s.status, s.machine, s.program, s.sql_id, " +
-                "t.start_time, t.used_ublk, t.used_urec " +
-                "FROM v$transaction t JOIN v$session s ON s.saddr = t.ses_addr " +
+        String query = "WITH ash_summary AS (" +
+                "SELECT session_id, session_serial#, " +
+                "ROUND(SUM(CASE WHEN session_state = 'ON CPU' THEN 1 ELSE 0 END) / COUNT(*) * 100) as cpu_pct, " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND wait_class = 'User I/O' THEN 1 ELSE 0 END) / COUNT(*) * 100) as user_io_pct, " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND wait_class = 'System I/O' THEN 1 ELSE 0 END) / COUNT(*) * 100) as system_io_pct, " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND event LIKE 'latch%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as latch_pct, " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND event LIKE 'enq: TX%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as tx_lock_pct, " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND event LIKE 'enq: TM%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as tm_lock_pct, " +
+                "ROUND(SUM(CASE WHEN session_state = 'WAITING' AND wait_class NOT IN ('User I/O', 'System I/O', 'Idle') " +
+                "AND event NOT LIKE 'latch%' AND event NOT LIKE 'enq: TX%' AND event NOT LIKE 'enq: TM%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as other_pct " +
+                "FROM v$active_session_history WHERE sample_time >= SYSDATE - 1/24/60 GROUP BY session_id, session_serial#) " +
+                "SELECT (SELECT instance_name FROM v$instance) as db_name, s.status, s.sid, s.serial#, p.spid as server_pid, " +
+                "s.machine as machine_name, NVL(s.username, 'BACKGROUND') as username, s.program as program_name, " +
+                "s.last_call_et as duration_time, " +
+                "NVL(a.cpu_pct, 0) || ',' || NVL(a.user_io_pct, 0) || ',' || NVL(a.system_io_pct, 0) || ',' || " +
+                "NVL(a.latch_pct, 0) || ',' || NVL(a.tx_lock_pct, 0) || ',' || NVL(a.tm_lock_pct, 0) || ',' || NVL(a.other_pct, 0) as session_wait_pct, " +
+                "s.sql_id, s.event as event_name, sq.plan_hash_value, sq.sql_text " +
+                "FROM v$transaction t " +
+                "JOIN v$session s ON s.saddr = t.ses_addr " +
+                "LEFT JOIN v$process p ON s.paddr = p.addr " +
+                "LEFT JOIN ash_summary a ON s.sid = a.session_id AND s.serial# = a.session_serial# " +
+                "LEFT JOIN v$sql sq ON s.sql_id = sq.sql_id AND s.sql_child_number = sq.child_number " +
                 "ORDER BY s.sid";
         List<Map<String, Object>> rows = new ArrayList<>();
         try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
             while (rs.next()) {
                 Map<String, Object> row = new LinkedHashMap<>();
+                row.put("db_name", rs.getString("db_name"));
+                row.put("status", rs.getString("status"));
                 row.put("sid", rs.getObject("sid"));
                 row.put("serial", rs.getObject("serial#"));
+                row.put("server_pid", rs.getString("server_pid"));
+                row.put("machine_name", rs.getString("machine_name"));
                 row.put("username", rs.getString("username"));
-                row.put("status", rs.getString("status"));
-                row.put("machine", rs.getString("machine"));
-                row.put("program", rs.getString("program"));
+                row.put("program_name", rs.getString("program_name"));
+                row.put("duration_time", rs.getObject("duration_time"));
+                row.put("session_wait_pct", rs.getString("session_wait_pct"));
                 row.put("sql_id", rs.getString("sql_id"));
-                row.put("start_time", rs.getString("start_time"));
-                row.put("used_ublk", rs.getObject("used_ublk"));
-                row.put("used_urec", rs.getObject("used_urec"));
+                row.put("event_name", rs.getString("event_name"));
+                row.put("plan_hash_value", rs.getObject("plan_hash_value"));
+                row.put("sql_text", rs.getString("sql_text"));
                 rows.add(row);
             }
         } catch (SQLException ignored) {

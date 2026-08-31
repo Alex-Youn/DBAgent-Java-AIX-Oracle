@@ -167,11 +167,12 @@ function getToken() {
             location.reload();
         });
 
-        const themeToggleBtn = document.getElementById('theme-toggle-btn');
         // 2026-08-28 사용자 요청: 화면배색 버튼 아이콘을 sun/moon 상태 전환 방식에서 고정된 palette
         // 아이콘으로 변경 - 더 이상 라이트/다크를 아이콘으로 구분해서 보여줄 필요가 없어짐 (palette
         // 아이콘 자체는 index.html에 고정 마크업으로 이미 존재, 여기서는 클릭 시 배색만 전환).
-        themeToggleBtn?.addEventListener('click', () => {
+        // 로그인 화면(#login-theme-toggle-btn)과 로그인 후 화면(#theme-toggle-btn) 둘 다 이 함수를
+        // 공유 - 로그인 전에도 배색을 미리 바꿔볼 수 있게 해달라는 요청(2026-08-31)으로 추가됨.
+        function toggleTheme() {
             const isLight = document.documentElement.getAttribute('data-theme') === 'light';
             const next = isLight ? 'dark' : 'light';
             localStorage.setItem('dbagent_theme', next);
@@ -187,7 +188,9 @@ function getToken() {
             } else {
                 document.documentElement.removeAttribute('data-theme');
             }
-        });
+        }
+        document.getElementById('theme-toggle-btn')?.addEventListener('click', toggleTheme);
+        document.getElementById('login-theme-toggle-btn')?.addEventListener('click', toggleTheme);
 
         const pwdModal = document.getElementById('change-pwd-modal');
         document.getElementById('change-pwd-trigger')?.addEventListener('click', () => {
@@ -310,7 +313,14 @@ function getToken() {
 
 
         const authed = await checkAuth();
-        if (!authed) return;
+        if (!authed) {
+            // Everything past this point (including the app's only other lucide.createIcons() calls,
+            // further below) is skipped pre-login, so the login screen's own icons (brand icon, and
+            // the palette theme-toggle button) would otherwise stay unconverted <i data-lucide> tags
+            // forever - convert them here instead.
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+            return;
+        }
 
         if (!isAdmin()) {
             document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
@@ -1239,6 +1249,7 @@ let layoutHTML = "";
     const CHART_WINDOW_MS = 20 * 5 * 60 * 1000;
     const sessionHistory = {
         labels: [],
+        activeSessions: [],
         activeTx: [],
         parallel: [],
         pending2pc: [],
@@ -1289,6 +1300,7 @@ let layoutHTML = "";
             const now = new Date();
             const nowTime = now.getTime();
             sessionHistory.labels.push(nowTime);
+            sessionHistory.activeSessions.push(activeCount);
             sessionHistory.activeTx.push(extra.active_transactions.length);
             sessionHistory.parallel.push(extra.parallel_sessions.length);
             sessionHistory.pending2pc.push(extra.pending_2pc.length);
@@ -1300,6 +1312,7 @@ let layoutHTML = "";
             const maxDataPoints = Math.max(1, Math.ceil(CHART_WINDOW_MS / refreshMs));
             if (sessionHistory.labels.length > maxDataPoints) {
                 sessionHistory.labels.shift();
+                sessionHistory.activeSessions.shift();
                 sessionHistory.activeTx.shift();
                 sessionHistory.parallel.shift();
                 sessionHistory.pending2pc.shift();
@@ -1315,10 +1328,21 @@ let layoutHTML = "";
                             labels: sessionHistory.labels,
                             datasets: [
                                 {
-                                    label: 'ACTIVE TRANSACTION',
-                                    data: sessionHistory.activeTx,
+                                    label: 'ACTIVE SESSION',
+                                    data: sessionHistory.activeSessions,
                                     borderColor: '#0ca30c',
                                     backgroundColor: 'rgba(12, 163, 12, 0.1)',
+                                    borderWidth: 1.5,
+                                    pointRadius: 1.5,
+                                    pointHoverRadius: 3,
+                                    fill: true,
+                                    tension: 0
+                                },
+                                {
+                                    label: 'ACTIVE TRANSACTION',
+                                    data: sessionHistory.activeTx,
+                                    borderColor: '#3987e5',
+                                    backgroundColor: 'rgba(57, 135, 229, 0.1)',
                                     borderWidth: 1.5,
                                     pointRadius: 1.5,
                                     pointHoverRadius: 3,
@@ -1339,8 +1363,8 @@ let layoutHTML = "";
                                 {
                                     label: '2PC PENDING TRANSACTION',
                                     data: sessionHistory.pending2pc,
-                                    borderColor: '#3987e5',
-                                    backgroundColor: 'rgba(57, 135, 229, 0.1)',
+                                    borderColor: '#e53935',
+                                    backgroundColor: 'rgba(229, 57, 53, 0.1)',
                                     borderWidth: 1.5,
                                     pointRadius: 1.5,
                                     pointHoverRadius: 3,
@@ -1646,27 +1670,52 @@ let layoutHTML = "";
         });
     }
 
+    // Column set mirrors the Active Session tab's rendering (same fields, same duration/wait bar
+    // treatment) - Active Transaction shows the same columns, just scoped to sessions holding a
+    // transaction rather than status='ACTIVE'.
     function renderActiveTransactionsTab(rows) {
         const tbody = document.getElementById('sesslist-active-tx-tbody');
         if (!tbody) return;
         if (!rows || rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding: 30px;">활성 트랜잭션이 없습니다.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="14" style="text-align:center; padding: 30px;">활성 트랜잭션이 없습니다.</td></tr>';
             return;
         }
-        tbody.innerHTML = rows.map(r => `
+        const maxDuration = rows.reduce((max, r) => Math.max(max, Number(r.duration_time) || 0), 1);
+        tbody.innerHTML = rows.map(r => {
+            const durationVal = r.duration_time !== null && r.duration_time !== undefined ? Number(r.duration_time) : 0;
+            const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
+            const durationHtml = r.duration_time !== null && r.duration_time !== undefined ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
+            let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
+            if (r.session_wait_pct && r.session_wait_pct.includes(',')) {
+                const [cpu, uio, sio, latch, txlock, tmlock, other] = r.session_wait_pct.split(',').map(Number);
+                if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
+                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #e91e63;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #e74c3c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
+                }
+            }
+            // Unlike Active Session (queried with status='ACTIVE' only), Active Transaction has no
+            // status filter - a session can legitimately show INACTIVE here (idle-in-transaction, a
+            // lock-holder signal DBAs watch for), so the badge must reflect the real status instead of
+            // always painting the healthy "online" green.
+            const statusClass = (r.status || '').toUpperCase() === 'ACTIVE' ? 'online' : 'offline';
+            return `
             <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${r.sid}" data-sql_id="${r.sql_id || ''}">
+                <td>${r.db_name || '-'}</td>
+                <td><span class="status-badge ${statusClass}">${r.status || '-'}</span></td>
                 <td>${r.sid}</td>
                 <td>${r.serial}</td>
-                <td>${r.username || '-'}</td>
-                <td>${r.status || '-'}</td>
-                <td>${r.machine || '-'}</td>
-                <td>${r.program || '-'}</td>
+                <td>${r.server_pid || '-'}</td>
+                <td>${durationHtml}</td>
+                <td>${waitHtml}</td>
                 <td>${r.sql_id || '-'}</td>
-                <td>${r.start_time || '-'}</td>
-                <td>${r.used_ublk != null ? r.used_ublk : '-'}</td>
-                <td>${r.used_urec != null ? r.used_urec : '-'}</td>
+                <td>${r.event_name || '-'}</td>
+                <td>${r.plan_hash_value || '-'}</td>
+                <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${r.sql_text || ''}">${r.sql_text || '-'}</div></td>
+                <td>${r.machine_name || '-'}</td>
+                <td>${r.username || '-'}</td>
+                <td>${r.program_name || '-'}</td>
             </tr>
-        `).join('');
+        `;
+        }).join('');
     }
 
     function renderParallelSessionsTab(rows) {
@@ -1746,6 +1795,7 @@ let layoutHTML = "";
         if (sessionChart) { sessionChart.destroy(); sessionChart = null; }
         if (sessionScatterChart) { sessionScatterChart.destroy(); sessionScatterChart = null; }
         sessionHistory.labels = [];
+        sessionHistory.activeSessions = [];
         sessionHistory.activeTx = [];
         sessionHistory.parallel = [];
         sessionHistory.pending2pc = [];
@@ -1754,7 +1804,7 @@ let layoutHTML = "";
 
         if (sessionTbody) sessionTbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const activeTxTbody = document.getElementById('sesslist-active-tx-tbody');
-        if (activeTxTbody) activeTxTbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
+        if (activeTxTbody) activeTxTbody.innerHTML = '<tr><td colspan="14" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const parallelTbody = document.getElementById('sesslist-parallel-tbody');
         if (parallelTbody) parallelTbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const pending2pcTbody = document.getElementById('sesslist-2pc-tbody');
@@ -3262,9 +3312,12 @@ let historySortAsc = true;
     let sqlTuningBindExpanded = false;
 
     // 쿼리에서 :1, :SID 같은 오라클 바인드 변수(콜론 표기, JDBC ? 아님)를 찾아 입력칸을 그려줌.
-    // 문자열 리터럴 안의 콜론은 매칭에서 제외.
+    // 문자열 리터럴과 주석(/* */, --) 안의 콜론은 매칭에서 제외 - 예: "/* CSR:111234 목록 처리 */"가
+    // 바인드 변수 ":111234"로 오인되지 않도록 함. 문자열/주석을 한 번에(하나의 정규식 alternation으로)
+    // 처리 - 문자열 제거 후 주석 제거하는 2단계 방식이면, 주석 안의 따옴표(예: "-- don't touch")가
+    // 문자열 정규식을 오작동시켜 그 뒤에 나오는 실제 바인드 변수를 삼켜버릴 수 있음.
     function extractSqlTuningBindNames(query) {
-        const stripped = query.replace(/'([^']|'')*'/g, "''");
+        const stripped = query.replace(/'(?:[^']|'')*'|\/\*[\s\S]*?\*\/|--[^\r\n]*/g, (m) => m.charAt(0) === "'" ? "''" : ' ');
         const re = /:([A-Za-z][A-Za-z0-9_$#]*|[0-9]+)/g;
         const seen = new Set();
         const names = [];

@@ -113,11 +113,11 @@ public class ExecutionPlanService {
                     ps.setMaxRows(maxRowsLimit);
                     for (int i = 0; i < bindNames.size(); i++) {
                         String name = bindNames.get(i);
+                        // A bind variable can legitimately have no value entered (e.g. an optional
+                        // filter like "WHERE col = :p OR :p IS NULL") - bind NULL rather than rejecting
+                        // the request, same as Oracle would treat an unset/empty bind at runtime.
                         String value = bindValues != null ? bindValues.get(name) : null;
-                        if (value == null) {
-                            throw new SQLException("바인드 변수 :" + name + " 값이 입력되지 않았습니다.");
-                        }
-                        ps.setString(i + 1, value);
+                        ps.setString(i + 1, (value == null || value.isEmpty()) ? null : value);
                     }
                     try (ResultSet rs = ps.executeQuery()) {
                         while (rs.next()) {
@@ -234,9 +234,30 @@ public class ExecutionPlanService {
     // are blanked out first so a colon inside quoted text (e.g. a timestamp literal) is never matched.
     private static final Pattern BIND_PATTERN = Pattern.compile(":([A-Za-z][A-Za-z0-9_$#]*|[0-9]+)");
 
+    // String literals and block (/* ... */)/line (-- ...) comments, matched as one alternation instead
+    // of two sequential passes. Two sequential passes (strip strings, then strip comments) would let an
+    // apostrophe inside a comment - e.g. "-- don't touch this filter" - confuse the string-literal
+    // regex into consuming from that apostrophe up to the next real quote, potentially swallowing a
+    // real bind variable in between before the comment pass ever runs. Matching both in one left-to-
+    // right pass instead means whichever construct's opening token appears first "wins" and is
+    // consumed as one atomic unit, so a stray quote inside an already-matched comment is never
+    // reinterpreted as a string start.
+    private static final Pattern STRING_OR_COMMENT_PATTERN =
+            Pattern.compile("'(?:[^']|'')*'|/\\*.*?\\*/|--[^\\r\\n]*", Pattern.DOTALL);
+
+    private static String stripStringsAndComments(String sql) {
+        Matcher m = STRING_OR_COMMENT_PATTERN.matcher(sql);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String replacement = m.group().charAt(0) == '\'' ? "''" : " ";
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
     private static List<String> extractBindNames(String sql) {
-        String withoutStringLiterals = sql.replaceAll("'([^']|'')*'", "''");
-        Matcher m = BIND_PATTERN.matcher(withoutStringLiterals);
+        Matcher m = BIND_PATTERN.matcher(stripStringsAndComments(sql));
         LinkedHashSet<String> names = new LinkedHashSet<>();
         while (m.find()) {
             names.add(m.group(1));

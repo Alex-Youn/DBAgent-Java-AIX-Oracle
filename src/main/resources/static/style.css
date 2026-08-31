@@ -961,45 +961,68 @@ body {
 }
 
 /* Login showcase: layout modeled on a "Musify"-style reference mockup the user supplied (top brand
-   bar, form left / dashboard-preview peek right), but recolored to the app's own dark dashboard
-   palette (--bg-main #0d0d0d / --bg-panel #1a1a19 / --primary #3987e5 etc, same tokens .main-content
-   uses) rather than the reference's teal. Colors are hardcoded to those tokens' dark-theme values,
-   not var()-linked, so the login screen keeps this look even if the in-app light/dark toggle (set
-   from a prior session, via localStorage) is currently light - login happens before that preference
-   matters. Scoped under .login-showcase so these overrides don't leak into
+   bar, form left / dashboard-preview peek right), recolored to the app's own dashboard palette
+   (--bg-main / --bg-panel / --bg-card / --primary etc, same tokens .main-content uses). Colors here
+   are var()-linked (not hardcoded) so the login screen's own palette toggle (#login-theme-toggle-btn,
+   added 2026-08-31) actually changes what the user sees - a prior version of this comment noted these
+   were deliberately hardcoded to stay dark regardless of the in-app toggle, back when that toggle
+   lived only past login; now that the toggle is reachable from this screen too, hardcoding it would
+   make the button visibly do nothing. Scoped under .login-showcase so these overrides don't leak into
    .login-card/.login-form-group/.login-btn, which are shared by the password-change,
    account-management and menu-visibility modals elsewhere in this file. */
 #login-overlay {
     overflow-y: auto;
-    background: radial-gradient(circle at top right, #1a1a19, #0d0d0d);
+    background: radial-gradient(circle at top right, var(--bg-panel), var(--bg-main));
 }
 
 .login-showcase {
-    --login-accent: #3987e5;
+    --login-accent: var(--primary);
     display: flex;
     flex-direction: column;
     width: 100%;
     max-width: 960px;
     min-height: 560px;
     margin: 20px;
-    background: rgba(26, 26, 25, 0.6);
+    background: var(--bg-card);
     backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--border);
     border-radius: 20px;
     overflow: hidden;
     box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.6);
 }
 
 .login-topbar {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 10px;
     padding: 20px;
-    color: #fff;
+    color: var(--text-main);
     font-weight: 700;
     font-size: 1.1rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid var(--border);
+}
+
+/* justify-content: center keeps the brand centered, so the toggle is pinned to the right edge with
+   absolute positioning instead of taking a flex slot (which would push the brand off-center). */
+.login-theme-toggle-btn {
+    position: absolute;
+    right: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+/* ID selector so this beats the later .login-topbar i rule (equal-class specificity would otherwise
+   lose to source order and paint the icon in --login-accent blue at the brand's 22px size). */
+#login-theme-toggle-btn i {
+    color: var(--text-muted);
+    width: 18px;
+    height: 18px;
+}
+
+#login-theme-toggle-btn:hover i {
+    color: var(--text-main);
 }
 
 .login-topbar i {
@@ -1023,7 +1046,7 @@ body {
 }
 
 .login-welcome h2 {
-    color: #fff;
+    color: var(--text-main);
     font-size: 1.9rem;
     margin-bottom: 8px;
 }
@@ -1033,19 +1056,19 @@ body {
 }
 
 .login-welcome p {
-    color: #898781;
+    color: var(--text-muted);
     font-size: 0.9rem;
     margin-bottom: 28px;
 }
 
 .login-showcase .login-form-group label {
-    color: #898781;
+    color: var(--text-muted);
 }
 
 .login-showcase .login-form-group input {
     background: rgba(255, 255, 255, 0.04);
     border-color: rgba(255, 255, 255, 0.12);
-    color: #fff;
+    color: var(--text-main);
 }
 
 .login-showcase .login-form-group input:focus {
@@ -1072,7 +1095,7 @@ body {
 }
 
 .login-org-badge span {
-    color: #898781;
+    color: var(--text-muted);
     font-size: 0.85rem;
 }
 
@@ -1088,13 +1111,13 @@ body {
     background:
         radial-gradient(circle at 30% 20%, rgba(57, 135, 229, 0.3), transparent 60%),
         radial-gradient(circle at 20% 100%, rgba(12, 163, 12, 0.15), transparent 60%),
-        #0d0d0d;
+        var(--bg-main);
 }
 
 .login-preview-card {
     width: 115%;
     transform: translate(28px, 28px);
-    background: #141413;
+    background: var(--bg-panel);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 14px;
     box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.55);
@@ -1115,7 +1138,7 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #ffffff;
+    color: var(--text-main);
 }
 
 .login-preview-brand i, .login-preview-user i {
@@ -1125,13 +1148,13 @@ body {
 }
 
 .login-preview-title {
-    color: #898781;
+    color: var(--text-muted);
     font-size: 1.1rem;
     margin-bottom: 14px;
 }
 
 .login-preview-title b {
-    color: #fff;
+    color: var(--text-main);
 }
 
 .login-preview-stats {
@@ -1154,13 +1177,13 @@ body {
 
 .login-preview-stat span {
     display: block;
-    color: #898781;
+    color: var(--text-muted);
     font-size: 0.72rem;
     margin-bottom: 4px;
 }
 
 .login-preview-stat b {
-    color: #fff;
+    color: var(--text-main);
     font-size: 1.15rem;
 }
 

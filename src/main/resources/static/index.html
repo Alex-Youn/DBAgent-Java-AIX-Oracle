@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=19">
+    <link rel="stylesheet" href="style.css?v=21">
     <script src="lib/lucide.js"></script>
     <script src="lib/mermaid.min.js"></script>
     <script src="lib/chart.js"></script>
@@ -19,6 +19,7 @@
             <div class="login-topbar">
                 <i data-lucide="activity" class="brand-icon-pulse"></i>
                 <span>DB InsightFlow</span>
+                <button class="icon-btn login-theme-toggle-btn" id="login-theme-toggle-btn" title="화면 배색 전환"><i data-lucide="palette"></i></button>
             </div>
             <div class="login-body">
                 <div class="login-form-panel">
@@ -708,20 +709,24 @@
                                     <table class="data-table" style="border: none;">
                                         <thead>
                                             <tr>
+                                                <th>Instance Name</th>
+                                                <th>Status</th>
                                                 <th>SID</th>
                                                 <th>Serial#</th>
-                                                <th>Oracle User Name</th>
-                                                <th>Status</th>
-                                                <th>Machine Name</th>
-                                                <th>Program Name</th>
+                                                <th>Server PID</th>
+                                                <th>Duration Time(sec)</th>
+                                                <th>Session Wait(%)</th>
                                                 <th>SQL ID</th>
-                                                <th>Start Time</th>
-                                                <th>Used Undo Blocks</th>
-                                                <th>Used Undo Records</th>
+                                                <th>Event Name</th>
+                                                <th>Plan Hash Value</th>
+                                                <th>SQL Text</th>
+                                                <th>Machine Name</th>
+                                                <th>Oracle User Name</th>
+                                                <th>Program Name</th>
                                             </tr>
                                         </thead>
                                         <tbody id="sesslist-active-tx-tbody">
-                                            <tr><td colspan="10" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
+                                            <tr><td colspan="14" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
                                         </tbody>
                                     </table>
                                 </div>
@@ -894,6 +899,6 @@
         </div>
     </div>
     
-    <script src="app.js?v=58"></script>
+    <script src="app.js?v=64"></script>
 </body>
 </html>

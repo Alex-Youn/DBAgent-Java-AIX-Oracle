@@ -496,6 +496,7 @@
                 <button class="icon-btn" id="refresh-btn" title="새로고침"></button>
                 <button class="icon-btn" id="theme-toggle-btn" title="화면 배색 전환"></button>
                 <button class="icon-btn" id="open-db-mgmt-btn" title="DB 관리" style="display:none;"></button>
+                <button class="icon-btn" id="logout-btn" title="로그아웃"></button>
                 <div class="avatar" style="width: 30px; height: 30px; background: #ffffff; padding: 3px; box-sizing: border-box;">
                     <img src="KIPI_Symbol.jpg" alt="한국특허정보원 로고" style="width: 100%; height: 100%; object-fit: contain;">
                 </div>
@@ -593,6 +594,8 @@
             const PALETTE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"></path><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"></circle><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"></circle><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"></circle><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"></circle></svg>';
             // lucide "database" glyph, matching index.html gear-dropdown's "DB 관리" item icon.
             const DB_MGMT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5V19A9 3 0 0 0 21 19V5"></path><path d="M3 12A9 3 0 0 0 21 12"></path></svg>';
+            // lucide "log-out" glyph, matching index.html topbar's logout-btn icon.
+            const LOGOUT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>';
 
             document.getElementById('brand-icon').innerHTML = ACTIVITY_ICON_SVG;
             document.getElementById('refresh-btn').innerHTML = REFRESH_ICON_SVG;
@@ -625,6 +628,29 @@
             dbMgmtBtn.addEventListener('click', () => {
                 const popup = window.open('db-mgmt.html', 'dbagent_db_mgmt', 'width=980,height=820,resizable=yes,scrollbars=yes');
                 if (popup) popup.focus();
+            });
+
+            // 로그아웃 (사용자 요청, 2026-08-31): index.html의 logout-btn과 동일하게 /api/logout 호출 후
+            // 세션 스토리지를 정리한다. index.html과 달리 로그인 폼 자체가 이 페이지엔 없으므로,
+            // location.reload() 대신 index.html로 이동시켜 로그인 화면이 보이도록 한다.
+            document.getElementById('logout-btn').innerHTML = LOGOUT_ICON_SVG;
+            document.getElementById('logout-btn').addEventListener('click', async () => {
+                try {
+                    await fetch('/api/logout', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token: sessionToken })
+                    });
+                } catch (e) {
+                    console.error('Logout request failed', e);
+                }
+                sessionStorage.removeItem('dbagent_token');
+                sessionStorage.removeItem('dbagent_role');
+                sessionStorage.removeItem('dbagent_account_hidden_menus');
+                sessionStorage.removeItem('dbagent_account_hidden_dbs');
+                sessionStorage.removeItem('dbagent_fleet_overview');
+                sessionStorage.removeItem('dbagent_fleet_overview_auto_redirect');
+                window.location.href = 'index.html';
             });
 
             const STATUS_META = {
