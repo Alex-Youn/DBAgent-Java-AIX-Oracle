@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=21">
+    <link rel="stylesheet" href="style.css?v=24">
     <script src="lib/lucide.js"></script>
     <script src="lib/mermaid.min.js"></script>
     <script src="lib/chart.js"></script>
@@ -30,13 +30,17 @@
                     <form id="login-form">
                         <div class="login-form-group">
                             <label>Username</label>
-                            <input type="text" id="login-username" value="admin" required autocomplete="username">
+                            <input type="text" id="login-username" required autocomplete="username">
                         </div>
                         <div class="login-form-group">
                             <label>Password</label>
                             <input type="password" id="login-password" required autocomplete="current-password">
                             <div id="login-password-capslock" style="display:none; color:#fab219; font-size:0.8rem; margin-top:4px;">⚠ Caps Lock이 켜져 있습니다</div>
                         </div>
+                        <label class="login-save-username">
+                            <input type="checkbox" id="login-save-username">
+                            <span>계정 저장</span>
+                        </label>
                         <button type="submit" class="login-btn">Sign in</button>
                         <div id="login-error" class="login-error"></div>
                     </form>
@@ -237,6 +241,12 @@
                                 <span style="color: var(--text-muted); font-size: 0.95rem;">[Dedicate <span id="mini-status-dedicated-session" style="color: var(--text-main); font-weight: 600;">--</span> EA / Dispatcher <span id="mini-status-shared-session" style="color: var(--text-main); font-weight: 600;">--</span> EA]</span>
                             </div>
                         </div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <label for="dash-refresh-interval" style="font-size: 0.9rem; color: var(--text-secondary);">리프레쉬 주기(초):</label>
+                            <input type="number" id="dash-refresh-interval" value="2" min="1" max="60" style="width: 60px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-primary);">
+                            <button id="dash-refresh-btn" class="secondary-btn"><i data-lucide="refresh-cw"></i> 수동 새로고침</button>
+                            <button id="dash-toggle-btn" class="danger-btn">자동 갱신 중지</button>
+                        </div>
                     </div>
                     <div class="cards-grid">
                         <div class="stat-card">
@@ -320,12 +330,13 @@
                                                 <th>Plan Hash Value</th>
                                                 <th>SQL Text</th>
                                                 <th>Machine Name</th>
+                                                <th>Host User Name</th>
                                                 <th>Oracle User Name</th>
                                                 <th>Program Name</th>
                                             </tr>
                                         </thead>
                                         <tbody id="dash-sess-tbody">
-                                            <tr><td colspan="15" style="text-align:center;">데이터를 불러오는 중입니다...</td></tr>
+                                            <tr><td colspan="16" style="text-align:center;">데이터를 불러오는 중입니다...</td></tr>
                                         </tbody>
                                     </table>
                                 </div>
@@ -654,13 +665,19 @@
                             </div>
                         </div>
                         <div class="panel-body">
-                            <div style="display: flex; gap: 20px; margin-bottom: 20px; height: 300px;">
-                                <div style="flex: 1; position: relative;">
-                                    <canvas id="session-chart"></canvas>
+                            <div style="display: flex; gap: 20px; margin-bottom: 20px; height: 330px;">
+                                <div style="flex: 1; display: flex; flex-direction: column;">
+                                    <div id="session-chart-legend" style="display: flex; gap: 14px; flex-wrap: wrap; padding: 2px 8px 6px; margin-left: 1cm;"></div>
+                                    <div style="flex: 1; position: relative; min-height: 0;">
+                                        <canvas id="session-chart"></canvas>
+                                    </div>
                                 </div>
-                                <div style="flex: 1; position: relative;" id="scatter-container">
-                                    <canvas id="session-scatter-chart"></canvas>
-                                    <div id="scatter-selection-box" style="position: absolute; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10;"></div>
+                                <div style="flex: 1; display: flex; flex-direction: column;">
+                                    <div id="scatter-chart-legend" style="display: flex; gap: 14px; flex-wrap: wrap; padding: 2px 8px 6px; margin-left: 1.5cm;"></div>
+                                    <div style="flex: 1; position: relative; min-height: 0;" id="scatter-container">
+                                        <canvas id="session-scatter-chart"></canvas>
+                                        <div id="scatter-selection-box" style="position: absolute; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10;"></div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="tabs-container" style="display: flex; gap: 20px; border-bottom: 2px solid var(--border); margin-bottom: 10px;">
@@ -692,12 +709,13 @@
                                                 <th>Plan Hash Value</th>
                                                 <th>SQL Text</th>
                                                 <th>Machine Name</th>
+                                                <th>Host User Name</th>
                                                 <th>Oracle User Name</th>
                                                 <th>Program Name</th>
                                             </tr>
                                         </thead>
                                         <tbody id="session-tbody">
-                                            <tr><td colspan="15" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
+                                            <tr><td colspan="16" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
                                         </tbody>
                                     </table>
                                 </div>
@@ -721,12 +739,13 @@
                                                 <th>Plan Hash Value</th>
                                                 <th>SQL Text</th>
                                                 <th>Machine Name</th>
+                                                <th>Host User Name</th>
                                                 <th>Oracle User Name</th>
                                                 <th>Program Name</th>
                                             </tr>
                                         </thead>
                                         <tbody id="sesslist-active-tx-tbody">
-                                            <tr><td colspan="14" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
+                                            <tr><td colspan="15" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
                                         </tbody>
                                     </table>
                                 </div>
@@ -899,6 +918,6 @@
         </div>
     </div>
     
-    <script src="app.js?v=64"></script>
+    <script src="app.js?v=73"></script>
 </body>
 </html>

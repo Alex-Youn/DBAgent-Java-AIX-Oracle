@@ -95,6 +95,19 @@ function getToken() {
             loginPasswordInput.addEventListener('blur', () => { loginCapslockHint.style.display = 'none'; });
         }
 
+        // 계정 저장 (사용자 요청, 2026-08-31): 로그인 화면에 admin이 디폴트로 박혀있던 것 제거하고,
+        // 대신 "계정 저장" 체크 시 성공한 로그인의 username만 localStorage에 남겨뒀다가 다음 방문 때
+        // 입력칸에 미리 채워준다 - 비밀번호는 저장 대상이 아님. localStorage 사용 이유: 로그인 화면은
+        // sessionStorage가 아직 없는 시점(로그아웃 상태)에도 채워져야 하고, 브라우저를 완전히 닫았다
+        // 재방문해도 유지돼야 하는 값이라 세션이 아니라 영구 저장소가 맞음.
+        const savedUsername = localStorage.getItem('dbagent_saved_username');
+        const loginUsernameInput = document.getElementById('login-username');
+        const loginSaveUsernameCheckbox = document.getElementById('login-save-username');
+        if (savedUsername && loginUsernameInput && loginSaveUsernameCheckbox) {
+            loginUsernameInput.value = savedUsername;
+            loginSaveUsernameCheckbox.checked = true;
+        }
+
         // Attach auth event listeners
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -102,7 +115,7 @@ function getToken() {
             const password = document.getElementById('login-password').value;
             const errDiv = document.getElementById('login-error');
             errDiv.style.display = 'none';
-        
+
             try {
                 const res = await fetch(`${API_BASE_AUTH}/login`, {
                     method: 'POST',
@@ -111,6 +124,11 @@ function getToken() {
                 });
                 const data = await res.json();
                 if (res.ok && data.success) {
+                    if (loginSaveUsernameCheckbox.checked) {
+                        localStorage.setItem('dbagent_saved_username', username);
+                    } else {
+                        localStorage.removeItem('dbagent_saved_username');
+                    }
                     sessionStorage.setItem('dbagent_token', data.token);
                     sessionStorage.setItem('dbagent_role', data.role || 'user');
                     sessionStorage.setItem('dbagent_account_hidden_menus', JSON.stringify(data.hidden_menus || []));
@@ -547,10 +565,14 @@ function getToken() {
             }
         }
         
-        // Auto-fetch data if session - always reset+refetch on arrival (not just the first time) so
-        // stale data from before a menu switch or DB switch never lingers on screen.
+        // 사용자 요청(2026-08-31): 다른 메뉴 갔다가 Current Session으로 돌아와도 추이/Trace 그래프가
+        // 안 끊기게 - 예전엔 여기서 매번 resetSessionMonitor()를 무조건 호출해 그래프를 지웠는데, 자동
+        // 갱신이 켜져 있으면 이 탭을 안 보고 있는 동안에도 폴링(setInterval)은 백그라운드에서 계속 돌며
+        // sessionHistory/scatterDataPoints를 쌓고 있었으므로, 돌아왔을 때 그걸 지우는 게 아니라 그대로
+        // 이어서 보여주면 됨. DB를 바꿨을 때의 초기화는 이 메뉴 진입과 무관하게 인스턴스 클릭
+        // 핸들러(위쪽, resetSessionMonitor() 호출부)에서 이미 별도로 처리하고 있어 여기서 또 지울
+        // 필요가 없다 - 그래서 이 블록에선 자동 갱신이 꺼져 있을 때만(=최초 진입 등) 재시작.
         if (targetId === 'session') {
-            if (typeof resetSessionMonitor === 'function') resetSessionMonitor();
             const toggleBtn = document.getElementById('session-toggle-btn');
             if (toggleBtn && !isSessionAutoRefreshing) {
                 setTimeout(() => { toggleBtn.click(); }, 100);
@@ -1256,6 +1278,65 @@ let layoutHTML = "";
         lockWait: []
     };
 
+    // 사용자 요청(2026-08-31): 추이 그래프와 Trace 그래프의 색상/범례를 동기화하고, 각 계열을 체크박스로
+    // 켜고 끌 수 있게 함. 두 배열의 색상은 반드시 같은 순서로 유지 - TREND_SERIES는 추이 그래프(라인)
+    // 5계열, SCATTER_CATEGORIES는 Trace 그래프(산점도) 4계열(2PC Pending은 살아있는 세션에 붙는 속성이
+    // 아니라 개별 점으로 표시할 대상이 원천적으로 없어 제외 - dba_2pc_pending은 보통 이미 끊어진/고아
+    // 상태의 분산 트랜잭션이라 대응되는 v$session 행이 없는 경우가 대부분).
+    const TREND_SERIES = [
+        { label: 'ACTIVE SESSION', color: '#0ca30c' },
+        { label: 'ACTIVE TRANSACTION', color: '#3987e5' },
+        { label: 'PARALLEL SESSION', color: '#808000' },
+        { label: '2PC PENDING TRANSACTION', color: '#e53935' },
+        { label: 'LOCK WAIT', color: '#9333ea' }
+    ];
+    const SCATTER_CATEGORIES = [
+        { key: 'active_session', label: 'ACTIVE SESSION', color: '#0ca30c' },
+        { key: 'active_transaction', label: 'ACTIVE TRANSACTION', color: '#3987e5' },
+        { key: 'parallel_session', label: 'PARALLEL SESSION', color: '#808000' },
+        { key: 'lock_wait', label: 'LOCK WAIT', color: '#9333ea' }
+    ];
+
+    // 색상박스+글씨로 된 커스텀 범례를 만들고, 클릭할 때마다 on/off 스위치처럼 글씨가 밝아지거나(켜짐)
+    // 어두워지며(꺼짐) 해당 Chart.js 데이터셋을 보이거나 숨긴다(사용자 요청 2026-08-31: 체크박스 대신
+    // 클릭식 밝기 토글). container.dataset.built로 한 번만 그려서, DB 전환으로 차트가 재생성돼도
+    // (resetSessionMonitor) on/off 상태 자체는 그대로 유지되고, 새로 만들어진 차트에 그 상태를 다시
+    // 적용해주기만 하면 된다.
+    function buildChartLegend(containerId, series, chartGetter) {
+        const container = document.getElementById(containerId);
+        if (!container || container.dataset.built) return;
+        container.dataset.built = '1';
+        container.innerHTML = series.map((s, i) => `
+            <span class="chart-legend-item" data-idx="${i}" data-active="true" style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:0.78rem; font-weight:600; user-select:none; color: var(--text-main); opacity:1; transition: color 0.15s, opacity 0.15s;">
+                <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${s.color}; flex:none;"></span>
+                ${s.label}
+            </span>
+        `).join('');
+        container.querySelectorAll('.chart-legend-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const chart = chartGetter();
+                if (!chart) return;
+                const next = item.dataset.active !== 'true';
+                item.dataset.active = String(next);
+                item.style.color = next ? 'var(--text-main)' : 'var(--text-muted)';
+                item.style.opacity = next ? '1' : '0.45';
+                chart.setDatasetVisibility(parseInt(item.dataset.idx), next);
+                chart.update();
+            });
+        });
+    }
+
+    // DB 전환 등으로 차트가 파괴되고 새로 만들어졌을 때, 기존 범례의 on/off 상태(이미 꺼둔 계열이
+    // 있다면 그 상태)를 새 차트 인스턴스에도 그대로 반영 - 안 그러면 범례는 꺼진 채인데 새로 만들어진
+    // 차트는 Chart.js 기본값대로 전부 다시 보이는 상태로 어긋나게 된다.
+    function applyLegendVisibility(containerId, chart) {
+        if (!chart) return;
+        document.querySelectorAll(`#${containerId} .chart-legend-item`).forEach(item => {
+            chart.setDatasetVisibility(parseInt(item.dataset.idx), item.dataset.active === 'true');
+        });
+        chart.update();
+    }
+
     async function fetchSessions() {
         if (!sessionTbody) return;
         
@@ -1274,7 +1355,7 @@ let layoutHTML = "";
 
             // session_extra is best-effort (feeds the trend lines + the 3 extra tabs below) - a
             // failure there shouldn't take down the primary Active Session list/table.
-            let extra = { active_transactions: [], parallel_sessions: [], pending_2pc: [], lock_wait_count: 0 };
+            let extra = { active_transactions: [], parallel_sessions: [], pending_2pc: [], lock_wait_count: 0, lock_wait_sids: [] };
             try {
                 if (extraResponse.ok) {
                     const extraData = await extraResponse.json();
@@ -1433,8 +1514,9 @@ let layoutHTML = "";
                                 }
                             },
                             plugins: {
+                                // 커스텀 체크박스 범례(#session-chart-legend)로 대체 - 기본 범례는 끔.
                                 legend: {
-                                    position: 'top',
+                                    display: false
                                 },
                                 title: {
                                     display: true,
@@ -1450,6 +1532,8 @@ let layoutHTML = "";
                             }
                         }
                     });
+                    buildChartLegend('session-chart-legend', TREND_SERIES, () => sessionChart);
+                    applyLegendVisibility('session-chart-legend', sessionChart);
                 } else {
                     sessionChart.options.scales.x.min = nowTime - CHART_WINDOW_MS;
                     sessionChart.options.scales.x.max = nowTime;
@@ -1460,15 +1544,26 @@ let layoutHTML = "";
             // Independent of sessionChart's init state above, so the Trace scatter chart is created on
             // the very first fetch too instead of only starting from the second polling cycle.
             const scatterNowTime = Date.now();
+            // 사용자 요청(2026-08-31): Trace 점(개별 세션)을 추이 그래프와 같은 색으로 카테고리 구분 -
+            // 우선순위 Lock Wait > Active Transaction > Parallel Session > 기본 Active Session (더 급한
+            // 신호가 우선). has_transaction은 이미 getSessions()가 내려주는 필드, parallel/lock_wait는
+            // SID 집합으로 대조.
+            const parallelSidSet = new Set((extra.parallel_sessions || []).map(p => p.sid));
+            const lockWaitSidSet = new Set(extra.lock_wait_sids || []);
             data.forEach(s => {
                 if (s && s.status && s.status.trim().toUpperCase() === 'ACTIVE' && s.duration_time !== null) {
                     // Only add if not exactly identical recently
                     const lastPoint = scatterDataPoints.length > 0 ? scatterDataPoints[scatterDataPoints.length - 1] : null;
                     if (!lastPoint || lastPoint.session.sid !== s.sid || lastPoint.y !== Number(s.duration_time)) {
+                        let category = 'active_session';
+                        if (lockWaitSidSet.has(s.sid)) category = 'lock_wait';
+                        else if (s.has_transaction) category = 'active_transaction';
+                        else if (parallelSidSet.has(s.sid)) category = 'parallel_session';
                         scatterDataPoints.push({
                             x: scatterNowTime,
                             y: Number(s.duration_time),
-                            session: s
+                            session: s,
+                            category
                         });
                     }
                 }
@@ -1482,16 +1577,18 @@ let layoutHTML = "";
                     sessionScatterChart = new Chart(scatterCtx, {
                         type: 'scatter',
                         data: {
-                            datasets: [{
-                                label: 'Active Sessions',
-                                data: scatterDataPoints,
-                                backgroundColor: '#ffcc00',
-                                borderColor: '#ffcc00',
+                            // 카테고리별 별도 데이터셋 - 체크박스 범례가 데이터셋 단위로 show/hide하므로
+                            // 이렇게 나눠야 "Parallel Session 점만 숨기기" 같은 필터링이 가능해진다.
+                            datasets: SCATTER_CATEGORIES.map(cat => ({
+                                label: cat.label,
+                                data: scatterDataPoints.filter(p => p.category === cat.key),
+                                backgroundColor: cat.color,
+                                borderColor: cat.color,
                                 borderWidth: 2,
                                 pointRadius: 2,
                                 pointHoverRadius: 5,
                                 pointStyle: 'crossRot'
-                            }]
+                            }))
                         },
                         options: {
                             responsive: true,
@@ -1554,6 +1651,10 @@ let layoutHTML = "";
                                 }
                             },
                             plugins: {
+                                // 커스텀 체크박스 범례(#scatter-chart-legend)로 대체 - 기본 범례는 끔.
+                                legend: {
+                                    display: false
+                                },
                                 title: {
                                     display: true,
                                     text: 'Trace(sec)',
@@ -1566,15 +1667,19 @@ let layoutHTML = "";
                                     callbacks: {
                                         label: function(ctx) {
                                             const p = ctx.raw;
-                                            return `SID: ${p.session.sid}, Duration: ${p.y}s, Event: ${p.session.event_name || '-'}`;
+                                            return `SID: ${p.session.sid}, Duration: ${p.y}s, Event: ${p.session.event_name || '-'} [${ctx.dataset.label}]`;
                                         }
                                     }
                                 }
                             }
                         }
                     });
+                    buildChartLegend('scatter-chart-legend', SCATTER_CATEGORIES, () => sessionScatterChart);
+                    applyLegendVisibility('scatter-chart-legend', sessionScatterChart);
                 } else {
-                    sessionScatterChart.data.datasets[0].data = scatterDataPoints;
+                    SCATTER_CATEGORIES.forEach((cat, i) => {
+                        sessionScatterChart.data.datasets[i].data = scatterDataPoints.filter(p => p.category === cat.key);
+                    });
                     const minX = scatterNowTime - CHART_WINDOW_MS;
                     sessionScatterChart.options.scales.x.min = minX;
                     sessionScatterChart.options.scales.x.max = scatterNowTime;
@@ -1619,6 +1724,7 @@ let layoutHTML = "";
                             <td>${session.plan_hash_value || '-'}</td>
                             <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${session.sql_text || ''}">${session.sql_text || '-'}</div></td>
                             <td>${session.machine_name || '-'}</td>
+                            <td>${session.osuser || '-'}</td>
                             <td>${session.username || '-'}</td>
                             <td>${session.program_name || '-'}</td>
                         </tr>
@@ -1677,7 +1783,7 @@ let layoutHTML = "";
         const tbody = document.getElementById('sesslist-active-tx-tbody');
         if (!tbody) return;
         if (!rows || rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="14" style="text-align:center; padding: 30px;">활성 트랜잭션이 없습니다.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding: 30px;">활성 트랜잭션이 없습니다.</td></tr>';
             return;
         }
         const maxDuration = rows.reduce((max, r) => Math.max(max, Number(r.duration_time) || 0), 1);
@@ -1711,6 +1817,7 @@ let layoutHTML = "";
                 <td>${r.plan_hash_value || '-'}</td>
                 <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${r.sql_text || ''}">${r.sql_text || '-'}</div></td>
                 <td>${r.machine_name || '-'}</td>
+                <td>${r.osuser || '-'}</td>
                 <td>${r.username || '-'}</td>
                 <td>${r.program_name || '-'}</td>
             </tr>
@@ -1802,9 +1909,9 @@ let layoutHTML = "";
         sessionHistory.lockWait = [];
         scatterDataPoints = [];
 
-        if (sessionTbody) sessionTbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
+        if (sessionTbody) sessionTbody.innerHTML = '<tr><td colspan="16" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const activeTxTbody = document.getElementById('sesslist-active-tx-tbody');
-        if (activeTxTbody) activeTxTbody.innerHTML = '<tr><td colspan="14" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
+        if (activeTxTbody) activeTxTbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const parallelTbody = document.getElementById('sesslist-parallel-tbody');
         if (parallelTbody) parallelTbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const pending2pcTbody = document.getElementById('sesslist-2pc-tbody');
@@ -2300,6 +2407,7 @@ let layoutHTML = "";
                                         <td>${s.plan_hash_value || '-'}</td>
                                         <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${s.sql_text || ''}">${s.sql_text || '-'}</div></td>
                                         <td>${s.machine_name || '-'}</td>
+                                        <td>${s.osuser || '-'}</td>
                                         <td>${s.username || '-'}</td>
                                         <td>${s.program_name || '-'}</td>
                                     </tr>`;
@@ -2373,13 +2481,23 @@ let layoutHTML = "";
     
     // Start dashboard polling. Interval comes from application.properties (dbagent.ui.polling-interval-ms,
     // default 2000) - 1000ms was tight enough that concurrent polling across widgets/tabs could exhaust
-    // the connection pool and misreport a healthy DB as down.
+    // the connection pool and misreport a healthy DB as down. The property only seeds the initial value
+    // at startup (사용자 요청, 2026-08-31) - "리프레쉬 주기" 입력칸 + "수동 새로고침"/"자동 갱신 시작·중지"
+    // 버튼(Current Session 메뉴가 이미 쓰는 것과 동일한 패턴)으로 이후 직접 바꿀 수 있다. 대시보드는
+    // 원래부터 항상 자동 갱신 상태였으므로 페이지 로드 시 기본값은 "켜짐"으로 유지 - Current Session과
+    // 달리 꺼진 채로 시작하지 않는다.
     let dashboardPollingIntervalMs = 2000;
+    let dashboardPollingTimer = null;
+    let isDashboardAutoRefreshing = false;
+    const dashRefreshIntervalInput = document.getElementById('dash-refresh-interval');
+    const dashRefreshBtn = document.getElementById('dash-refresh-btn');
+    const dashToggleBtn = document.getElementById('dash-toggle-btn');
     try {
         const pollingRes = await fetch('/api/config');
         if (pollingRes.ok) {
             const pollingData = await pollingRes.json();
             if (pollingData.polling_interval_ms) dashboardPollingIntervalMs = pollingData.polling_interval_ms;
+            if (dashRefreshIntervalInput) dashRefreshIntervalInput.value = Math.round(dashboardPollingIntervalMs / 1000);
 
             // SQL Runner row-limit input: pre-fill with the server default and cap it at the
             // server's hard ceiling, so the UI can't ask for more rows than the backend allows anyway.
@@ -2398,8 +2516,50 @@ let layoutHTML = "";
     } catch (e) {
         console.error('Failed to load polling interval, using default:', e);
     }
-    setInterval(fetchDashboard, dashboardPollingIntervalMs);
-    fetchDashboard();
+
+    function startDashboardPolling() {
+        fetchDashboard();
+        dashboardPollingTimer = setInterval(fetchDashboard, dashboardPollingIntervalMs);
+        isDashboardAutoRefreshing = true;
+        if (dashToggleBtn) {
+            dashToggleBtn.textContent = '자동 갱신 중지';
+            dashToggleBtn.classList.remove('primary-btn');
+            dashToggleBtn.classList.add('danger-btn');
+        }
+        if (dashRefreshBtn) dashRefreshBtn.disabled = true;
+    }
+
+    function stopDashboardPolling() {
+        if (dashboardPollingTimer) clearInterval(dashboardPollingTimer);
+        dashboardPollingTimer = null;
+        isDashboardAutoRefreshing = false;
+        if (dashToggleBtn) {
+            dashToggleBtn.textContent = '자동 갱신 시작';
+            dashToggleBtn.classList.remove('danger-btn');
+            dashToggleBtn.classList.add('primary-btn');
+        }
+        if (dashRefreshBtn) dashRefreshBtn.disabled = false;
+    }
+
+    startDashboardPolling();
+
+    if (dashToggleBtn) {
+        dashToggleBtn.addEventListener('click', () => {
+            if (isDashboardAutoRefreshing) {
+                stopDashboardPolling();
+            } else {
+                // Math.max(1, ...)로 0 이하 입력을 막음 - 코드리뷰로 발견: "-5"처럼 truthy한 음수를
+                // 넣으면 ||만으로는 안 걸러져서 setInterval에 음수(사실상 0ms)가 들어가 폴링이
+                // 쉴새없이 돌며 커넥션 풀을 고갈시킬 수 있었음.
+                const seconds = Math.max(1, parseInt(dashRefreshIntervalInput.value) || 2);
+                dashboardPollingIntervalMs = seconds * 1000;
+                startDashboardPolling();
+            }
+        });
+    }
+    if (dashRefreshBtn) {
+        dashRefreshBtn.addEventListener('click', fetchDashboard);
+    }
 
     // Dashboard Tabs
     const dashTabBtns = document.querySelectorAll('.dash-tab-btn');

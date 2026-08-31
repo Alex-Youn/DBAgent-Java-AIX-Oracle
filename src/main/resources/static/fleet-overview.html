@@ -298,9 +298,13 @@
     /* ---------- Card grid ---------- */
     .card-grid {
         display: grid;
-        /* 340px(구 300px) - 사용자 요청(2026-08-29): "인스턴스 카드 크기를 조금 크게" - 아래
-           stat-value/uptime-value/db-meta 폰트를 키운 만큼 줄바꿈 없이 여유있게 들어가도록. */
-        grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+        /* 380px(구 340px, 그 전엔 300px) - 사용자 요청(2026-08-29): "인스턴스 카드 크기를 조금
+           크게" - 아래 stat-value/uptime-value/db-meta 폰트를 키운 만큼 줄바꿈 없이 여유있게
+           들어가도록. auto-fill+minmax는 컨테이너 너비÷최소값으로 컬럼 수를 정하는 계단함수라,
+           특정 너비 구간(예: 브라우저 확대/축소 90%)에서는 컬럼이 딱 하나 더 끼워지면서 각 카드
+           폭이 이 최소값까지 눌리는 경우가 생긴다 - 340px일 때 그 경계에서 SID/버전 텍스트가
+           옆의 group-badge에 밀려 잘리는 문제가 발견되어(사용자 확인, 2026-08-31) 380px로 상향. */
+        grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
         gap: 16px;
     }
     .db-card {
@@ -345,8 +349,10 @@
     .card-name-block { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
     .db-name { font-family: var(--font-mono); font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* SID/Oracle 버전 (사용자 요청, 2026-08-29: "각 인스턴스 프레임에 DB 정보와 버전을 보여줬으면
-       좋겠어") - SID는 /api/config 목록에 이미 있어 즉시 표시되고, 버전은 /api/fleet_status가
-       실제 접속해 v$instance.version을 읽어와야 하므로 로딩/다운 상태에서는 비어 있다. */
+       좋겠어") - 로딩 중엔 /api/config의 값을 우선 보여주다가, /api/fleet_status가 실제 접속해
+       v$instance에서 읽어온 instance_name/version으로 덮어쓴다(2026-08-31 변경: SID를 설정 파일이
+       아닌 실제 DB 조회값으로 표시해달라는 요청) - 그래서 다운 상태에선 SID/버전 모두 마지막으로
+       접속에 성공했을 때의 값이거나(폴링 중 다운된 경우) 아예 비어 있다(최초부터 접속 실패한 경우). */
     .db-meta { font-family: var(--font-mono); font-size: 12.5px; font-weight: 700; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .group-badge {
@@ -660,12 +666,14 @@
             };
             const STATUS_RANK = { down: 0, degraded: 1, alive: 2 };
 
-            // DB 정보(SID)/DB 종류/버전 표시줄 (사용자 요청, 2026-08-29/30) - "SID : ORCL[Oracle 21c]"
-            // 형식. SID는 d.sid(=/api/config, 항상 있음), 코드네임은 d.versionCodename(=/api/
-            // fleet_status가 v$version.banner에서 뽑아온 "21c"/"11g" 식 표기, 접속 성공 후에만
-            // 채워짐 - MonitorService.getFleetStatus 참고)을 우선 쓰고, 못 뽑았으면 raw 버전
-            // 문자열(d.version)로 대체한다. withType=true(Top 5 패널)면 버전을 아직 모를 때도
-            // "[Oracle]"만 표시 - 카드 쪽은 engine-icon이 이미 종류를 시각적으로 나타내므로 생략.
+            // DB 정보(SID)/DB 종류/버전 표시줄 (사용자 요청, 2026-08-29/30/31) - "SID : ORCL[Oracle 21c]"
+            // 형식. SID는 d.sid - 로딩 중엔 /api/config의 설정값, 접속에 성공하면 /api/fleet_status가
+            // 실제 v$instance.instance_name으로 덮어쓴 값(2026-08-31: 설정 파일이 아닌 실제 DB 조회값을
+            // 보여달라는 요청으로 변경 - MonitorService.getFleetStatus 참고). 코드네임은
+            // d.versionCodename(=/api/fleet_status가 v$version.banner에서 뽑아온 "21c"/"11g" 식
+            // 표기, 접속 성공 후에만 채워짐)을 우선 쓰고, 못 뽑았으면 raw 버전 문자열(d.version)로
+            // 대체한다. withType=true(Top 5 패널)면 버전을 아직 모를 때도 "[Oracle]"만 표시 - 카드
+            // 쪽은 engine-icon이 이미 종류를 시각적으로 나타내므로 생략.
             function metaText(d, withType) {
                 if (!d.sid) return '';
                 const codename = d.versionCodename || d.version;

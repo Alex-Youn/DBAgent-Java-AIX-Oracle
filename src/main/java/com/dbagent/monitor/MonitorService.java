@@ -180,7 +180,7 @@ public class MonitorService {
                 "AND event NOT LIKE 'latch%' AND event NOT LIKE 'enq: TX%' AND event NOT LIKE 'enq: TM%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as other_pct " +
                 "FROM v$active_session_history WHERE sample_time >= SYSDATE - 1/24/60 GROUP BY session_id, session_serial#) " +
                 "SELECT (SELECT instance_name FROM v$instance) as db_name, s.status, s.sid, s.serial#, p.spid as server_pid, " +
-                "s.machine as machine_name, NVL(s.username, 'BACKGROUND') as username, s.program as program_name, " +
+                "s.machine as machine_name, s.username as username, s.program as program_name, " +
                 "s.last_call_et as duration_time, " +
                 "NVL(a.cpu_pct, 0) || ',' || NVL(a.user_io_pct, 0) || ',' || NVL(a.system_io_pct, 0) || ',' || " +
                 "NVL(a.latch_pct, 0) || ',' || NVL(a.tx_lock_pct, 0) || ',' || NVL(a.tm_lock_pct, 0) || ',' || NVL(a.other_pct, 0) as session_wait_pct, " +
@@ -190,7 +190,12 @@ public class MonitorService {
                 "LEFT JOIN v$process p ON s.paddr = p.addr " +
                 "LEFT JOIN ash_summary a ON s.sid = a.session_id AND s.serial# = a.session_serial# " +
                 "LEFT JOIN v$sql sq ON s.sql_id = sq.sql_id AND s.sql_child_number = sq.child_number " +
+                // 사용자 요청(2026-08-31): 화면에 표시되던 "BACKGROUND"는 실제 계정이 아니라 이 쿼리가
+                // username이 NULL인 세션(내부 job/AQ 등 스키마와 무관한 세션)에 붙이던 표시용 문자열이었음
+                // - username IS NOT NULL로 아예 제외. 모니터링 계정 자신의 세션도 CURRENT_USER로 동적
+                // 제외(하드코딩 대신 - 인스턴스마다 모니터링 계정명이 달라도 항상 자기 자신만 정확히 빠짐).
                 "WHERE s.type != 'BACKGROUND' AND s.status = 'ACTIVE' " +
+                "AND s.username IS NOT NULL AND s.username != SYS_CONTEXT('USERENV','CURRENT_USER') " +
                 "ORDER BY s.last_call_et DESC";
 
         List<Map<String, Object>> sessions = new ArrayList<>();
@@ -234,7 +239,12 @@ public class MonitorService {
             result.put("active_transactions", queryActiveTransactions(conn));
             result.put("parallel_sessions", queryParallelSessions(conn));
             result.put("pending_2pc", queryPending2pc(conn));
-            result.put("lock_wait_count", queryLockWaitCount(conn));
+            // 사용자 요청(2026-08-31): Trace 그래프 점(개별 세션)을 Lock Wait 여부로도 색칠하려면 몇 명인지
+            // 뿐 아니라 어떤 SID인지가 필요 - 목록으로 바꾸고 카운트는 그 목록의 크기로 계산해 v$lock을
+            // 두 번 조회하지 않는다.
+            List<Object> lockWaitSids = queryLockWaitSids(conn);
+            result.put("lock_wait_count", lockWaitSids.size());
+            result.put("lock_wait_sids", lockWaitSids);
             return result;
         }
     }
@@ -255,16 +265,23 @@ public class MonitorService {
                 "AND event NOT LIKE 'latch%' AND event NOT LIKE 'enq: TX%' AND event NOT LIKE 'enq: TM%' THEN 1 ELSE 0 END) / COUNT(*) * 100) as other_pct " +
                 "FROM v$active_session_history WHERE sample_time >= SYSDATE - 1/24/60 GROUP BY session_id, session_serial#) " +
                 "SELECT (SELECT instance_name FROM v$instance) as db_name, s.status, s.sid, s.serial#, p.spid as server_pid, " +
-                "s.machine as machine_name, NVL(s.username, 'BACKGROUND') as username, s.program as program_name, " +
+                "s.machine as machine_name, s.username as username, s.program as program_name, " +
                 "s.last_call_et as duration_time, " +
                 "NVL(a.cpu_pct, 0) || ',' || NVL(a.user_io_pct, 0) || ',' || NVL(a.system_io_pct, 0) || ',' || " +
                 "NVL(a.latch_pct, 0) || ',' || NVL(a.tx_lock_pct, 0) || ',' || NVL(a.tm_lock_pct, 0) || ',' || NVL(a.other_pct, 0) as session_wait_pct, " +
-                "s.sql_id, s.event as event_name, sq.plan_hash_value, sq.sql_text " +
+                "s.sql_id, s.event as event_name, sq.plan_hash_value, sq.sql_text, s.osuser " +
                 "FROM v$transaction t " +
                 "JOIN v$session s ON s.saddr = t.ses_addr " +
                 "LEFT JOIN v$process p ON s.paddr = p.addr " +
                 "LEFT JOIN ash_summary a ON s.sid = a.session_id AND s.serial# = a.session_serial# " +
                 "LEFT JOIN v$sql sq ON s.sql_id = sq.sql_id AND s.sql_child_number = sq.child_number " +
+                // 사용자 요청(2026-08-31): idle-in-transaction(커밋 안 하고 대기 중이라 status가
+                // INACTIVE로 바뀐) 세션은 이 탭에서 제외 - Active Session과 동일하게 ACTIVE만 표시.
+                // "BACKGROUND" 표시(username NULL)와 모니터링 계정 자신의 세션도 getSessions()와 동일한
+                // 이유로 함께 제외 - SYS_CONTEXT 기반 동적 자기제외라 모니터링 계정명이 인스턴스마다
+                // 달라도 하드코딩 없이 항상 자기 자신만 정확히 빠진다.
+                "WHERE s.status = 'ACTIVE' AND s.type != 'BACKGROUND' " +
+                "AND s.username IS NOT NULL AND s.username != SYS_CONTEXT('USERENV','CURRENT_USER') " +
                 "ORDER BY s.sid";
         List<Map<String, Object>> rows = new ArrayList<>();
         try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
@@ -283,6 +300,7 @@ public class MonitorService {
                 row.put("sql_id", rs.getString("sql_id"));
                 row.put("event_name", rs.getString("event_name"));
                 row.put("plan_hash_value", rs.getObject("plan_hash_value"));
+                row.put("osuser", rs.getString("osuser"));
                 row.put("sql_text", rs.getString("sql_text"));
                 rows.add(row);
             }
@@ -345,15 +363,16 @@ public class MonitorService {
         return rows;
     }
 
-    private int queryLockWaitCount(Connection conn) {
+    private List<Object> queryLockWaitSids(Connection conn) {
+        List<Object> sids = new ArrayList<>();
         try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT COUNT(DISTINCT sid) as cnt FROM v$lock WHERE request > 0")) {
-            if (rs.next()) {
-                return rs.getInt("cnt");
+             ResultSet rs = st.executeQuery("SELECT DISTINCT sid FROM v$lock WHERE request > 0")) {
+            while (rs.next()) {
+                sids.add(rs.getObject("sid"));
             }
         } catch (SQLException ignored) {
         }
-        return 0;
+        return sids;
     }
 
     // Fleet Overview's per-instance card metric (replaces a v$lock-based lock-wait count there - 사용자가
@@ -470,7 +489,11 @@ public class MonitorService {
             double memUtil = totalMem > 0 ? Math.round(((sgaBytes + pgaBytes) / totalMem) * 10000.0) / 100.0 : 0.0;
 
             int activeSessions = 0;
-            try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND'")) {
+            // 사용자 요청(2026-08-31)으로 getSessions()가 제외하기 시작한 것과 동일한 대상(NULL
+            // username, 모니터링 계정 자신)을 이 카운트에서도 빼서, Active Session 목록의 실제 행
+            // 개수와 여기 KPI 숫자가 어긋나지 않게 함 - 코드리뷰로 발견된 불일치.
+            try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
+                    "AND username IS NOT NULL AND username != SYS_CONTEXT('USERENV','CURRENT_USER')")) {
                 if (rs.next()) activeSessions = rs.getInt(1);
             }
 
@@ -484,8 +507,11 @@ public class MonitorService {
 
     // ------------------------------------------------------------- top_events
     public List<Map<String, Object>> getTopEvents(TargetDbConfig target) throws SQLException {
+        // Dashboard의 "Active Session 목록" 탭 바로 옆 "Top Event 목록" 탭이라, 같은 세션 집합을
+        // 기준으로 집계해야 함 - getSessions()와 동일하게 NULL username/모니터링 계정 자신 제외.
         String query = "SELECT NVL(event, 'ON CPU') as event, COUNT(*) as cnt " +
                 "FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
+                "AND username IS NOT NULL AND username != SYS_CONTEXT('USERENV','CURRENT_USER') " +
                 "GROUP BY event ORDER BY cnt DESC";
         List<Map<String, Object>> events = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
@@ -940,11 +966,13 @@ public class MonitorService {
             String instanceStatus = "down";
             double uptimeDays = 0;
             String version = null;
-            try (ResultSet rs = st.executeQuery("SELECT status, (SYSDATE - startup_time) AS uptime_days, version FROM v$instance")) {
+            String instanceName = null;
+            try (ResultSet rs = st.executeQuery("SELECT status, (SYSDATE - startup_time) AS uptime_days, version, instance_name FROM v$instance")) {
                 if (rs.next()) {
                     instanceStatus = "OPEN".equals(rs.getString("status")) ? "alive" : "down";
                     uptimeDays = rs.getDouble("uptime_days");
                     version = rs.getString("version");
+                    instanceName = rs.getString("instance_name");
                 }
             }
             if (!"alive".equals(instanceStatus)) {
@@ -996,7 +1024,11 @@ public class MonitorService {
             double memPct = totalMem > 0 ? Math.round(((sgaBytes + pgaBytes) / totalMem) * 10000.0) / 100.0 : 0;
 
             int activeSessions = 0;
-            try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND'")) {
+            // 사용자 요청(2026-08-31)으로 getSessions()가 제외하기 시작한 것과 동일한 대상(NULL
+            // username, 모니터링 계정 자신)을 이 카운트에서도 빼서, Active Session 목록의 실제 행
+            // 개수와 여기 KPI 숫자가 어긋나지 않게 함 - 코드리뷰로 발견된 불일치.
+            try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
+                    "AND username IS NOT NULL AND username != SYS_CONTEXT('USERENV','CURRENT_USER')")) {
                 if (rs.next()) activeSessions = rs.getInt(1);
             }
 
@@ -1012,6 +1044,11 @@ public class MonitorService {
             boolean warning = cpuPct >= 80 || memPct >= 80;
 
             result.put("status", warning ? "degraded" : "alive");
+            // 사용자 요청(2026-08-31): FO 카드의 SID를 databases.json 설정값이 아니라 실제 DB의
+            // v$instance.instance_name으로 표시 - 프런트(fleet-overview.html)가 config 응답과 이
+            // fleet_status 응답을 Object.assign({}, configEntry, statusEntry)로 합치면서 뒤에 오는
+            // statusEntry가 우선하므로, 같은 "sid" 키로 내려주기만 하면 config의 값을 자동으로 덮어씀.
+            result.put("sid", instanceName);
             result.put("version", version);
             result.put("versionCodename", versionCodename);
             result.put("cpuPct", cpuPct);

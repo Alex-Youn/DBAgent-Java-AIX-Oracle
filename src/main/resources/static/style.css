@@ -1076,6 +1076,21 @@ body {
     box-shadow: 0 0 0 2px rgba(57, 135, 229, 0.3);
 }
 
+.login-save-username {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: -8px 0 18px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.login-save-username input {
+    cursor: pointer;
+}
+
 .login-org-badge {
     display: flex;
     align-items: center;
