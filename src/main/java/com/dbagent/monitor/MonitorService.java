@@ -1081,7 +1081,8 @@ public class MonitorService {
                 ") SELECT h.session_id as sid, h.session_serial# as serial, h.sql_id, NVL(h.event, 'ON CPU') as event_name, " +
                 "TO_CHAR(h.sample_time, 'YYYY-MM-DD HH24:MI:SS') as capture_time, " +
                 "ROUND((CAST(h.sample_time AS DATE) - CAST(NVL(h.sql_exec_start, h.sample_time) AS DATE)) * 24 * 60 * 60, 2) as duration_time, " +
-                "h.program as program_name, u.username as osuser, h.sql_plan_hash_value as plan_hash_value, NVL(s.exec_count, 0) as exec_count " +
+                "h.program as program_name, u.username as osuser, h.sql_plan_hash_value as plan_hash_value, NVL(s.exec_count, 0) as exec_count, " +
+                "(SELECT instance_name FROM v$instance) as db_name " +
                 "FROM combined_ash h " +
                 "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
                 "LEFT JOIN sql_execs s ON h.sql_id = s.sql_id " +
@@ -1111,6 +1112,7 @@ public class MonitorService {
                     row.put("osuser", rs.getString(8));
                     row.put("plan_hash_value", rs.getObject(9));
                     row.put("exec_count", rs.getObject(10));
+                    row.put("db_name", rs.getString(11));
                     sessions.add(row);
                 }
             }

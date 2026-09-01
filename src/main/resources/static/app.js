@@ -459,12 +459,13 @@ function getToken() {
                             const svg = instLink.querySelector('.instance-icon-live');
                             if(svg) svg.style.color = 'var(--success)';
                             
+                            if (typeof saveSessionHistorySnapshot === 'function') saveSessionHistorySnapshot(window.currentDbId);
                             window.currentDbId = inst.id;
                             // 인스턴스별 세션 임계치 오버라이드 (databases.json의 "session_thresholds": [t1..t5]),
                             // 없으면 undefined -> getSessColor()가 자동으로 기본값(DEFAULT_SESSION_THRESHOLDS) 사용.
                             window.currentSessionThresholds = Array.isArray(inst.session_thresholds) ? inst.session_thresholds : null;
                             if (typeof resetAllDashboardWidgets === 'function') resetAllDashboardWidgets();
-                            if (typeof resetSessionMonitor === 'function') resetSessionMonitor();
+                            if (typeof resetSessionMonitor === 'function') resetSessionMonitor(inst.id);
                             // DB를 바꿔도 지금 보고 있던 메뉴에 그대로 머무르도록 - 대시보드로 강제 이동하지 않음.
                             const activeNav = document.querySelector('.nav-item.active');
                             switchTab(activeNav ? activeNav.getAttribute('data-target') : 'dashboard');
@@ -753,8 +754,15 @@ function getToken() {
 let layoutHTML = "";
                 if (direction === 'uni') {
                     // 단방향: 좌우 분할 레이아웃
+                    // 사용자 리포트(2026-09-01): 좌측 트리와 우측 ERD를 나누는 경계선이 정확히 그려지지
+                    // 않음 - 원인은 이 flex row가 align-items: flex-start였던 것. flex-start는 두 컬럼을
+                    // 위쪽만 맞추고 각자 자기 컨텐츠 높이만큼만 차지하게 두므로, 트리 카드 개수(부모+자식)와
+                    // ERD 다이어그램의 실제 렌더 높이가 다르면(거의 항상 다름) 오른쪽 컬럼의 border-left가
+                    // 왼쪽 카드 박스보다 짧거나 길게 끝나 버려 경계선이 어긋나 보임. align-items를 기본값인
+                    // stretch로 바꿔 두 컬럼이 항상 같은(둘 중 더 큰) 높이로 늘어나게 하면, border-left가
+                    // 매번 왼쪽 카드 박스와 정확히 같은 높이로 그려진다.
                     layoutHTML = `
-                        <div style="display: flex; gap: 20px; align-items: flex-start;">
+                        <div style="display: flex; gap: 20px;">
                             <div style="flex: 1; min-width: 0;">
                                 <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1rem; color: var(--text-primary);">트리 형태</h3>
                                 <div style="padding: 20px; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);">
@@ -1277,6 +1285,27 @@ let layoutHTML = "";
         pending2pc: [],
         lockWait: []
     };
+
+    // 사용자 요청(2026-09-01): 다른 DB로 갔다가 원래 DB로 돌아와도 Current Session 추이/Trace 그래프가
+    // 유지되게 함 - db_id별로 sessionHistory/scatterDataPoints 스냅샷을 따로 보관해뒀다가, 그 DB로
+    // 돌아오면 그대로 복원한다. 같은 DB 안에서 메뉴만 왔다갔다 하는 경우는 switchTab()이 이미 별도로
+    // 처리 중이라(위 주석 참고) 여기서는 DB 전환(인스턴스 클릭) 케이스만 다룬다.
+    const dbSessionHistoryCache = new Map();
+
+    function saveSessionHistorySnapshot(dbId) {
+        if (!dbId) return;
+        dbSessionHistoryCache.set(dbId, {
+            sessionHistory: {
+                labels: sessionHistory.labels.slice(),
+                activeSessions: sessionHistory.activeSessions.slice(),
+                activeTx: sessionHistory.activeTx.slice(),
+                parallel: sessionHistory.parallel.slice(),
+                pending2pc: sessionHistory.pending2pc.slice(),
+                lockWait: sessionHistory.lockWait.slice()
+            },
+            scatterDataPoints: scatterDataPoints.slice()
+        });
+    }
 
     // 사용자 요청(2026-08-31): 추이 그래프와 Trace 그래프의 색상/범례를 동기화하고, 각 계열을 체크박스로
     // 켜고 끌 수 있게 함. 두 배열의 색상은 반드시 같은 순서로 유지 - TREND_SERIES는 추이 그래프(라인)
@@ -1894,20 +1923,25 @@ let layoutHTML = "";
         });
     });
 
-    // Called on arrival at the "Current Session" menu and on every DB switch (see the instance-click
-    // handler and switchTab() below) - destroys the trend/scatter charts and clears their backing
-    // history arrays instead of letting a new DB's data points get appended after an old DB's, which
-    // would otherwise draw a single line jumping between two DBs' unrelated values.
-    function resetSessionMonitor() {
+    // Called on every DB switch (see the instance-click handler above) - destroys the trend/scatter
+    // charts (Chart.js canvases can't just be repointed at new arrays-in-place after a destroy) and
+    // swaps their backing history arrays for whatever this nextDbId had stored the last time it was
+    // active (dbSessionHistoryCache, saved by saveSessionHistorySnapshot() right before this DB
+    // became current) instead of always wiping to empty - otherwise switching to DB B and back to DB
+    // A would lose A's graph even though nothing about A's monitoring actually stopped. A DB visited
+    // for the first time this session has no cache entry yet, so it still starts empty as before.
+    function resetSessionMonitor(nextDbId) {
         if (sessionChart) { sessionChart.destroy(); sessionChart = null; }
         if (sessionScatterChart) { sessionScatterChart.destroy(); sessionScatterChart = null; }
-        sessionHistory.labels = [];
-        sessionHistory.activeSessions = [];
-        sessionHistory.activeTx = [];
-        sessionHistory.parallel = [];
-        sessionHistory.pending2pc = [];
-        sessionHistory.lockWait = [];
-        scatterDataPoints = [];
+
+        const cached = nextDbId ? dbSessionHistoryCache.get(nextDbId) : null;
+        sessionHistory.labels = cached ? cached.sessionHistory.labels.slice() : [];
+        sessionHistory.activeSessions = cached ? cached.sessionHistory.activeSessions.slice() : [];
+        sessionHistory.activeTx = cached ? cached.sessionHistory.activeTx.slice() : [];
+        sessionHistory.parallel = cached ? cached.sessionHistory.parallel.slice() : [];
+        sessionHistory.pending2pc = cached ? cached.sessionHistory.pending2pc.slice() : [];
+        sessionHistory.lockWait = cached ? cached.sessionHistory.lockWait.slice() : [];
+        scatterDataPoints = cached ? cached.scatterDataPoints.slice() : [];
 
         if (sessionTbody) sessionTbody.innerHTML = '<tr><td colspan="16" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const activeTxTbody = document.getElementById('sesslist-active-tx-tbody');
