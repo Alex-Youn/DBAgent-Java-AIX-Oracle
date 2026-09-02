@@ -1076,6 +1076,64 @@ body {
     box-shadow: 0 0 0 2px rgba(57, 135, 229, 0.3);
 }
 
+/* Username/Password 입력칸 아이콘 + 비밀번호 표시/숨김 토글 (사용자 요청, 2026-09-02).
+   아이콘은 입력칸 위에 절대배치하고 입력칸 자체엔 padding-left로 여백을 확보. 토글 버튼은
+   .instance-icon-static/.instance-icon-live(139번줄 부근)와 같은 방식으로 eye/eye-off 두 아이콘을
+   미리 렌더링해두고 .is-showing 클래스로 표시만 전환한다 - lucide가 <i data-lucide>를 렌더링
+   시점에 svg로 바꿔버려서 data-lucide 속성을 나중에 고쳐 재호출하는 방식은 이 프로젝트에서 쓰지 않음. */
+.login-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.login-input-icon {
+    position: absolute;
+    left: 12px;
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+    pointer-events: none;
+}
+
+.login-input-wrap input {
+    padding-left: 38px;
+}
+
+.login-password-toggle {
+    position: absolute;
+    right: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    padding: 4px;
+    cursor: pointer;
+    color: var(--text-muted);
+}
+
+.login-password-toggle:hover {
+    color: var(--text-main);
+}
+
+.login-password-toggle i {
+    width: 16px;
+    height: 16px;
+}
+
+.login-password-toggle-icon-hide {
+    display: none;
+}
+
+.login-password-toggle.is-showing .login-password-toggle-icon-show {
+    display: none;
+}
+
+.login-password-toggle.is-showing .login-password-toggle-icon-hide {
+    display: block;
+}
+
 .login-save-username {
     display: flex;
     align-items: center;

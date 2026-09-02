@@ -95,6 +95,16 @@ function getToken() {
             loginPasswordInput.addEventListener('blur', () => { loginCapslockHint.style.display = 'none'; });
         }
 
+        // 비밀번호 표시/숨김 토글 (사용자 요청, 2026-09-02) - input type을 text/password로 바꾸고
+        // 버튼에 .is-showing을 토글해 eye/eye-off 아이콘 표시만 전환 (CSS 쪽 패턴은 style.css 참고).
+        document.getElementById('login-password-toggle')?.addEventListener('click', () => {
+            const input = document.getElementById('login-password');
+            const btn = document.getElementById('login-password-toggle');
+            const showing = input.type === 'text';
+            input.type = showing ? 'password' : 'text';
+            btn.classList.toggle('is-showing', !showing);
+        });
+
         // 계정 저장 (사용자 요청, 2026-08-31): 로그인 화면에 admin이 디폴트로 박혀있던 것 제거하고,
         // 대신 "계정 저장" 체크 시 성공한 로그인의 username만 localStorage에 남겨뒀다가 다음 방문 때
         // 입력칸에 미리 채워준다 - 비밀번호는 저장 대상이 아님. localStorage 사용 이유: 로그인 화면은
