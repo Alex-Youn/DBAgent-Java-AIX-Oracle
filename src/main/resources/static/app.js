@@ -1290,7 +1290,33 @@ let layoutHTML = "";
     // 유지되게 함 - db_id별로 sessionHistory/scatterDataPoints 스냅샷을 따로 보관해뒀다가, 그 DB로
     // 돌아오면 그대로 복원한다. 같은 DB 안에서 메뉴만 왔다갔다 하는 경우는 switchTab()이 이미 별도로
     // 처리 중이라(위 주석 참고) 여기서는 DB 전환(인스턴스 클릭) 케이스만 다룬다.
-    const dbSessionHistoryCache = new Map();
+    //
+    // 사용자 지적(2026-09-02): 같은 index.html 안에서 DB만 바꾸는 건 유지되는데, Fleet Overview
+    // 화면(fleet-overview.html)에 갔다가 돌아오면 초기화됨 - 이건 FO가 SPA 전환이 아니라 완전히 다른
+    // 페이지로의 실제 이동(location.href)이라 index.html의 JS 컨텍스트 자체가 통째로 파괴/재생성되기
+    // 때문. dbSessionHistoryCache가 메모리 Map이라서 못 버텼던 것 - 같은 탭이 유지되는 동안 살아있는
+    // sessionStorage에 캐시를 함께 영속화해서, 페이지가 다시 로드돼도 저장해둔 스냅샷을 그대로 복원한다.
+    const SESSION_HISTORY_STORAGE_KEY = 'dbagent_session_history_cache';
+
+    function loadSessionHistoryCache() {
+        try {
+            const raw = sessionStorage.getItem(SESSION_HISTORY_STORAGE_KEY);
+            return raw ? new Map(JSON.parse(raw)) : new Map();
+        } catch (e) {
+            return new Map();
+        }
+    }
+
+    function persistSessionHistoryCache() {
+        try {
+            sessionStorage.setItem(SESSION_HISTORY_STORAGE_KEY, JSON.stringify(Array.from(dbSessionHistoryCache.entries())));
+        } catch (e) {
+            // sessionStorage 용량 초과 등으로 실패해도 메모리 캐시(dbSessionHistoryCache)로는 계속
+            // 정상 동작 - 같은 페이지 안에서의 DB 전환 유지 기능만 그대로 살아있으면 되므로 조용히 무시.
+        }
+    }
+
+    const dbSessionHistoryCache = loadSessionHistoryCache();
 
     function saveSessionHistorySnapshot(dbId) {
         if (!dbId) return;
@@ -1305,7 +1331,16 @@ let layoutHTML = "";
             },
             scatterDataPoints: scatterDataPoints.slice()
         });
+        persistSessionHistoryCache();
     }
+
+    // FO 화면으로 넘어가는 링크(사이드바 브랜드 링크, FO 버튼 등)는 여러 곳에서 각자 location.href를
+    // 바꾸므로 매 지점을 다 걸어주는 대신, 페이지를 떠나는 시점(pagehide)에 한 번에 현재 DB의 스냅샷을
+    // 저장한다. 새로고침/탭 종료에도 함께 발생하지만 이건 로그아웃과 달리 그냥 차트 데이터 저장일
+    // 뿐이라 부작용이 없다 - 오히려 새로고침 후에도 그래프가 이어지는 효과.
+    window.addEventListener('pagehide', () => {
+        if (window.currentDbId) saveSessionHistorySnapshot(window.currentDbId);
+    });
 
     // 사용자 요청(2026-08-31): 추이 그래프와 Trace 그래프의 색상/범례를 동기화하고, 각 계열을 체크박스로
     // 켜고 끌 수 있게 함. 두 배열의 색상은 반드시 같은 순서로 유지 - TREND_SERIES는 추이 그래프(라인)
