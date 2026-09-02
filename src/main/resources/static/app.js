@@ -108,14 +108,6 @@ function getToken() {
             loginSaveUsernameCheckbox.checked = true;
         }
 
-        document.getElementById('login-password-toggle')?.addEventListener('click', (e) => {
-            const btn = e.currentTarget;
-            const pwInput = document.getElementById('login-password');
-            const showing = pwInput.type === 'text';
-            pwInput.type = showing ? 'password' : 'text';
-            btn.classList.toggle('is-showing', !showing);
-        });
-
         // Attach auth event listeners
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
