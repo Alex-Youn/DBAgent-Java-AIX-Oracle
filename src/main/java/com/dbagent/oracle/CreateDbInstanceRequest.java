@@ -12,6 +12,8 @@ public final class CreateDbInstanceRequest {
     private final String groupName;
     private final String id;
     private final String name;
+    // "oracle" (default) / "mysql" / "mariadb" / "postgres" - see TargetDbConfig.
+    private final String dbType;
     private final String host;
     private final int port;
     private final String sid;
@@ -31,6 +33,7 @@ public final class CreateDbInstanceRequest {
             @JsonProperty("group_name") String groupName,
             @JsonProperty("id") String id,
             @JsonProperty("name") String name,
+            @JsonProperty("db_type") String dbType,
             @JsonProperty("host") String host,
             @JsonProperty("port") int port,
             @JsonProperty("sid") String sid,
@@ -44,6 +47,7 @@ public final class CreateDbInstanceRequest {
         this.groupName = groupName;
         this.id = id;
         this.name = name;
+        this.dbType = dbType;
         this.host = host;
         this.port = port;
         this.sid = sid;
@@ -69,6 +73,10 @@ public final class CreateDbInstanceRequest {
 
     public String name() {
         return name;
+    }
+
+    public String dbType() {
+        return dbType;
     }
 
     public String host() {

@@ -143,33 +143,45 @@
                 </div>` : ''}
                 <div class="field-row">
                     <div class="login-form-group">
+                        <label>DB Type</label>
+                        <select id="${prefix}-dbtype">
+                            <option value="oracle">Oracle</option>
+                            <option value="mysql">MySQL</option>
+                            <option value="mariadb">MariaDB</option>
+                            <option value="postgres">PostgreSQL</option>
+                        </select>
+                    </div>
+                    <div class="login-form-group">
                         <label>표시 이름</label>
                         <input type="text" id="${prefix}-name" required autocomplete="off">
                     </div>
-                    <div class="login-form-group">
-                        <label>Host (비워두면 tnsnames.ora의 SID를 별칭으로 사용)</label>
-                        <input type="text" id="${prefix}-host" autocomplete="off">
-                    </div>
                 </div>
                 <div class="field-row">
+                    <div class="login-form-group">
+                        <label>Host (Oracle만 비워두면 tnsnames.ora의 SID를 별칭으로 사용)</label>
+                        <input type="text" id="${prefix}-host" autocomplete="off">
+                    </div>
                     <div class="login-form-group">
                         <label>Port</label>
                         <input type="number" id="${prefix}-port" value="1521" required>
                     </div>
-                    <div class="login-form-group">
-                        <label>SID</label>
-                        <input type="text" id="${prefix}-sid" required autocomplete="off">
-                    </div>
                 </div>
                 <div class="field-row">
+                    <div class="login-form-group">
+                        <label id="${prefix}-sid-label">SID</label>
+                        <input type="text" id="${prefix}-sid" required autocomplete="off">
+                    </div>
                     <div class="login-form-group">
                         <label>계정</label>
                         <input type="text" id="${prefix}-user" required autocomplete="off">
                     </div>
+                </div>
+                <div class="field-row">
                     <div class="login-form-group">
                         <label>비밀번호${withGroupAndId ? '' : ' (비워두면 기존 값 유지)'}</label>
                         <input type="password" id="${prefix}-password" ${withGroupAndId ? 'required' : ''} autocomplete="new-password">
                     </div>
+                    <div class="login-form-group"></div>
                 </div>
                 <div class="field-row">
                     <div class="login-form-group">
@@ -260,6 +272,26 @@
                 addAccountRow(document.getElementById('edit-db-accounts'));
             });
 
+            // Oracle uses "SID" terminology; the other engines use a plain database name - relabel the
+            // field (not a separate input) so createInstance/updateInstance keep reading the same "sid"
+            // value regardless of db_type. Default port also nudges to each engine's usual port when the
+            // admin hasn't touched Port yet, to save a lookup.
+            const DB_TYPE_DEFAULT_PORT = { oracle: 1521, mysql: 3306, mariadb: 3306, postgres: 5432 };
+            function wireDbTypeFields(prefix) {
+                const typeSelect = document.getElementById(`${prefix}-dbtype`);
+                const sidLabel = document.getElementById(`${prefix}-sid-label`);
+                const portInput = document.getElementById(`${prefix}-port`);
+                typeSelect.addEventListener('change', () => {
+                    sidLabel.textContent = typeSelect.value === 'oracle' ? 'SID' : 'Database';
+                    const defaultPort = DB_TYPE_DEFAULT_PORT[typeSelect.value];
+                    if (defaultPort && Object.values(DB_TYPE_DEFAULT_PORT).includes(parseInt(portInput.value, 10))) {
+                        portInput.value = defaultPort;
+                    }
+                });
+            }
+            wireDbTypeFields('new-db');
+            wireDbTypeFields('edit-db');
+
             async function loadDbConfigList() {
                 dbMgmtMainError.style.display = 'none';
                 dbSelect.innerHTML = '<option>불러오는 중...</option>';
@@ -343,6 +375,7 @@
                     group_name: document.getElementById('new-db-group').value.trim(),
                     id: document.getElementById('new-db-id').value.trim(),
                     name: document.getElementById('new-db-name').value.trim(),
+                    db_type: document.getElementById('new-db-dbtype').value,
                     host: document.getElementById('new-db-host').value.trim(),
                     port: parseInt(document.getElementById('new-db-port').value, 10) || 1521,
                     sid: document.getElementById('new-db-sid').value.trim(),
@@ -375,6 +408,9 @@
             function showDbEditView(inst) {
                 document.getElementById('edit-db-id').textContent = `${inst.name} (${inst.id})`;
                 document.getElementById('edit-db-name').value = inst.name || '';
+                const dbType = inst.db_type || 'oracle';
+                document.getElementById('edit-db-dbtype').value = dbType;
+                document.getElementById('edit-db-sid-label').textContent = dbType === 'oracle' ? 'SID' : 'Database';
                 document.getElementById('edit-db-host').value = inst.host || '';
                 document.getElementById('edit-db-port').value = inst.port || 1521;
                 document.getElementById('edit-db-sid').value = inst.sid || '';
@@ -403,6 +439,7 @@
                 const body = {
                     token,
                     name: document.getElementById('edit-db-name').value.trim(),
+                    db_type: document.getElementById('edit-db-dbtype').value,
                     host: document.getElementById('edit-db-host').value.trim(),
                     port: parseInt(document.getElementById('edit-db-port').value, 10) || 1521,
                     sid: document.getElementById('edit-db-sid').value.trim(),

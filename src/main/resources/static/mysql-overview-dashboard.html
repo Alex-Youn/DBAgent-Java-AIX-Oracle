@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MySQL Overview</title>
+<script src="lib/lucide.js"></script>
+<style>
+    :root {
+        --bg-page: #111217;
+        --bg-panel: #1f2024;
+        --border: #2c2d32;
+        --text: #d8d9da;
+        --text-muted: #8e8e8e;
+        --teal: #5ac8db;
+        --orange: #ff9830;
+        --green: #73bf69;
+        --blue: #5794f2;
+        --font: "Inter", "Helvetica Neue", Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        background: var(--bg-page);
+        color: var(--text);
+        font-family: var(--font);
+        font-size: 13px;
+        overflow-x: hidden;
+    }
+    .pmm-app { display: flex; min-height: 100vh; }
+
+    /* ---------- Sidebar ---------- */
+    .pmm-sidebar {
+        width: 58px;
+        flex: 0 0 58px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 10px 0;
+        gap: 4px;
+    }
+    .pmm-sidebar .side-icon {
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 6px;
+        color: var(--text-muted);
+        cursor: pointer;
+    }
+    .pmm-sidebar .side-icon:hover { background: #24252b; color: var(--text); }
+    .pmm-sidebar .side-icon.active { background: #33343b; color: var(--text); }
+    .pmm-sidebar .side-icon.grafana-mark { color: var(--orange); }
+    .pmm-sidebar .spacer { flex: 1; }
+    .pmm-sidebar .plugin-dot {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: #c0334d;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        margin-bottom: 6px;
+    }
+    .pmm-sidebar .plugin-dot i { width: 14px; height: 14px; }
+
+    /* ---------- Main column ---------- */
+    .pmm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+    /* ---------- Header ---------- */
+    .pmm-header {
+        height: 54px;
+        flex: 0 0 54px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--border);
+    }
+    .pmm-title { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600; }
+    .pmm-title .caret { color: var(--text-muted); width: 16px; height: 16px; }
+    .pmm-header-icons { display: flex; align-items: center; gap: 4px; }
+    .pmm-header-icons .hdr-icon {
+        width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+        color: var(--text-muted); border-radius: 4px; cursor: pointer;
+    }
+    .pmm-header-icons .hdr-icon:hover { background: #24252b; color: var(--text); }
+    .pmm-header-icons .divider { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
+    .time-range-pill {
+        display: flex; align-items: center; gap: 6px;
+        border: 1px solid var(--border); border-radius: 4px;
+        padding: 5px 10px; color: var(--text); cursor: pointer; white-space: nowrap;
+    }
+    .time-range-pill i { width: 14px; height: 14px; color: var(--text-muted); }
+    .refresh-label { color: var(--orange); white-space: nowrap; margin: 0 4px; cursor: pointer; }
+
+    /* ---------- Filter bar ---------- */
+    .pmm-filterbar {
+        height: 34px; flex: 0 0 34px;
+        display: flex; align-items: center; gap: 22px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--border);
+    }
+    .filter-group { display: flex; align-items: center; gap: 6px; }
+    .filter-label { color: var(--teal); font-weight: 600; }
+    .filter-label.white { color: var(--text); }
+    .filter-control {
+        display: flex; align-items: center; gap: 4px;
+        color: var(--text); background: transparent; cursor: pointer;
+    }
+    .filter-control i { width: 12px; height: 12px; color: var(--text-muted); }
+    .toggle-box {
+        width: 14px; height: 14px; border-radius: 2px;
+        background: var(--orange); display: flex; align-items: center; justify-content: center;
+    }
+    .toggle-box i { width: 10px; height: 10px; color: #111217; }
+
+    /* ---------- Top nav tabs ---------- */
+    .pmm-navtabs {
+        height: 36px; flex: 0 0 36px;
+        display: flex; align-items: center; justify-content: flex-end; gap: 18px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--border);
+        font-size: 12.5px;
+    }
+    .navtab { display: flex; align-items: center; gap: 5px; color: var(--text-muted); cursor: pointer; }
+    .navtab i { width: 13px; height: 13px; }
+    .navtab.active { color: var(--teal); }
+    .navtab:hover { color: var(--text); }
+    .back-link {
+        display: inline-flex; align-items: center; gap: 4px;
+        color: var(--text-muted); text-decoration: none; font-size: 12px;
+        padding: 4px 8px 4px 4px;
+    }
+    .back-link:hover { color: var(--teal); }
+    .back-link i { width: 14px; height: 14px; }
+    .live-badge {
+        font-size: 10px; font-weight: 700; letter-spacing: .03em;
+        color: #0b3d2e; background: var(--green); border-radius: 999px;
+        padding: 1px 7px; margin-left: 2px;
+    }
+    .live-count { font-size: 28px; font-weight: 700; color: var(--blue); line-height: 1; }
+    .live-count-label { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
+    .live-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .live-table th, .live-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+    .live-table th { color: var(--text-muted); font-weight: 600; }
+    .live-summary { display: flex; gap: 20px; margin-bottom: 10px; font-size: 12px; }
+    .live-summary strong { color: var(--text); }
+    .live-error { color: #ef4444; font-size: 12px; }
+
+    /* ---------- Content ---------- */
+    .pmm-content { padding: 14px 16px 40px; }
+
+    /* ---------- KPI collapsible row ---------- */
+    .kpi-toggle-row {
+        display: flex; align-items: center; gap: 8px; cursor: pointer;
+        color: var(--text-muted); margin-bottom: 8px; user-select: none;
+    }
+    .kpi-toggle-row i { width: 16px; height: 16px; transition: transform .15s ease; }
+    .kpi-toggle-row.collapsed i { transform: rotate(-90deg); }
+
+    .kpi-row {
+        display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 18px;
+        overflow: hidden;
+    }
+    .kpi-row.collapsed { display: none; }
+    .kpi-card {
+        position: relative;
+        background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px;
+        padding: 10px 12px 12px; min-height: 100px; overflow: hidden;
+    }
+    .kpi-card .info-icon { position: absolute; top: 8px; left: 8px; width: 13px; height: 13px; color: var(--text-muted); opacity: .6; }
+    .kpi-card .kpi-title { margin-left: 20px; color: var(--text-muted); font-size: 12px; }
+    .kpi-card .kpi-value { margin-top: 22px; font-size: 26px; font-weight: 700; line-height: 1; }
+    .kpi-card .kpi-value.green { color: var(--green); }
+    .kpi-card .kpi-value.orange { color: var(--orange); }
+    .kpi-card .kpi-value.white { color: var(--text); }
+    .kpi-card .kpi-sparkline { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; }
+    .kpi-card .kpi-gauge-track {
+        position: absolute; left: 12px; right: 12px; bottom: 14px; height: 8px;
+        background: #33343b; border-radius: 3px; overflow: hidden;
+    }
+    .kpi-card .kpi-gauge-fill { height: 100%; background: var(--orange); width: 90%; }
+
+    /* ---------- Accordion metric-group rows ---------- */
+    .metric-row {
+        background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px;
+        margin-bottom: 6px;
+    }
+    .metric-row > summary {
+        list-style: none; cursor: pointer; user-select: none;
+        display: flex; align-items: center; gap: 8px;
+        padding: 9px 12px; font-weight: 600;
+    }
+    .metric-row > summary::-webkit-details-marker { display: none; }
+    .metric-row > summary .chevron { width: 16px; height: 16px; color: var(--text-muted); transition: transform .15s ease; flex: 0 0 auto; }
+    .metric-row[open] > summary .chevron { transform: rotate(90deg); }
+    .metric-row > summary .row-title { flex: 0 0 auto; }
+    .metric-row > summary .panel-count { color: var(--text-muted); font-style: italic; font-weight: 400; font-size: 12px; }
+    .metric-row > summary .grip { margin-left: auto; color: var(--text-muted); width: 16px; height: 16px; flex: 0 0 auto; }
+    .metric-row .row-body {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px;
+        padding: 0 12px 12px;
+    }
+    .metric-panel {
+        background: #17181c; border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px;
+    }
+    .metric-panel .panel-title { color: var(--text-muted); font-size: 11.5px; margin-bottom: 4px; }
+    .metric-panel svg { display: block; width: 100%; height: 60px; }
+
+    /* ---------- Overview/Detail view tabs ---------- */
+    .view-tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+    .view-tab {
+        background: none; border: none; color: var(--text-muted); font-size: 13px; font-weight: 600;
+        padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; font-family: inherit;
+    }
+    .view-tab.active { color: var(--text); border-bottom-color: var(--teal); }
+    .view-tab:hover { color: var(--text); }
+
+    /* ---------- Detail view (real-data time-series+legend panels) ---------- */
+    .detail-note { color: var(--text-muted); font-size: 11.5px; margin: 0 0 14px; max-width: 900px; line-height: 1.5; }
+    .detail-row-title { font-weight: 600; margin: 18px 0 8px; display: flex; align-items: center; gap: 8px; }
+    .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 12px; }
+    .ts-panel {
+        background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px 4px;
+    }
+    .ts-panel .panel-title { color: var(--text-muted); font-size: 11.5px; text-align: center; margin-bottom: 2px; }
+    .ts-panel .y-label { fill: var(--text-muted); font-size: 8px; }
+</style>
+</head>
+<body>
+<div class="pmm-app">
+    <aside class="pmm-sidebar">
+        <div class="side-icon grafana-mark"><i data-lucide="flame"></i></div>
+        <div class="side-icon"><i data-lucide="plus"></i></div>
+        <div class="side-icon active"><i data-lucide="layout-grid"></i></div>
+        <div class="side-icon"><i data-lucide="bell"></i></div>
+        <div class="side-icon"><i data-lucide="settings"></i></div>
+        <div class="spacer"></div>
+        <div class="plugin-dot"><i data-lucide="bot"></i></div>
+        <div class="side-icon"><i data-lucide="help-circle"></i></div>
+    </aside>
+
+    <div class="pmm-main">
+        <a class="back-link" href="fleet-overview.html"><i data-lucide="arrow-left"></i> Fleet Overview로 돌아가기</a>
+        <header class="pmm-header">
+            <div class="pmm-title">
+                <span id="pmmTitle">MySQL Overview</span>
+                <i data-lucide="chevron-down" class="caret"></i>
+            </div>
+            <div class="pmm-header-icons">
+                <div class="hdr-icon"><i data-lucide="bar-chart-2"></i></div>
+                <div class="hdr-icon"><i data-lucide="star"></i></div>
+                <div class="hdr-icon"><i data-lucide="share-2"></i></div>
+                <div class="hdr-icon"><i data-lucide="save"></i></div>
+                <div class="hdr-icon"><i data-lucide="settings"></i></div>
+                <div class="divider"></div>
+                <div class="hdr-icon"><i data-lucide="chevron-left"></i></div>
+                <div class="hdr-icon"><i data-lucide="search"></i></div>
+                <div class="hdr-icon"><i data-lucide="chevron-right"></i></div>
+                <div class="time-range-pill"><i data-lucide="clock"></i><span>Last 12 hours</span></div>
+                <span class="refresh-label">Refresh every 1m</span>
+                <div class="hdr-icon"><i data-lucide="refresh-cw"></i></div>
+            </div>
+        </header>
+
+        <div class="pmm-filterbar">
+            <div class="filter-group">
+                <span class="filter-label">Interval</span>
+                <div class="filter-control"><span>auto</span><i data-lucide="chevron-down"></i></div>
+            </div>
+            <div class="filter-group">
+                <span class="filter-label">Host</span>
+                <div class="filter-control"><span>ecy-s-dbrm-001</span><i data-lucide="chevron-down"></i></div>
+            </div>
+            <div class="filter-group">
+                <span class="filter-label white">PMM Annotations</span>
+                <div class="toggle-box"><i data-lucide="check"></i></div>
+            </div>
+        </div>
+
+        <nav class="pmm-navtabs">
+            <div class="navtab" id="navMysql"><i data-lucide="database"></i>MySQL</div>
+            <div class="navtab" id="navMariadb"><i data-lucide="database"></i>MariaDB</div>
+            <div class="navtab" id="navPostgres"><i data-lucide="database"></i>PostgreSQL</div>
+        </nav>
+
+        <main class="pmm-content">
+            <div class="view-tabs">
+                <button type="button" class="view-tab active" id="tabDetailBtn" data-view="detail">Overview</button>
+                <button type="button" class="view-tab" id="tabOverviewBtn" data-view="overview">Detail</button>
+            </div>
+
+            <div id="overviewView" style="display:none;">
+                <div class="kpi-toggle-row" id="kpiToggle">
+                    <i data-lucide="chevron-down"></i>
+                </div>
+                <div class="kpi-row" id="kpiRow">
+                    <div class="kpi-card">
+                        <i data-lucide="info" class="info-icon"></i>
+                        <div class="kpi-title">MySQL Uptime <span class="live-badge">LIVE</span></div>
+                        <div class="kpi-value green" id="kpiUptime">불러오는 중...</div>
+                    </div>
+                    <div class="kpi-card">
+                        <i data-lucide="info" class="info-icon"></i>
+                        <div class="kpi-title">Current QPS <span class="live-badge">LIVE</span></div>
+                        <div class="kpi-value white" id="kpiQps">불러오는 중...</div>
+                    </div>
+                    <div class="kpi-card">
+                        <i data-lucide="info" class="info-icon"></i>
+                        <div class="kpi-title">InnoDB Buffer Pool Size <span class="live-badge">LIVE</span></div>
+                        <div class="kpi-value white" id="kpiBufferPool">불러오는 중...</div>
+                    </div>
+                    <div class="kpi-card">
+                        <i data-lucide="info" class="info-icon"></i>
+                        <div class="kpi-title">InnoDB Buffer Pool Hit Rate <span class="live-badge">LIVE</span></div>
+                        <div class="kpi-value orange" id="kpiHitRate">불러오는 중...</div>
+                        <div class="kpi-gauge-track"><div class="kpi-gauge-fill" id="kpiHitRateGauge" style="width:0;"></div></div>
+                    </div>
+                </div>
+
+                <div id="metricRows"></div>
+            </div>
+
+            <div id="detailView">
+                <div class="kpi-row" id="kpiRowDetail">
+                    <div class="kpi-card">
+                        <i data-lucide="info" class="info-icon"></i>
+                        <div class="kpi-title">MySQL Uptime <span class="live-badge">LIVE</span></div>
+                        <div class="kpi-value green" id="kpiUptime2">불러오는 중...</div>
+                    </div>
+                    <div class="kpi-card">
+                        <i data-lucide="info" class="info-icon"></i>
+                        <div class="kpi-title">Current QPS <span class="live-badge">LIVE</span></div>
+                        <div class="kpi-value white" id="kpiQps2">불러오는 중...</div>
+                    </div>
+                    <div class="kpi-card">
+                        <i data-lucide="info" class="info-icon"></i>
+                        <div class="kpi-title">InnoDB Buffer Pool Size <span class="live-badge">LIVE</span></div>
+                        <div class="kpi-value white" id="kpiBufferPool2">불러오는 중...</div>
+                    </div>
+                    <div class="kpi-card">
+                        <i data-lucide="info" class="info-icon"></i>
+                        <div class="kpi-title">InnoDB Buffer Pool Hit Rate <span class="live-badge">LIVE</span></div>
+                        <div class="kpi-value orange" id="kpiHitRate2">불러오는 중...</div>
+                        <div class="kpi-gauge-track"><div class="kpi-gauge-fill" id="kpiHitRateGauge2" style="width:0;"></div></div>
+                    </div>
+                </div>
+                <p class="detail-note">mysql-overview-dashboard-panels-detail.md가 묘사한 시계열 차트+범례 스타일로, 이 인스턴스의 실제 값을 표시합니다 - 시계열 이력 저장소가 없어 그래프는 평탄선으로만 표시됩니다.</p>
+                <div id="detailRows"></div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<script>
+(function () {
+    // Instance name comes from the Fleet Overview / sidebar link that navigated here
+    // (?db_id=...&db_type=...&name=...) - falls back to the generic title if opened directly.
+    const qs = new URLSearchParams(window.location.search);
+    const instanceName = qs.get('name');
+    const dbId = qs.get('db_id');
+    function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
+    if (instanceName) {
+        document.title = `${instanceName} - MySQL Overview`;
+        document.getElementById('pmmTitle').textContent = instanceName;
+    }
+
+    // Top-right engine nav (MySQL/MariaDB/PostgreSQL) - jumps to the first registered instance of that
+    // engine type (from the public /api/config instance list), landing on whichever dashboard page
+    // handles it (mysql-overview-dashboard.html for mysql/mariadb, postgres-overview-dashboard.html for
+    // postgres). The button for the current page's own engine is marked active and not clickable; a
+    // button for an engine with no registered instance is dimmed and inert instead of dead-linking.
+    (function wireEngineNav() {
+        const dbType = qs.get('db_type') || '';
+        const TARGET_PAGE = { mysql: 'mysql-overview-dashboard.html', mariadb: 'mysql-overview-dashboard.html', postgres: 'postgres-overview-dashboard.html' };
+        const NAV_IDS = { mysql: 'navMysql', mariadb: 'navMariadb', postgres: 'navPostgres' };
+        fetch('/api/config').then(res => res.json()).then(cfg => {
+            const firstByType = {};
+            (cfg.groups || []).forEach(g => (g.instances || []).forEach(inst => {
+                if (TARGET_PAGE[inst.db_type] && !firstByType[inst.db_type]) {
+                    firstByType[inst.db_type] = inst;
+                }
+            }));
+            Object.keys(NAV_IDS).forEach(engine => {
+                const el = document.getElementById(NAV_IDS[engine]);
+                if (!el) return;
+                if (engine === dbType) {
+                    el.classList.add('active');
+                    el.style.cursor = 'default';
+                    return;
+                }
+                const inst = firstByType[engine];
+                if (inst) {
+                    el.addEventListener('click', () => {
+                        window.location.href = `${TARGET_PAGE[engine]}?db_id=${encodeURIComponent(inst.id)}&db_type=${encodeURIComponent(engine)}&name=${encodeURIComponent(inst.name || inst.id)}`;
+                    });
+                } else {
+                    el.style.opacity = '0.4';
+                    el.style.cursor = 'default';
+                    el.title = '등록된 인스턴스가 없습니다.';
+                }
+            });
+        }).catch(() => {});
+    })();
+
+    // Every row except "System Charts" is wired to real data (see /api/rdb/storage, /api/rdb/sessions,
+    // /api/rdb/mysql_status - RdbMonitorController). System Charts (CPU/Memory/Disk IO/Network/Load/
+    // Swap) stays a placeholder mockup - those are OS-level host metrics with no SQL source, and a
+    // Docker-stats-based approach was considered and explicitly ruled out (scoped to real DB servers,
+    // not just the local Docker test instances).
+    const ROWS = [
+        { title: 'Storage Usage', panels: ['스키마별 사용량'], live: 'storage' },
+        { title: 'Connections', panels: ['MySQL Connections', 'Client Connections'], live: 'connections' },
+        { title: 'Table Locks', panels: ['MySQL Table Locks', 'MySQL Table Locks Waited'], live: 'tableLocks' },
+        { title: 'Temporary Objects', panels: ['MySQL Temporary Objects', 'MySQL Temporary Objects Rate'], live: 'tempObjects' },
+        { title: 'Sorts', panels: ['MySQL Sort Activity', 'MySQL Sort Rate'], live: 'sorts' },
+        { title: 'Aborted', panels: ['MySQL Aborted', 'MySQL Aborted Rate'], live: 'aborted' },
+        { title: 'Network', panels: ['MySQL Network Traffic', 'MySQL Network Traffic Rate'], live: 'network' },
+        { title: 'Memory', panels: ['MySQL Memory Overview'], live: 'memory' },
+        { title: 'Command, Handlers, Processes', panels: ['MySQL Command Counters Total', 'MySQL Handlers', 'MySQL Handlers Rate', 'MySQL Process States', 'MySQL Process States Hourly', 'MySQL Question and Command Counters'], live: 'commandHandlers' },
+        { title: 'Query Cache', panels: ['MySQL Query Cache Memory', 'MySQL Query Cache Activity'], live: 'queryCache' },
+        { title: 'Files and Tables', panels: ['MySQL Table Open Cache Status', 'MySQL Open Files'], live: 'filesAndTables' },
+        { title: 'Table Openings', panels: ['MySQL Table Definition Cache', 'MySQL Open Tables'], live: 'tableOpenings' },
+        { title: 'MySQL Table Definition Cache', panels: ['MySQL Table Definition Cache Efficiency'], live: 'tableDefCache' },
+        { title: 'System Charts', panels: ['CPU Usage', 'Memory', 'Disk IO', 'Network Traffic', 'Load Average', 'Swap'] }
+    ];
+
+    // Deterministic placeholder sparkline generator - not real metrics, purely decorative sample data.
+    function sparklinePath(seed, width, height, area) {
+        const points = 40;
+        let d = '';
+        let areaD = '';
+        for (let i = 0; i < points; i++) {
+            const x = (i / (points - 1)) * width;
+            const y = height * (0.5 - 0.38 * Math.sin(i * 0.35 + seed) * Math.cos(i * 0.12 + seed * 2) - 0.08 * Math.sin(i * 0.9 + seed));
+            d += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+        }
+        if (area) {
+            areaD = d + `L${width},${height} L0,${height} Z`;
+        }
+        return { line: d.trim(), area: areaD };
+    }
+
+    function renderSparkline(container, seed, color, filled) {
+        const width = container.clientWidth || 200;
+        const height = container.clientHeight || 34;
+        const { line, area } = sparklinePath(seed, width, height, filled);
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(svgNS, 'svg');
+        svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+        svg.style.width = '100%';
+        svg.style.height = '100%';
+        if (filled) {
+            const gradId = 'grad-' + Math.random().toString(36).slice(2);
+            const defs = document.createElementNS(svgNS, 'defs');
+            const grad = document.createElementNS(svgNS, 'linearGradient');
+            grad.setAttribute('id', gradId);
+            grad.setAttribute('x1', '0'); grad.setAttribute('y1', '0');
+            grad.setAttribute('x2', '0'); grad.setAttribute('y2', '1');
+            grad.innerHTML = `<stop offset="0%" stop-color="${color}" stop-opacity="0.45"/><stop offset="100%" stop-color="${color}" stop-opacity="0"/>`;
+            defs.appendChild(grad);
+            svg.appendChild(defs);
+            const areaPath = document.createElementNS(svgNS, 'path');
+            areaPath.setAttribute('d', area);
+            areaPath.setAttribute('fill', `url(#${gradId})`);
+            svg.appendChild(areaPath);
+        }
+        const linePath = document.createElementNS(svgNS, 'path');
+        linePath.setAttribute('d', line);
+        linePath.setAttribute('fill', 'none');
+        linePath.setAttribute('stroke', color);
+        linePath.setAttribute('stroke-width', '1.5');
+        svg.appendChild(linePath);
+        container.innerHTML = '';
+        container.appendChild(svg);
+    }
+
+    // Build the accordion rows (13 wired to real data, 1 - System Charts - stays a mockup).
+    const mount = document.getElementById('metricRows');
+    let seedCounter = 10;
+    const liveHolders = {}; // row.live -> [chartHolder, ...] in panel order, for the fetch functions below.
+    // Only the two headline sections start expanded; the rest keep the spec's original
+    // collapsed-by-default look even though their data is real and already loaded underneath.
+    const AUTO_OPEN = new Set(['storage', 'connections']);
+    ROWS.forEach(row => {
+        const details = document.createElement('details');
+        details.className = 'metric-row';
+        if (AUTO_OPEN.has(row.live)) details.open = true;
+
+        const summary = document.createElement('summary');
+        summary.innerHTML = `
+            <i data-lucide="chevron-right" class="chevron"></i>
+            <span class="row-title">${row.title}</span>
+            <span class="panel-count">(${row.panels.length} panel${row.panels.length > 1 ? 's' : ''})</span>
+            ${row.live ? '<span class="live-badge">LIVE</span>' : ''}
+            <i data-lucide="grip-vertical" class="grip"></i>
+        `;
+        details.appendChild(summary);
+
+        const body = document.createElement('div');
+        body.className = 'row-body';
+        row.panels.forEach(panelTitle => {
+            const panel = document.createElement('div');
+            panel.className = 'metric-panel';
+            const chartHolder = document.createElement('div');
+            panel.innerHTML = `<div class="panel-title">${panelTitle}</div>`;
+            panel.appendChild(chartHolder);
+            body.appendChild(panel);
+            if (row.live) {
+                chartHolder.innerHTML = dbId ? '불러오는 중...' : '<span class="live-error">db_id 없음</span>';
+                (liveHolders[row.live] = liveHolders[row.live] || []).push(chartHolder);
+                return;
+            }
+            seedCounter += 1;
+            // Render lazily once the row is opened for the first time (details starts collapsed).
+            details.addEventListener('toggle', function onToggle() {
+                if (details.open) {
+                    renderSparkline(chartHolder, seedCounter, '#5794f2', true);
+                }
+            });
+        });
+        details.appendChild(body);
+        mount.appendChild(details);
+    });
+
+    // ---- Real data: Storage Usage (/api/rdb/storage) ----
+    function loadStorage() {
+        const el = liveHolders.storage && liveHolders.storage[0];
+        if (!el || !dbId) return;
+        fetch(`/api/rdb/storage?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) { el.innerHTML = `<span class="live-error">DB Error: ${data.error}</span>`; return; }
+                if (!data.length) { el.innerHTML = '스토리지 정보가 없습니다.'; return; }
+                let sumTotal = 0, sumUsed = 0;
+                const rows = data.map(t => {
+                    sumTotal += Number(t.total_mb) || 0;
+                    sumUsed += Number(t.used_mb) || 0;
+                    return `<tr><td>${t.tablespace_name}</td><td>${t.status}</td><td>${Number(t.used_mb).toLocaleString()}</td></tr>`;
+                }).join('');
+                el.innerHTML = `
+                    <div class="live-summary">
+                        <span>전체 할당량: <strong>${sumTotal.toLocaleString()} MB</strong></span>
+                        <span>전체 사용량: <strong>${sumUsed.toLocaleString()} MB</strong></span>
+                        <span>전체 사용률: <strong>${sumTotal > 0 ? ((sumUsed / sumTotal) * 100).toFixed(1) : 0}%</strong></span>
+                    </div>
+                    <table class="live-table">
+                        <thead><tr><th>스키마</th><th>상태</th><th>사용량 (MB)</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                `;
+            })
+            .catch(err => { el.innerHTML = `<span class="live-error">${err.message}</span>`; });
+    }
+
+    // ---- Real data: Connections (/api/rdb/sessions) ----
+    function loadConnections() {
+        const holders = liveHolders.connections;
+        if (!holders || !dbId) return;
+        const [countEl, listEl] = holders;
+        fetch(`/api/rdb/sessions?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    countEl.innerHTML = `<span class="live-error">DB Error</span>`;
+                    listEl.innerHTML = `<span class="live-error">${data.error}</span>`;
+                    return;
+                }
+                countEl.innerHTML = `<div class="live-count">${data.length}</div><div class="live-count-label">현재 연결 수</div>`;
+                if (!data.length) { listEl.innerHTML = '연결이 없습니다.'; return; }
+                const rows = data.slice(0, 20).map(s => `
+                    <tr><td>${s.user || ''}</td><td>${s.host || ''}</td><td>${s.db || ''}</td><td>${s.command || s.state || ''}</td></tr>
+                `).join('');
+                listEl.innerHTML = `
+                    <table class="live-table">
+                        <thead><tr><th>계정</th><th>Host</th><th>DB</th><th>상태</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                `;
+            })
+            .catch(err => {
+                countEl.innerHTML = `<span class="live-error">오류</span>`;
+                listEl.innerHTML = `<span class="live-error">${err.message}</span>`;
+            });
+    }
+    loadStorage();
+    loadConnections();
+
+    // ---- Real data: the remaining status-counter rows (/api/rdb/mysql_status) ----
+    function renderMetricList(el, items) {
+        el.innerHTML = `<table class="live-table"><tbody>${
+            items.map(([label, value]) => `<tr><td>${label}</td><td style="text-align:right;">${value}</td></tr>`).join('')
+        }</tbody></table>`;
+    }
+    function renderBigNumber(el, value, label) {
+        el.innerHTML = `<div class="live-count">${value}</div><div class="live-count-label">${label}</div>`;
+    }
+    function fmtBytes(n) {
+        n = Number(n) || 0;
+        if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' GB';
+        if (n >= 1048576) return (n / 1048576).toFixed(2) + ' MB';
+        if (n >= 1024) return (n / 1024).toFixed(2) + ' KB';
+        return n + ' B';
+    }
+
+    function renderStatusPanels(d) {
+        if (d.error) {
+            Object.keys(liveHolders).forEach(key => {
+                if (key === 'storage' || key === 'connections') return;
+                (liveHolders[key] || []).forEach(el => { el.innerHTML = `<span class="live-error">${d.error}</span>`; });
+            });
+            return;
+        }
+        if (liveHolders.tableLocks) {
+            renderBigNumber(liveHolders.tableLocks[0], d.tableLocksImmediate.toLocaleString(), 'Immediate');
+            renderBigNumber(liveHolders.tableLocks[1], d.tableLocksWaited.toLocaleString(), 'Waited');
+        }
+        if (liveHolders.tempObjects) {
+            renderMetricList(liveHolders.tempObjects[0], [
+                ['Created Tmp Tables', d.createdTmpTables.toLocaleString()],
+                ['Created Tmp Disk Tables', d.createdTmpDiskTables.toLocaleString()],
+                ['Created Tmp Files', d.createdTmpFiles.toLocaleString()]
+            ]);
+            renderBigNumber(liveHolders.tempObjects[1], d.tmpDiskTablePct + '%', '디스크로 스필된 임시테이블 비율');
+        }
+        if (liveHolders.sorts) {
+            renderMetricList(liveHolders.sorts[0], [
+                ['Sort Rows', d.sortRows.toLocaleString()],
+                ['Sort Range', d.sortRange.toLocaleString()],
+                ['Sort Scan', d.sortScan.toLocaleString()]
+            ]);
+            renderBigNumber(liveHolders.sorts[1], d.sortMergePasses.toLocaleString(), 'Merge Passes');
+        }
+        if (liveHolders.aborted) {
+            renderBigNumber(liveHolders.aborted[0], d.abortedConnects.toLocaleString(), 'Aborted Connects');
+            renderBigNumber(liveHolders.aborted[1], d.abortedClients.toLocaleString(), 'Aborted Clients');
+        }
+        if (liveHolders.network) {
+            renderMetricList(liveHolders.network[0], [
+                ['Bytes Received', fmtBytes(d.bytesReceived)],
+                ['Bytes Sent', fmtBytes(d.bytesSent)]
+            ]);
+            renderMetricList(liveHolders.network[1], [
+                ['수신 평균 (서버 시작 이후)', fmtBytes(d.bytesReceivedPerSec) + '/s'],
+                ['송신 평균 (서버 시작 이후)', fmtBytes(d.bytesSentPerSec) + '/s']
+            ]);
+        }
+        if (liveHolders.memory) {
+            renderMetricList(liveHolders.memory[0], [
+                ['InnoDB Buffer Pool Data', fmtBytes(d.innodbBufferPoolBytesData)],
+                ['InnoDB Buffer Pool Dirty', fmtBytes(d.innodbBufferPoolBytesDirty)]
+            ]);
+        }
+        if (liveHolders.commandHandlers) {
+            const [cmdTotal, handlers, handlersRate, procStates, procHourly, questionsCmd] = liveHolders.commandHandlers;
+            renderMetricList(cmdTotal, [
+                ['Com_select', d.comSelect.toLocaleString()],
+                ['Com_insert', d.comInsert.toLocaleString()],
+                ['Com_update', d.comUpdate.toLocaleString()],
+                ['Com_delete', d.comDelete.toLocaleString()],
+                ['Com_replace', d.comReplace.toLocaleString()]
+            ]);
+            renderMetricList(handlers, [
+                ['Handler_read_key', d.handlerReadKey.toLocaleString()],
+                ['Handler_read_next', d.handlerReadNext.toLocaleString()],
+                ['Handler_read_rnd', d.handlerReadRnd.toLocaleString()],
+                ['Handler_read_rnd_next', d.handlerReadRndNext.toLocaleString()],
+                ['Handler_write', d.handlerWrite.toLocaleString()],
+                ['Handler_update', d.handlerUpdate.toLocaleString()],
+                ['Handler_delete', d.handlerDelete.toLocaleString()]
+            ]);
+            renderBigNumber(handlersRate, d.handlerTotalPerSec, 'Handlers/sec (평균)');
+            if (d.processStates && d.processStates.length) {
+                procStates.innerHTML = `<table class="live-table"><thead><tr><th>State</th><th>Count</th></tr></thead><tbody>${
+                    d.processStates.map(p => `<tr><td>${p.state}</td><td>${p.count}</td></tr>`).join('')
+                }</tbody></table>`;
+            } else {
+                procStates.innerHTML = '데이터가 없습니다.';
+            }
+            procHourly.innerHTML = '<span class="live-error">시계열 이력 저장소가 없어 이 항목은 지원하지 않습니다.</span>';
+            renderMetricList(questionsCmd, [
+                ['Questions', d.questions.toLocaleString()],
+                ['Com_commit', d.comCommit.toLocaleString()],
+                ['Com_rollback', d.comRollback.toLocaleString()],
+                ['Com_begin', d.comBegin.toLocaleString()]
+            ]);
+        }
+        if (liveHolders.queryCache) {
+            if (d.queryCacheSupported) {
+                renderMetricList(liveHolders.queryCache[0], [
+                    ['Qcache Free Memory', fmtBytes(d.qcacheFreeMemory)],
+                    ['Qcache Queries In Cache', d.qcacheQueriesInCache.toLocaleString()]
+                ]);
+                renderMetricList(liveHolders.queryCache[1], [
+                    ['Qcache Hits', d.qcacheHits.toLocaleString()],
+                    ['Qcache Inserts', d.qcacheInserts.toLocaleString()]
+                ]);
+            } else {
+                const msg = '<span class="live-error">이 서버는 쿼리 캐시를 지원하지 않습니다 (MySQL 8.0+에서 제거됨).</span>';
+                liveHolders.queryCache[0].innerHTML = msg;
+                liveHolders.queryCache[1].innerHTML = msg;
+            }
+        }
+        if (liveHolders.filesAndTables) {
+            renderMetricList(liveHolders.filesAndTables[0], [
+                ['Table Open Cache Hits', d.tableOpenCacheHits.toLocaleString()],
+                ['Table Open Cache Misses', d.tableOpenCacheMisses.toLocaleString()],
+                ['Table Open Cache Overflows', d.tableOpenCacheOverflows.toLocaleString()]
+            ]);
+            renderMetricList(liveHolders.filesAndTables[1], [
+                ['Open Files', d.openFiles.toLocaleString()],
+                ['Opened Files', d.openedFiles.toLocaleString()]
+            ]);
+        }
+        if (liveHolders.tableOpenings) {
+            renderBigNumber(liveHolders.tableOpenings[0], d.openTableDefinitions.toLocaleString(), 'Open Table Definitions');
+            renderMetricList(liveHolders.tableOpenings[1], [
+                ['Open Tables', d.openTables.toLocaleString()],
+                ['Opened Tables', d.openedTables.toLocaleString()]
+            ]);
+        }
+        if (liveHolders.tableDefCache) {
+            renderMetricList(liveHolders.tableDefCache[0], [
+                ['Open Table Definitions', d.openTableDefinitions.toLocaleString()],
+                ['Opened Table Definitions', d.openedTableDefinitions.toLocaleString()],
+                ['table_definition_cache (설정값)', d.tableDefinitionCacheSize.toLocaleString()]
+            ]);
+        }
+    }
+
+    // ---- Detail tab: mysql-overview-dashboard-panels-detail.md's time-series+legend chart style,
+    // rendered with this instance's real values. No time-series history exists, so every "line" is a
+    // flat horizontal line at a single value - not a real historical trend.
+    function renderTimeSeriesPanel(container, opts) {
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const W = 400, H = 150;
+        const padL = 34, padR = 8, padT = 10, padB = 20;
+        const plotW = W - padL - padR, plotH = H - padT - padB;
+        const yTicks = opts.yTicks;
+        const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
+        function yPix(v) { return padT + plotH - ((v - yMin) / ((yMax - yMin) || 1)) * plotH; }
+
+        let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:130px;display:block;">`;
+        yTicks.forEach(t => {
+            const y = yPix(t);
+            svg += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#2c2d32" stroke-width="1"/>`;
+            svg += `<text x="${padL - 4}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="8" fill="#8e8e8e">${t}</text>`;
+        });
+        (opts.xTicks || ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00']).forEach((t, i, arr) => {
+            const x = padL + (plotW * i) / (arr.length - 1);
+            svg += `<text x="${x.toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="8" fill="#8e8e8e">${t}</text>`;
+        });
+        if (opts.yLabel) {
+            svg += `<text x="10" y="${padT + plotH / 2}" text-anchor="middle" font-size="8" fill="#8e8e8e" transform="rotate(-90 10 ${padT + plotH / 2})">${opts.yLabel}</text>`;
+        }
+        opts.series.forEach(s => {
+            const baseY = yPix(s.value);
+            let points;
+            if (s.spikeAt != null) {
+                const spikeX = padL + plotW * s.spikeAt;
+                const spikeY = yPix(s.spikeValue);
+                points = `${padL},${baseY.toFixed(1)} ${(spikeX - 6).toFixed(1)},${baseY.toFixed(1)} ${spikeX.toFixed(1)},${spikeY.toFixed(1)} ${(spikeX + 6).toFixed(1)},${baseY.toFixed(1)} ${W - padR},${baseY.toFixed(1)}`;
+            } else {
+                points = `${padL},${baseY.toFixed(1)} ${W - padR},${baseY.toFixed(1)}`;
+            }
+            if (s.style === 'area') {
+                svg += `<polygon points="${points} ${W - padR},${(padT + plotH).toFixed(1)} ${padL},${(padT + plotH).toFixed(1)}" fill="${s.color}" fill-opacity="0.18"/>`;
+            }
+            const dash = s.dashed ? ' stroke-dasharray="3,2"' : '';
+            svg += `<polyline points="${points}" fill="none" stroke="${s.color}" stroke-width="1.5"${dash}/>`;
+            if (s.spikeAt != null) {
+                const spikeX = padL + plotW * s.spikeAt;
+                svg += `<circle cx="${spikeX.toFixed(1)}" cy="${yPix(s.spikeValue).toFixed(1)}" r="2.5" fill="#ef4444"/>`;
+            }
+        });
+        svg += `</svg>`;
+
+        const legendCols = opts.legendCols || ['min', 'max', 'avg'];
+        const legendRows = opts.series.map(s => `
+            <tr>
+                <td><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${s.color};margin-right:5px;"></span>${s.name}</td>
+                ${legendCols.map(c => `<td style="text-align:right;">${s.legend && s.legend[c] != null ? s.legend[c] : '-'}</td>`).join('')}
+            </tr>
+        `).join('');
+
+        container.innerHTML = `
+            <div class="ts-panel">
+                <div class="panel-title">${opts.title}</div>
+                ${svg}
+                <table class="live-table">
+                    <thead><tr><th>Series</th>${legendCols.map(c => `<th style="text-align:right;">${c}</th>`).join('')}</tr></thead>
+                    <tbody>${legendRows}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    // Rounds a max value up to a "nice" step and returns ~5 evenly spaced ticks from 0.
+    function niceTicks(maxVal) {
+        if (!maxVal || maxVal <= 0) return [0, 1, 2, 3, 4];
+        const rough = maxVal / 4;
+        const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+        const norm = rough / mag;
+        const step = norm < 1.5 ? mag : norm < 3 ? 2 * mag : norm < 7 ? 5 * mag : 10 * mag;
+        const ticks = [];
+        for (let t = 0; t <= maxVal + step; t += step) {
+            ticks.push(Math.round(t * 100) / 100);
+            if (ticks.length > 6) break;
+        }
+        return ticks;
+    }
+
+    // ---- Detail tab: mysql-overview-dashboard-panels-detail.md's time-series+legend chart style,
+    // driven entirely by this instance's real values (no mockup side-by-side anymore - see git history
+    // for the earlier compare-section version). Single column, one panel per row.
+    function buildDetailSection() {
+        const mount = document.getElementById('detailRows');
+        const groups = [
+            { label: 'Connections 행', keys: ['connections', 'threadActivity'] },
+            { label: 'Table Locks 행', keys: ['questions', 'threadCache'] }
+        ];
+        const holders = {};
+        groups.forEach(g => {
+            const title = document.createElement('div');
+            title.className = 'detail-row-title';
+            title.innerHTML = `${g.label} <span class="live-badge">LIVE</span>`;
+            mount.appendChild(title);
+
+            const grid = document.createElement('div');
+            grid.className = 'detail-grid';
+            g.keys.forEach(key => {
+                const slot = document.createElement('div');
+                slot.className = 'detail-slot';
+                slot.innerHTML = dbId ? '불러오는 중...' : '<span class="live-error">db_id 없음</span>';
+                grid.appendChild(slot);
+                holders[key] = slot;
+            });
+            mount.appendChild(grid);
+        });
+        return holders;
+    }
+    const detailHolders = buildDetailSection();
+
+    function renderDetailPanels(d) {
+        if (d.error) {
+            Object.values(detailHolders).forEach(el => { el.innerHTML = `<span class="live-error">${d.error}</span>`; });
+            return;
+        }
+        renderTimeSeriesPanel(detailHolders.connections, {
+            title: 'MySQL Connections',
+            yTicks: niceTicks(Math.max(d.maxConnections, d.maxUsedConnections, 1)),
+            series: [
+                { name: 'Max Connections', color: '#5ac8db', value: d.maxConnections, legend: { min: d.maxConnections, max: d.maxConnections, avg: d.maxConnections } },
+                { name: 'Max Used Connections', color: '#e0b400', value: d.maxUsedConnections, legend: { min: d.maxUsedConnections, max: d.maxUsedConnections, avg: d.maxUsedConnections } }
+            ]
+        });
+        renderTimeSeriesPanel(detailHolders.threadActivity, {
+            title: 'MySQL Client Thread Activity',
+            yTicks: niceTicks(Math.max(d.threadsConnected, d.threadsRunning, 1)),
+            yLabel: 'Threads',
+            legendCols: ['min', 'max', 'avg', 'current'],
+            series: [
+                { name: 'Threads Connected', color: '#5794f2', value: d.threadsConnected, legend: { min: d.threadsConnected, max: d.threadsConnected, avg: d.threadsConnected, current: d.threadsConnected } },
+                { name: 'Threads Running', color: '#ff9830', dashed: true, style: 'area', value: d.threadsRunning, legend: { min: d.threadsRunning, max: d.threadsRunning, avg: d.threadsRunning, current: d.threadsRunning } }
+            ]
+        });
+        renderTimeSeriesPanel(detailHolders.questions, {
+            title: 'MySQL Questions (평균/초)',
+            yTicks: niceTicks(Math.max(d.questionsPerSec, 1)),
+            series: [
+                { name: 'Questions/sec', color: '#73bf69', style: 'area', value: d.questionsPerSec, legend: { min: d.questionsPerSec, max: d.questionsPerSec, avg: d.questionsPerSec } }
+            ]
+        });
+        renderTimeSeriesPanel(detailHolders.threadCache, {
+            title: 'MySQL Thread Cache',
+            yTicks: niceTicks(Math.max(d.threadsCached, d.threadCacheSize, 1)),
+            series: [
+                { name: 'Threads Cached', color: '#73bf69', style: 'area', value: d.threadsCached, legend: { min: d.threadsCached, max: d.threadsCached, avg: d.threadsCached } }
+            ]
+        });
+    }
+
+    function loadStatusOverview() {
+        if (!dbId) return;
+        fetch(`/api/rdb/mysql_status?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
+            .then(res => res.json())
+            .then(d => { renderStatusPanels(d); renderDetailPanels(d); })
+            .catch(err => { renderStatusPanels({ error: err.message }); renderDetailPanels({ error: err.message }); });
+    }
+    loadStatusOverview();
+
+    // Overview / Detail tab switching.
+    const tabOverviewBtn = document.getElementById('tabOverviewBtn');
+    const tabDetailBtn = document.getElementById('tabDetailBtn');
+    const overviewView = document.getElementById('overviewView');
+    const detailView = document.getElementById('detailView');
+    function showView(view) {
+        overviewView.style.display = view === 'overview' ? 'block' : 'none';
+        detailView.style.display = view === 'detail' ? 'block' : 'none';
+        tabOverviewBtn.classList.toggle('active', view === 'overview');
+        tabDetailBtn.classList.toggle('active', view === 'detail');
+    }
+    tabOverviewBtn.addEventListener('click', () => showView('overview'));
+    tabDetailBtn.addEventListener('click', () => showView('detail'));
+
+    // ---- Real data: KPI row (uptime/QPS/buffer pool) via /api/rdb/mysql_overview ----
+    // MySQL/MariaDB only (see MySqlMonitorService.getOverviewStats) - this page is only reached for
+    // those db_types (rdbTargetPage() in app.js/fleet-overview.html sends Postgres to rdb-dashboard.html).
+    function loadKpiStats() {
+        const ids = ['kpiUptime', 'kpiQps', 'kpiBufferPool', 'kpiHitRate', 'kpiUptime2', 'kpiQps2', 'kpiBufferPool2', 'kpiHitRate2'];
+        if (!dbId) {
+            ids.forEach(id => { document.getElementById(id).innerHTML = '<span class="live-error">db_id 없음</span>'; });
+            return;
+        }
+        fetch(`/api/rdb/mysql_overview?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    ids.forEach(id => { document.getElementById(id).innerHTML = `<span class="live-error">${data.error}</span>`; });
+                    return;
+                }
+                ['kpiUptime', 'kpiUptime2'].forEach(id => { document.getElementById(id).textContent = data.uptimeLabel; });
+                ['kpiQps', 'kpiQps2'].forEach(id => { document.getElementById(id).textContent = data.qps; });
+                ['kpiBufferPool', 'kpiBufferPool2'].forEach(id => { document.getElementById(id).textContent = `${data.bufferPoolGib} GiB`; });
+                const hitRate = data.bufferPoolHitRatePct;
+                ['kpiHitRate', 'kpiHitRate2'].forEach(id => {
+                    const el = document.getElementById(id);
+                    el.textContent = `${hitRate}%`;
+                    el.className = 'kpi-value ' + (hitRate >= 99 ? 'green' : 'orange');
+                });
+                ['kpiHitRateGauge', 'kpiHitRateGauge2'].forEach(id => {
+                    document.getElementById(id).style.width = Math.min(100, Math.max(0, hitRate)) + '%';
+                });
+            })
+            .catch(err => {
+                ids.forEach(id => { document.getElementById(id).innerHTML = `<span class="live-error">${err.message}</span>`; });
+            });
+    }
+    loadKpiStats();
+
+    // KPI row collapse toggle.
+    const kpiToggle = document.getElementById('kpiToggle');
+    const kpiRow = document.getElementById('kpiRow');
+    kpiToggle.addEventListener('click', () => {
+        kpiToggle.classList.toggle('collapsed');
+        kpiRow.classList.toggle('collapsed');
+    });
+
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+})();
+</script>
+</body>
+</html>

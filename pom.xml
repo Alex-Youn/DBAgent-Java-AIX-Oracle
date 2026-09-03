@@ -47,6 +47,22 @@
             <version>1.4.200</version>
         </dependency>
 
+        <!-- MariaDB JDBC driver - also used for db_type=mysql (wire-protocol compatible with MySQL).
+             2.x branch, NOT 3.x - mariadb-java-client 3.x requires Java 11+; 2.7.9 is the last 2.x
+             release and stays Java 8 compatible, matching this AIX build's target. -->
+        <dependency>
+            <groupId>org.mariadb.jdbc</groupId>
+            <artifactId>mariadb-java-client</artifactId>
+            <version>2.7.9</version>
+        </dependency>
+
+        <!-- PostgreSQL JDBC driver - the 42.x branch stays Java 8 compatible. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.7.3</version>
+        </dependency>
+
         <!-- Password hashing (replaces werkzeug.security) -->
         <dependency>
             <groupId>org.springframework.security</groupId>

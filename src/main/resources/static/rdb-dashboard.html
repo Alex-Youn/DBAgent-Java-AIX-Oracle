@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DB InsightFlow</title>
+    <link rel="stylesheet" href="style.css?v=25">
+    <script src="lib/lucide.js"></script>
+    <script>
+        (function () {
+            const saved = localStorage.getItem('dbagent_theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
+    <style>
+        body { margin: 0; padding: 24px; background: var(--bg-main); color: var(--text-main); }
+        .rdb-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+        .rdb-back-link { color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 4px; }
+        .rdb-back-link:hover { color: var(--primary-color); }
+        .rdb-title { display: flex; align-items: center; gap: 10px; margin: 6px 0 20px; }
+        .rdb-title h2 { margin: 0; font-size: 1.4rem; }
+        .rdb-badge { font-size: 0.75rem; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: var(--primary-color); color: #fff; }
+        .rdb-panel { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+        .rdb-panel h3 { margin-top: 0; }
+    </style>
+</head>
+<body>
+    <div class="rdb-header">
+        <a class="rdb-back-link" href="fleet-overview.html"><i data-lucide="arrow-left" style="width:16px;height:16px;"></i> Fleet Overview로 돌아가기</a>
+    </div>
+    <div class="rdb-title">
+        <h2 id="rdb-name">불러오는 중...</h2>
+        <span class="rdb-badge" id="rdb-type-badge"></span>
+    </div>
+
+    <div class="rdb-panel">
+        <h3>세션 목록</h3>
+        <div class="table-container" style="max-height: 420px; overflow-y: auto;">
+            <table class="data-table" style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>계정</th>
+                        <th>Host</th>
+                        <th>DB / App</th>
+                        <th>상태</th>
+                        <th>경과(초)</th>
+                        <th>쿼리</th>
+                    </tr>
+                </thead>
+                <tbody id="rdb-sessions-tbody"><tr><td colspan="7" style="text-align:center; padding:20px;">불러오는 중...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="rdb-panel">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+            <h3>스토리지 사용량</h3>
+            <button id="rdb-refresh-btn" class="secondary-btn"><i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> 새로고침</button>
+        </div>
+        <div id="rdb-storage-summary" style="display: flex; gap: 32px; margin-bottom: 16px; padding: 12px 16px; background: var(--bg-main); border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.95rem;">
+            <div><span style="color: var(--text-secondary);">전체 할당량:</span> <strong id="rdb-total-mb" style="color: var(--text-main);">-- MB</strong></div>
+            <div><span style="color: var(--text-secondary);">전체 사용량:</span> <strong id="rdb-used-mb" style="color: var(--text-main);">-- MB</strong></div>
+            <div><span style="color: var(--text-secondary);">전체 사용률:</span> <strong id="rdb-total-pct" style="color: var(--text-main);">--%</strong></div>
+        </div>
+        <div class="table-container" style="max-height: 360px; overflow-y: auto;">
+            <table class="data-table" style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th>스키마 / 데이터베이스</th>
+                        <th>상태</th>
+                        <th>사용량 (MB)</th>
+                    </tr>
+                </thead>
+                <tbody id="rdb-storage-tbody"><tr><td colspan="3" style="text-align:center; padding:20px;">불러오는 중...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
+            function qs(name) { return new URLSearchParams(window.location.search).get(name) || ''; }
+
+            const dbId = qs('db_id');
+            const dbType = qs('db_type') || 'oracle';
+            const name = qs('name') || dbId;
+            const ENGINE_LABEL = { mysql: 'MySQL', mariadb: 'MariaDB', postgres: 'PostgreSQL' };
+
+            document.title = `${name} - DB InsightFlow`;
+            document.getElementById('rdb-name').textContent = name;
+            document.getElementById('rdb-type-badge').textContent = ENGINE_LABEL[dbType] || dbType;
+
+            const sessionsTbody = document.getElementById('rdb-sessions-tbody');
+            const storageTbody = document.getElementById('rdb-storage-tbody');
+
+            if (!getToken() || !dbId) {
+                const msg = '<tr><td colspan="7" style="text-align:center; color:#d03b3b; padding:20px;">인증 정보 또는 DB 정보가 없습니다. Fleet Overview에서 다시 열어주세요.</td></tr>';
+                sessionsTbody.innerHTML = msg;
+                storageTbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:20px;">-</td></tr>';
+                return;
+            }
+
+            function loadSessions() {
+                sessionsTbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px;">불러오는 중...</td></tr>';
+                fetch(`/api/rdb/sessions?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.error) {
+                            sessionsTbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#d03b3b; padding:20px;">DB Error: ${data.error}</td></tr>`;
+                            return;
+                        }
+                        if (!data.length) {
+                            sessionsTbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px;">세션이 없습니다.</td></tr>';
+                            return;
+                        }
+                        sessionsTbody.innerHTML = data.map(s => {
+                            const id = s.id != null ? s.id : s.pid;
+                            const dbOrApp = s.db != null ? s.db : (s.application_name || '');
+                            const state = s.state != null ? s.state : (s.command || '');
+                            const duration = s.time != null ? s.time : (s.duration_sec != null ? Math.round(s.duration_sec) : '');
+                            const query = (s.info || '').toString().slice(0, 200);
+                            return `
+                                <tr>
+                                    <td>${id != null ? id : ''}</td>
+                                    <td>${s.user || ''}</td>
+                                    <td>${s.host || ''}</td>
+                                    <td>${dbOrApp}</td>
+                                    <td>${state}</td>
+                                    <td>${duration}</td>
+                                    <td style="font-family: monospace; font-size: 0.85em; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${(s.info || '').toString().replace(/"/g, '&quot;')}">${query}</td>
+                                </tr>
+                            `;
+                        }).join('');
+                    })
+                    .catch(err => {
+                        sessionsTbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#d03b3b; padding:20px;">${err.message}</td></tr>`;
+                    });
+            }
+
+            function loadStorage() {
+                storageTbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:20px;">불러오는 중...</td></tr>';
+                const totalMbEl = document.getElementById('rdb-total-mb');
+                const usedMbEl = document.getElementById('rdb-used-mb');
+                const totalPctEl = document.getElementById('rdb-total-pct');
+                fetch(`/api/rdb/storage?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.error) {
+                            storageTbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#d03b3b; padding:20px;">DB Error: ${data.error}</td></tr>`;
+                            totalMbEl.textContent = '-- MB'; usedMbEl.textContent = '-- MB'; totalPctEl.textContent = '--%';
+                            return;
+                        }
+                        if (!data.length) {
+                            storageTbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:20px;">스토리지 정보가 없습니다.</td></tr>';
+                            totalMbEl.textContent = '0 MB'; usedMbEl.textContent = '0 MB'; totalPctEl.textContent = '0%';
+                            return;
+                        }
+                        let sumTotalMb = 0, sumUsedMb = 0;
+                        storageTbody.innerHTML = data.map(t => {
+                            sumTotalMb += Number(t.total_mb) || 0;
+                            sumUsedMb += Number(t.used_mb) || 0;
+                            return `
+                                <tr>
+                                    <td>${t.tablespace_name}</td>
+                                    <td><span class="status-badge online">${t.status}</span></td>
+                                    <td>${Number(t.used_mb).toLocaleString()}</td>
+                                </tr>
+                            `;
+                        }).join('');
+                        totalMbEl.textContent = `${sumTotalMb.toLocaleString()} MB`;
+                        usedMbEl.textContent = `${sumUsedMb.toLocaleString()} MB`;
+                        totalPctEl.textContent = sumTotalMb > 0 ? `${((sumUsedMb / sumTotalMb) * 100).toFixed(1)}%` : '0%';
+                    })
+                    .catch(err => {
+                        storageTbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#d03b3b; padding:20px;">${err.message}</td></tr>`;
+                    });
+            }
+
+            document.getElementById('rdb-refresh-btn').addEventListener('click', () => { loadSessions(); loadStorage(); });
+
+            loadSessions();
+            loadStorage();
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        })();
+    </script>
+</body>
+</html>

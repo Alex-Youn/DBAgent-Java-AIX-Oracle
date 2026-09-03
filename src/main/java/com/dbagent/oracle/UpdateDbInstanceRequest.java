@@ -11,6 +11,8 @@ public final class UpdateDbInstanceRequest {
 
     private final String token;
     private final String name;
+    // "oracle" (default) / "mysql" / "mariadb" / "postgres" - see TargetDbConfig.
+    private final String dbType;
     private final String host;
     private final int port;
     private final String sid;
@@ -29,6 +31,7 @@ public final class UpdateDbInstanceRequest {
     public UpdateDbInstanceRequest(
             @JsonProperty("token") String token,
             @JsonProperty("name") String name,
+            @JsonProperty("db_type") String dbType,
             @JsonProperty("host") String host,
             @JsonProperty("port") int port,
             @JsonProperty("sid") String sid,
@@ -40,6 +43,7 @@ public final class UpdateDbInstanceRequest {
             @JsonProperty("session_thresholds") List<Integer> sessionThresholds) {
         this.token = token;
         this.name = name;
+        this.dbType = dbType;
         this.host = host;
         this.port = port;
         this.sid = sid;
@@ -57,6 +61,10 @@ public final class UpdateDbInstanceRequest {
 
     public String name() {
         return name;
+    }
+
+    public String dbType() {
+        return dbType;
     }
 
     public String host() {

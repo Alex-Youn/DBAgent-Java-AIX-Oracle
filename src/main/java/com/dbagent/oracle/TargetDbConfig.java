@@ -4,6 +4,8 @@ public final class TargetDbConfig {
 
     private final String id;
     private final String name;
+    // "oracle" (default, legacy instances have no db_type in databases.json) / "mysql" / "mariadb" / "postgres".
+    private final String dbType;
     private final String user;
     private final String password;
     private final String host;
@@ -13,10 +15,11 @@ public final class TargetDbConfig {
     private final Integer poolMinIdle;
     private final Integer poolMaxSize;
 
-    public TargetDbConfig(String id, String name, String user, String password, String host, int port, String sid,
-                           Integer poolMinIdle, Integer poolMaxSize) {
+    public TargetDbConfig(String id, String name, String dbType, String user, String password, String host, int port,
+                           String sid, Integer poolMinIdle, Integer poolMaxSize) {
         this.id = id;
         this.name = name;
+        this.dbType = dbType;
         this.user = user;
         this.password = password;
         this.host = host;
@@ -32,6 +35,10 @@ public final class TargetDbConfig {
 
     public String name() {
         return name;
+    }
+
+    public String dbType() {
+        return dbType;
     }
 
     public String user() {

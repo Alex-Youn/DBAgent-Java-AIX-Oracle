@@ -78,8 +78,11 @@ public class SqlTuningController {
         if (query == null || Strings.isBlank(query)) {
             return ResponseEntity.ok(Maps.of("success", false, "message", "쿼리를 입력해주세요."));
         }
+        TargetDbConfig target = configService.resolve(req.dbId(), req.account());
+        if (target == null) {
+            return ResponseEntity.ok(Maps.of("success", false, "message", "등록되지 않은 DB입니다."));
+        }
         try {
-            TargetDbConfig target = configService.resolve(req.dbId(), req.account());
             String plan = executionPlanService.explainActual(target, query, req.binds());
             if (plan == null || Strings.isBlank(plan)) {
                 return ResponseEntity.ok(Maps.of("success", false, "message", "실행계획을 가져오지 못했습니다."));
@@ -99,8 +102,11 @@ public class SqlTuningController {
         if (req.hashValue() == null || Strings.isBlank(req.hashValue())) {
             return ResponseEntity.ok(Maps.of("success", false, "message", "HASH_VALUE를 입력해주세요."));
         }
+        TargetDbConfig target = configService.resolve(req.dbId(), req.account());
+        if (target == null) {
+            return ResponseEntity.ok(Maps.of("success", false, "message", "등록되지 않은 DB입니다."));
+        }
         try {
-            TargetDbConfig target = configService.resolve(req.dbId(), req.account());
             Map<String, String> binds = executionPlanService.fetchBindCapture(target, req.hashValue());
             if (binds.isEmpty()) {
                 return ResponseEntity.ok(Maps.of("success", false,

@@ -1,6 +1,7 @@
 package com.dbagent.oracle;
 
 import com.dbagent.auth.AuthService;
+import com.dbagent.rdb.RdbConnectionPoolManager;
 import com.dbagent.util.Maps;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -25,12 +26,14 @@ public class DbConfigAdminController {
     private final AuthService authService;
     private final DatabaseConfigService configService;
     private final OracleConnectionPoolManager poolManager;
+    private final RdbConnectionPoolManager rdbPoolManager;
 
     public DbConfigAdminController(AuthService authService, DatabaseConfigService configService,
-            OracleConnectionPoolManager poolManager) {
+            OracleConnectionPoolManager poolManager, RdbConnectionPoolManager rdbPoolManager) {
         this.authService = authService;
         this.configService = configService;
         this.poolManager = poolManager;
+        this.rdbPoolManager = rdbPoolManager;
     }
 
     @PostMapping("/api/db_configs")
@@ -39,8 +42,8 @@ public class DbConfigAdminController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Maps.of("success", false, "message", "관리자만 DB를 추가할 수 있습니다."));
         }
-        return ResponseEntity.ok(configService.createInstance(req.groupName(), req.id(), req.name(), req.host(),
-                req.port(), req.sid(), req.user(), req.password(), req.poolMinIdle(), req.poolMaxSize(),
+        return ResponseEntity.ok(configService.createInstance(req.groupName(), req.id(), req.name(), req.dbType(),
+                req.host(), req.port(), req.sid(), req.user(), req.password(), req.poolMinIdle(), req.poolMaxSize(),
                 req.accounts(), req.sessionThresholds()));
     }
 
@@ -50,12 +53,17 @@ public class DbConfigAdminController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Maps.of("success", false, "message", "관리자만 DB를 수정할 수 있습니다."));
         }
-        Map<String, Object> result = configService.updateInstance(id, req.name(), req.host(), req.port(), req.sid(),
-                req.user(), req.password(), req.poolMinIdle(), req.poolMaxSize(), req.accounts(), req.sessionThresholds());
+        Map<String, Object> result = configService.updateInstance(id, req.name(), req.dbType(), req.host(),
+                req.port(), req.sid(), req.user(), req.password(), req.poolMinIdle(), req.poolMaxSize(),
+                req.accounts(), req.sessionThresholds());
         if (Boolean.TRUE.equals(result.get("success"))) {
-            // Host/user/port may have changed - evict any pool cached under this db_id's old key so the
-            // next request builds a fresh one instead of talking to the old target forever.
+            // Host/user/port (or db_type itself) may have changed - evict any pool cached under this
+            // db_id's old key so the next request builds a fresh one instead of talking to the old
+            // target forever. Evicting both managers unconditionally is harmless (a no-op if this id
+            // never had a pool of that kind) and correctly handles an instance's db_type changing
+            // between oracle and mysql/mariadb/postgres across the edit.
             poolManager.evictPoolsForDbId(id);
+            rdbPoolManager.evictPoolsForDbId(id);
         }
         return ResponseEntity.ok(result);
     }
@@ -69,6 +77,7 @@ public class DbConfigAdminController {
         Map<String, Object> result = configService.deleteInstance(id);
         if (Boolean.TRUE.equals(result.get("success"))) {
             poolManager.evictPoolsForDbId(id);
+            rdbPoolManager.evictPoolsForDbId(id);
         }
         return ResponseEntity.ok(result);
     }

@@ -27,6 +27,10 @@ public class PoolTestController {
     @GetMapping("/api/pool/test")
     public ResponseEntity<Map<String, Object>> test(@RequestParam("db_id") String dbId) {
         TargetDbConfig target = configService.resolve(dbId);
+        if (target == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Maps.of("success", false, "message", "등록되지 않은 DB입니다."));
+        }
         try (Connection conn = poolManager.getConnection(target);
              Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery("SELECT 1 FROM dual")) {

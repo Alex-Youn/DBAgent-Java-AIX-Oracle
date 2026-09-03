@@ -49,21 +49,39 @@ public class DatabaseConfigService {
         fallback = loadOracleEnvFallback(new File(oracleEnvPath));
     }
 
+    /**
+     * A blank/missing dbId deliberately still resolves to the oracle.env fallback - app.js fires several
+     * requests with db_id="" before the user has picked an instance (window.currentDbId starts blank),
+     * and canAccessDb() treats a blank dbId as always-allowed for the same reason. But a *non-blank*
+     * dbId that doesn't match any registered instance - a typo, a stale bookmark, a removed instance -
+     * now returns null instead of silently substituting a real but unrelated DB (see history: this used
+     * to fall back to the same oracle.env DB in that case too, which let any authenticated account view
+     * or query that DB via a bogus db_id, and made stale/broken links fail silently instead of loudly).
+     * Callers must treat a null result as "DB not found", not attempt to connect to it.
+     */
     public TargetDbConfig resolve(String dbId) {
+        if (Strings.isBlank(dbId)) {
+            return fallback;
+        }
         JsonNode inst = findInstance(dbId);
-        return inst != null ? fromInstance(inst) : fallback;
+        return inst != null ? fromInstance(inst) : null;
     }
 
     /**
      * Same as resolve(dbId), but if account is non-blank and doesn't match the instance's default
      * user, looks it up in the instance's optional "accounts" array (see databases.json) and returns
      * a TargetDbConfig with that account's user/password instead, keeping the same host/port/sid/id.
-     * Falls back to the default account if account is blank or isn't found in "accounts".
+     * Falls back to the default account if account is blank or isn't found in "accounts". See
+     * resolve(dbId) above for why a blank dbId still resolves to the oracle.env fallback while an
+     * unknown non-blank dbId now returns null.
      */
     public TargetDbConfig resolve(String dbId, String account) {
+        if (Strings.isBlank(dbId)) {
+            return fallback;
+        }
         JsonNode inst = findInstance(dbId);
         if (inst == null) {
-            return fallback;
+            return null;
         }
         TargetDbConfig base = fromInstance(inst);
         if (account == null || Strings.isBlank(account) || account.equals(base.user())) {
@@ -74,6 +92,7 @@ public class DatabaseConfigService {
                 return new TargetDbConfig(
                         base.id(),
                         base.name(),
+                        base.dbType(),
                         acc.path("user").asText(),
                         resolvePassword(acc.path("password").asText("")),
                         base.host(),
@@ -86,12 +105,19 @@ public class DatabaseConfigService {
         return base;
     }
 
-    /** Default account first, followed by any accounts listed in the instance's optional "accounts" array. */
+    /**
+     * Default account first, followed by any accounts listed in the instance's optional "accounts"
+     * array. A blank dbId lists the oracle.env fallback's account, matching resolve(dbId)'s handling
+     * of a blank dbId; a non-blank but unregistered dbId lists no accounts rather than leaking the
+     * fallback account's identity for an id that was never actually registered.
+     */
     public List<String> listAccounts(String dbId) {
         JsonNode inst = findInstance(dbId);
         List<String> users = new ArrayList<>();
         if (inst == null) {
-            users.add(fallback.user());
+            if (Strings.isBlank(dbId)) {
+                users.add(fallback.user());
+            }
             return users;
         }
         users.add(inst.path("user").asText("SYS"));
@@ -139,6 +165,7 @@ public class DatabaseConfigService {
         return new TargetDbConfig(
                 inst.path("id").asText(),
                 inst.path("name").asText(""),
+                inst.path("db_type").asText("oracle"),
                 inst.path("user").asText("SYS"),
                 resolvePassword(inst.path("password").asText("")),
                 inst.path("host").asText(""),
@@ -213,6 +240,7 @@ public class DatabaseConfigService {
         return new TargetDbConfig(
                 "default",
                 "Default (oracle.env)",
+                "oracle",
                 kv.getOrDefault("USER", "SYS"),
                 resolvePassword(kv.getOrDefault("PASSWORD", "")),
                 kv.getOrDefault("HOST", ""),
@@ -243,8 +271,8 @@ public class DatabaseConfigService {
     }
 
     /** Admin UI: add a new DB instance under groupName (created if it doesn't already exist). */
-    public Map<String, Object> createInstance(String groupName, String id, String name, String host, int port,
-            String sid, String user, String password, Integer poolMinIdle, Integer poolMaxSize,
+    public Map<String, Object> createInstance(String groupName, String id, String name, String dbType, String host,
+            int port, String sid, String user, String password, Integer poolMinIdle, Integer poolMaxSize,
             List<Map<String, String>> accounts, List<Integer> sessionThresholds) {
         if (Strings.isBlank(id)) {
             return Maps.of("success", false, "message", "ID는 필수입니다.");
@@ -265,6 +293,7 @@ public class DatabaseConfigService {
             ObjectNode inst = mapper.createObjectNode();
             inst.put("id", id);
             inst.put("name", name == null ? "" : name);
+            inst.put("db_type", Strings.isBlank(dbType) ? "oracle" : dbType);
             inst.put("host", host == null ? "" : host);
             inst.put("port", port);
             inst.put("sid", sid == null ? "" : sid);
@@ -288,8 +317,8 @@ public class DatabaseConfigService {
     }
 
     /** Admin UI: update an existing instance's fields. Blank/null password keeps the stored value. */
-    public Map<String, Object> updateInstance(String id, String name, String host, int port, String sid,
-            String user, String password, Integer poolMinIdle, Integer poolMaxSize,
+    public Map<String, Object> updateInstance(String id, String name, String dbType, String host, int port,
+            String sid, String user, String password, Integer poolMinIdle, Integer poolMaxSize,
             List<Map<String, String>> accounts, List<Integer> sessionThresholds) {
         synchronized (writeLock) {
             ObjectNode root = ((ObjectNode) config).deepCopy();
@@ -300,6 +329,7 @@ public class DatabaseConfigService {
             }
             JsonNode existingAccounts = inst.path("accounts");
             inst.put("name", name == null ? "" : name);
+            inst.put("db_type", Strings.isBlank(dbType) ? "oracle" : dbType);
             inst.put("host", host == null ? "" : host);
             inst.put("port", port);
             inst.put("sid", sid == null ? "" : sid);
