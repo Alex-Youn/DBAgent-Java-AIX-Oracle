@@ -23,13 +23,16 @@ public class RdbMonitorController {
     private final DatabaseConfigService configService;
     private final MySqlMonitorService mySqlMonitorService;
     private final PostgresMonitorService postgresMonitorService;
+    private final MsSqlMonitorService msSqlMonitorService;
 
     public RdbMonitorController(AuthService authService, DatabaseConfigService configService,
-            MySqlMonitorService mySqlMonitorService, PostgresMonitorService postgresMonitorService) {
+            MySqlMonitorService mySqlMonitorService, PostgresMonitorService postgresMonitorService,
+            MsSqlMonitorService msSqlMonitorService) {
         this.authService = authService;
         this.configService = configService;
         this.mySqlMonitorService = mySqlMonitorService;
         this.postgresMonitorService = postgresMonitorService;
+        this.msSqlMonitorService = msSqlMonitorService;
     }
 
     @GetMapping("/sessions")
@@ -139,9 +142,48 @@ public class RdbMonitorController {
         return ResponseEntity.ok(postgresMonitorService.getStatusOverview(target));
     }
 
+    // MS SQL Server-only KPI stats (uptime/batch requests/buffer memory/cache hit rate) for
+    // mssql-overview-dashboard.html - see MsSqlMonitorService.getOverviewStats() javadoc.
+    @GetMapping("/mssql_overview")
+    public ResponseEntity<Object> mssqlOverview(@RequestParam(required = false) String db_id,
+                                                 @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null) {
+            return dbNotFound();
+        }
+        if (!"mssql".equals(target.dbType())) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "MS SQL Server 전용 API입니다."));
+        }
+        return ResponseEntity.ok(msSqlMonitorService.getOverviewStats(target));
+    }
+
+    // MS SQL Server-only status counters (connections/batch activity/locks/wait stats/memory/tempdb/
+    // I/O) - see MsSqlMonitorService.getStatusOverview() javadoc.
+    @GetMapping("/mssql_status")
+    public ResponseEntity<Object> mssqlStatus(@RequestParam(required = false) String db_id,
+                                               @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null) {
+            return dbNotFound();
+        }
+        if (!"mssql".equals(target.dbType())) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "MS SQL Server 전용 API입니다."));
+        }
+        return ResponseEntity.ok(msSqlMonitorService.getStatusOverview(target));
+    }
+
     private EngineMonitorService engineFor(TargetDbConfig target) {
         if ("postgres".equals(target.dbType())) {
             return postgresMonitorService;
+        }
+        if ("mssql".equals(target.dbType())) {
+            return msSqlMonitorService;
         }
         // mysql/mariadb (and any unrecognized non-oracle type falls back here rather than 500ing).
         return mySqlMonitorService;

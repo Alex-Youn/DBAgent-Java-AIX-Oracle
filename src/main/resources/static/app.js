@@ -384,6 +384,7 @@ function getToken() {
         function rdbTargetPage(dbType) {
             if (dbType === 'mysql' || dbType === 'mariadb') return 'mysql-overview-dashboard.html';
             if (dbType === 'postgres') return 'postgres-overview-dashboard.html';
+            if (dbType === 'mssql') return 'mssql-overview-dashboard.html';
             return 'rdb-dashboard.html';
         }
 
@@ -403,10 +404,33 @@ function getToken() {
                 // for them when the account was created (or later, via 계정 관리 > 수정).
                 const restrictedDbs = isAdmin() ? new Set() : new Set(getAccountHiddenDbs());
 
+                // A stale/old bookmark (or someone hand-typing a URL) can still land on
+                // index.html?db_id=<mysql/mariadb/postgres/mssql instance> even though Fleet
+                // Overview itself never generates such a link anymore (it goes straight to the
+                // engine's own dashboard page). Since the sidebar below only ever iterates
+                // Oracle instances now (2026-09-04, see the oracleInstances filter), that redirect
+                // has to be checked here against the full unfiltered instance list, before the
+                // per-group loop, or it silently stops firing.
+                if (jumpToDbId) {
+                    for (const group of data.groups) {
+                        const jumpInst = group.instances.find(inst => inst.id === jumpToDbId);
+                        if (jumpInst && jumpInst.db_type && jumpInst.db_type !== 'oracle') {
+                            window.location.href = `${rdbTargetPage(jumpInst.db_type)}?db_id=${encodeURIComponent(jumpInst.id)}&db_type=${encodeURIComponent(jumpInst.db_type)}&name=${encodeURIComponent(jumpInst.name || jumpInst.id)}`;
+                            return;
+                        }
+                    }
+                }
+
                 data.groups.forEach((group, gIdx) => {
+                    // Oracle 전용 사이드바 - MySQL/MariaDB/PostgreSQL/MS SQL Server 인스턴스는 각자
+                    // 전용 PMM 스타일 대시보드(mysql/postgres/mssql-overview-dashboard.html)의 왼쪽
+                    // 트리에 이미 따로 표시되므로 여기서는 제외 (사용자 지적, 2026-09-04: "왜 오라클
+                    // 대시보드 좌측 화면에 붙어 있지?"). db_type이 없는 레거시 인스턴스는 오라클로 취급.
+                    const oracleInstances = group.instances.filter(inst => !inst.db_type || inst.db_type === 'oracle');
+                    if (!oracleInstances.length) return;
                     // If every instance in this group is restricted for the account, don't
                     // show the group at all (no point showing an empty accordion header).
-                    if (!isAdmin() && group.instances.every(inst => restrictedDbs.has(inst.id))) {
+                    if (!isAdmin() && oracleInstances.every(inst => restrictedDbs.has(inst.id))) {
                         return;
                     }
 
@@ -435,7 +459,7 @@ function getToken() {
                     instancesDiv.style.borderLeft = '2px solid var(--border)';
                     instancesDiv.style.marginTop = '5px';
                     
-                    group.instances.forEach((inst, iIdx) => {
+                    oracleInstances.forEach((inst, iIdx) => {
                         const instLink = document.createElement('a');
                         instLink.href = '#dashboard';
                         instLink.className = 'instance-item';
@@ -459,15 +483,6 @@ function getToken() {
                         
                         instLink.addEventListener('click', (e) => {
                             e.preventDefault();
-
-                            // Oracle 전용 탭 시스템(switchTab 이하 전부)으로 들어가지 않고 엔진별 경량
-                            // 대시보드로 보낸다 - MySQL/MariaDB/PostgreSQL 인스턴스는 이 사이드바를 갖지
-                            // 않는 독립 페이지에서 처리된다.
-                            const dbType = inst.db_type || 'oracle';
-                            if (dbType !== 'oracle') {
-                                window.location.href = `${rdbTargetPage(dbType)}?db_id=${encodeURIComponent(inst.id)}&db_type=${encodeURIComponent(dbType)}&name=${encodeURIComponent(inst.name || inst.id)}`;
-                                return;
-                            }
 
                             // Reset all links colors (unselected instances shown in blue, not muted gray)
                             document.querySelectorAll('.instance-item').forEach(el => {
@@ -501,19 +516,17 @@ function getToken() {
                         instancesDiv.appendChild(instLink);
                         
                         // Auto-select: the requested db_id if one was given (jumpToDbId), otherwise
-                        // the first non-restricted instance across all groups. If db_id was given but
-                        // never matches (unknown id, or restricted for this account), nothing here
-                        // auto-selects - no silent fallback to "first", so a stale/bad link doesn't
+                        // the first non-restricted instance across all groups. oracleInstances above
+                        // already guarantees every inst reaching this point is Oracle (or a legacy
+                        // instance with no db_type) - a non-Oracle jumpToDbId is handled earlier via
+                        // the redirect check before this loop, so it never reaches here. If db_id was
+                        // given but never matches (unknown id, or restricted for this account), nothing
+                        // here auto-selects - no silent fallback to "first", so a stale/bad link doesn't
                         // quietly land on the wrong DB.
-                        const instDbType = inst.db_type || 'oracle';
                         const shouldAutoSelect = jumpToDbId
                             ? (inst.id === jumpToDbId && !isRestricted)
-                            : (isFirstInstance && !isRestricted && instDbType === 'oracle');
+                            : (isFirstInstance && !isRestricted);
                         if (shouldAutoSelect) {
-                            if (instDbType !== 'oracle') {
-                                window.location.href = `${rdbTargetPage(instDbType)}?db_id=${encodeURIComponent(inst.id)}&db_type=${encodeURIComponent(instDbType)}&name=${encodeURIComponent(inst.name || inst.id)}`;
-                                return;
-                            }
                             isFirstInstance = false;
                             setTimeout(() => {
                                 groupHeader.click();
@@ -2973,12 +2986,18 @@ function scatterPointerToLocal(e, container) {
             const endY = p.y;
 
             if (Math.abs(endX - startX) < 5 && Math.abs(endY - startY) < 5) return;
-            
-            const left = Math.min(startX, endX);
-            const right = Math.max(startX, endX);
-            const top = Math.min(startY, endY);
-            const bottom = Math.max(startY, endY);
-            
+
+            // Points render as a 'crossRot' mark (pointRadius 2 + borderWidth 2, ~4px half-extent) but
+            // the filter below only tests each point's exact center coordinate. A mark whose crossed
+            // lines are visibly inside the drawn selection box was still getting dropped whenever its
+            // center sat a few px outside - pad the box by the mark's visual half-extent so "the dot
+            // looks selected" and "the dot IS selected" agree.
+            const HIT_PAD = 6;
+            const left = Math.min(startX, endX) - HIT_PAD;
+            const right = Math.max(startX, endX) + HIT_PAD;
+            const top = Math.min(startY, endY) - HIT_PAD;
+            const bottom = Math.max(startY, endY) + HIT_PAD;
+
             try {
                 const xAxis = window.globalSessionScatterChart.scales.x;
                 const yAxis = window.globalSessionScatterChart.scales.y;

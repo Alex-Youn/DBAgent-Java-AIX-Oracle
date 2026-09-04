@@ -51,6 +51,7 @@
                                     <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Elapse Time(sec)</th>
                                     <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Program</th>
                                     <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Oracle User Name</th>
+                                    <th style="padding:10px; text-align:left; border-bottom:1px solid var(--border);">Host User Name</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -66,6 +67,7 @@
                                         <td style="padding:10px;">${cmdText}</td>
                                         <td style="padding:10px; color:var(--danger); font-weight:bold;">${s.duration_time}s</td>
                                         <td style="padding:10px;">${s.program_name || '-'}</td>
+                                        <td style="padding:10px;">${s.username || '-'}</td>
                                         <td style="padding:10px;">${s.osuser || '-'}</td>
                                     </tr>`;
                                 }).join('')}

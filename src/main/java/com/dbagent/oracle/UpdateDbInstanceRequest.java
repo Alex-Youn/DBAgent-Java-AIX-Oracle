@@ -11,7 +11,7 @@ public final class UpdateDbInstanceRequest {
 
     private final String token;
     private final String name;
-    // "oracle" (default) / "mysql" / "mariadb" / "postgres" - see TargetDbConfig.
+    // "oracle" (default) / "mysql" / "mariadb" / "postgres" / "mssql" - see TargetDbConfig.
     private final String dbType;
     private final String host;
     private final int port;

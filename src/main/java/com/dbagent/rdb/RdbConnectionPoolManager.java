@@ -121,6 +121,15 @@ public class RdbConnectionPoolManager {
                 int socketTimeoutSeconds = Math.max(1, readTimeoutMs / 1000);
                 return "jdbc:postgresql://" + target.host() + ":" + target.port() + "/" + database
                         + "?socketTimeout=" + socketTimeoutSeconds;
+            case "mssql":
+                // mssql-jdbc always TLS-wraps the login packet (credentials), even with encrypt=false -
+                // that handshake fails against a self-signed/no-cert Docker or internal instance unless
+                // trustServerCertificate=true tells the driver to skip validating the server's cert
+                // chain. encrypt=false additionally disables encrypting the rest of the session data.
+                // mssql-jdbc's socketTimeout is milliseconds, like MySQL's.
+                return "jdbc:sqlserver://" + target.host() + ":" + target.port()
+                        + ";databaseName=" + database + ";encrypt=false;trustServerCertificate=true"
+                        + ";socketTimeout=" + readTimeoutMs;
             default:
                 throw new IllegalArgumentException("Unsupported db_type for RdbConnectionPoolManager: " + target.dbType());
         }

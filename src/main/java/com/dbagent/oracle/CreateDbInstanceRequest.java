@@ -12,7 +12,7 @@ public final class CreateDbInstanceRequest {
     private final String groupName;
     private final String id;
     private final String name;
-    // "oracle" (default) / "mysql" / "mariadb" / "postgres" - see TargetDbConfig.
+    // "oracle" (default) / "mysql" / "mariadb" / "postgres" / "mssql" - see TargetDbConfig.
     private final String dbType;
     private final String host;
     private final int port;

@@ -149,6 +149,7 @@
                             <option value="mysql">MySQL</option>
                             <option value="mariadb">MariaDB</option>
                             <option value="postgres">PostgreSQL</option>
+                            <option value="mssql">MS SQL Server</option>
                         </select>
                     </div>
                     <div class="login-form-group">
@@ -276,7 +277,7 @@
             // field (not a separate input) so createInstance/updateInstance keep reading the same "sid"
             // value regardless of db_type. Default port also nudges to each engine's usual port when the
             // admin hasn't touched Port yet, to save a lookup.
-            const DB_TYPE_DEFAULT_PORT = { oracle: 1521, mysql: 3306, mariadb: 3306, postgres: 5432 };
+            const DB_TYPE_DEFAULT_PORT = { oracle: 1521, mysql: 3306, mariadb: 3306, postgres: 5432, mssql: 1433 };
             function wireDbTypeFields(prefix) {
                 const typeSelect = document.getElementById(`${prefix}-dbtype`);
                 const sidLabel = document.getElementById(`${prefix}-sid-label`);

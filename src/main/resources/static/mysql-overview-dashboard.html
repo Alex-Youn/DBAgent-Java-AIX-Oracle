@@ -16,7 +16,22 @@
         --orange: #ff9830;
         --green: #73bf69;
         --blue: #5794f2;
-        --font: "Inter", "Helvetica Neue", Arial, sans-serif;
+        --font: "Inter", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "맑은 고딕", sans-serif;
+    }
+    /* index.html의 배색 전환(팔레트 아이콘)은 흰 배경 라이트 테마가 아니라 톤이 다른 두 번째 다크
+       팔레트(네이비 계열)로 전환된다 - style.css의 :root[data-theme="light"] 값을 그대로 이식해서
+       이 페이지의 팔레트 버튼도 동일하게 동작하도록 함(사용자 확인, 2026-09-04: "둘 다 다크모드이긴
+       한데 배색이 다르잖아"). */
+    :root[data-theme="light"] {
+        --bg-page: #0f172a;
+        --bg-panel: #1e293b;
+        --border: rgba(255, 255, 255, .1);
+        --text: #f8fafc;
+        --text-muted: #94a3b8;
+        --teal: #3b82f6;
+        --orange: #f59e0b;
+        --green: #10b981;
+        --blue: #3b82f6;
     }
     * { box-sizing: border-box; }
     body {
@@ -29,42 +44,80 @@
     }
     .pmm-app { display: flex; min-height: 100vh; }
 
-    /* ---------- Sidebar ---------- */
+    /* ---------- Sidebar: DB group/instance tree ---------- */
     .pmm-sidebar {
-        width: 58px;
-        flex: 0 0 58px;
+        width: 240px;
+        flex: 0 0 240px;
         display: flex;
         flex-direction: column;
-        align-items: center;
         padding: 10px 0;
-        gap: 4px;
+        overflow-y: auto;
+        border-right: 1px solid var(--border);
     }
-    .pmm-sidebar .side-icon {
-        width: 40px;
-        height: 40px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 6px;
-        color: var(--text-muted);
-        cursor: pointer;
+    .pmm-brand {
+        display: flex; align-items: center; gap: 8px;
+        padding: 0 12px 10px; margin-bottom: 8px; border-bottom: 1px solid var(--border);
+        color: var(--text); text-decoration: none; font-weight: 700; font-size: 1.08rem;
     }
-    .pmm-sidebar .side-icon:hover { background: #24252b; color: var(--text); }
-    .pmm-sidebar .side-icon.active { background: #33343b; color: var(--text); }
-    .pmm-sidebar .side-icon.grafana-mark { color: var(--orange); }
-    .pmm-sidebar .spacer { flex: 1; }
-    .pmm-sidebar .plugin-dot {
-        width: 26px;
-        height: 26px;
-        border-radius: 50%;
-        background: #c0334d;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #fff;
-        margin-bottom: 6px;
+    .pmm-brand:hover { color: var(--teal); }
+    /* 2026-09-04 사용자 요청: DB InsightFlow 로고 아이콘도 index.html 사이드바 로고처럼 커졌다
+       작아지며 색이 순환하는 펄스 애니메이션 적용 (순수 장식용, 상태와 무관).
+       주의: lucide.createIcons()는 <i data-lucide>를 <svg>로 통째로 교체하면서 원본 class는 그대로
+       옮기지만 태그명(i)은 사라진다 - 아래처럼 반드시 .brand-icon 같은 클래스로 선택해야 렌더 후에도
+       스타일이 유지된다("i" 태그 선택자는 렌더 후 아무 것도 매치하지 못해 조용히 무효화됨). */
+    @keyframes brand-icon-pulse {
+        0%, 100% { color: var(--teal); transform: scale(1); filter: none; }
+        50% { color: #22d3ee; transform: scale(1.18); filter: drop-shadow(0 0 6px rgba(34, 211, 238, .65)); }
     }
-    .pmm-sidebar .plugin-dot i { width: 14px; height: 14px; }
+    .pmm-brand .brand-icon {
+        width: 25px; height: 25px; flex: 0 0 auto; display: inline-block;
+        animation: brand-icon-pulse 2s ease-in-out infinite;
+    }
+    .pmm-org-badge {
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 12px 12px;
+    }
+    .pmm-org-badge img { width: 22px; height: 22px; border-radius: 4px; object-fit: contain; background: #fff; padding: 2px; }
+    .pmm-org-badge span { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+    .db-tree { padding: 0 8px; }
+    /* 그룹/인스턴스 글씨체·크기·색을 index.html의 db-groups-container(오라클) 사이드바와 동일하게 맞춤.
+       index.html의 .app-container에는 zoom:90%가 걸려있어 실제 화면에 보이는 크기는 rem 값의 0.9배
+       (1rem->0.9rem, 0.95rem->0.855rem, 16px 아이콘->14.4px) - 그 실제 렌더 크기를 기준으로 맞춤.
+       그룹 헤더는 오라클과 동일하게 흰색(var(--text-primary)=#fff)/font-weight 600. */
+    .db-tree-group-block { margin-bottom: 2px; }
+    .db-tree-group {
+        display: flex; align-items: center; justify-content: space-between; cursor: pointer;
+        color: #fff; font-size: .9rem; font-weight: 600; padding: 10px 8px 4px;
+    }
+    .db-tree-chevron { width: 16.2px; height: 16.2px; color: var(--text-muted); transition: transform .3s ease; flex: 0 0 auto; }
+    .db-tree-chevron.rotated { transform: rotate(90deg); }
+    /* 오라클의 instancesDiv(paddingLeft:10px + borderLeft:2px + marginTop:5px)와 동일한 들여쓰기. */
+    .db-tree-instances { padding-left: 10px; border-left: 2px solid var(--border); margin: 5px 0 6px 8px; }
+    .db-tree-instances.collapsed { display: none; }
+    .db-tree-item {
+        display: flex; align-items: center; gap: 6px;
+        padding: 6px 8px; border-radius: 4px; cursor: pointer;
+        color: var(--text); font-weight: bold; font-size: .855rem;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .db-tree-item:hover { background: #24252b; }
+    .db-tree-item.active { background: #33343b; color: var(--teal); cursor: default; }
+    .db-tree-item .item-icon-static, .db-tree-item .item-icon-live {
+        width: 14.4px; height: 14.4px; flex: 0 0 auto; color: var(--text-muted);
+    }
+    /* 클릭해서 보고 있는(active) 인스턴스는 index.html의 active-monitoring과 동일하게 database
+       아이콘 대신 activity 아이콘으로 바뀌며 펄스 애니메이션 재생. */
+    .db-tree-item .item-icon-live { display: none; }
+    .db-tree-item.active .item-icon-static { display: none; }
+    .db-tree-item.active .item-icon-live {
+        display: inline-block;
+        animation: item-live-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes item-live-pulse {
+        0%, 100% { color: var(--green); transform: scale(1); filter: none; }
+        50% { color: #4ade80; transform: scale(1.22); filter: drop-shadow(0 0 5px rgba(74, 222, 128, .7)); }
+    }
+    .db-tree-error { color: #ef4444; font-size: 12px; padding: 8px; }
 
     /* ---------- Main column ---------- */
     .pmm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -81,20 +134,58 @@
     }
     .pmm-title { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600; }
     .pmm-title .caret { color: var(--text-muted); width: 16px; height: 16px; }
-    .pmm-header-icons { display: flex; align-items: center; gap: 4px; }
-    .pmm-header-icons .hdr-icon {
+    /* ---------- Header actions: ported from index.html's .header-actions (사용자 요청, 2026-09-04) -
+       기존 장식용 아이콘(bar-chart-2/star/share-2/save/...)을 전부 제거하고 오라클 대시보드 우측 상단의
+       실제 기능(FO 이동/자동토글/비밀번호변경/로그아웃/배색전환/관리자 설정)을 그대로 이식. 이 페이지는
+       sessionStorage(dbagent_token/role/...)와 localStorage(dbagent_theme)를 index.html과 공유하는
+       같은 origin이라 로그인 상태를 그대로 재사용할 수 있다. ---------- */
+    .pmm-header-icons { display: flex; align-items: center; gap: 6px; }
+    .icon-btn {
+        background: transparent; border: none; color: var(--text-muted); cursor: pointer;
         width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
-        color: var(--text-muted); border-radius: 4px; cursor: pointer;
+        border-radius: 4px; transition: color .2s, background .2s;
     }
-    .pmm-header-icons .hdr-icon:hover { background: #24252b; color: var(--text); }
-    .pmm-header-icons .divider { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
-    .time-range-pill {
-        display: flex; align-items: center; gap: 6px;
-        border: 1px solid var(--border); border-radius: 4px;
-        padding: 5px 10px; color: var(--text); cursor: pointer; white-space: nowrap;
+    .icon-btn:hover { background: #24252b; color: var(--text); }
+    .icon-btn i { width: 16px; height: 16px; }
+    .fo-btn {
+        font-family: inherit; font-weight: 800; font-size: 12px; letter-spacing: .02em;
+        padding: 0 10px; height: 30px; box-sizing: border-box; border: 1px solid var(--border);
+        border-radius: 8px; background: var(--bg-panel); color: var(--text); text-decoration: none;
+        display: inline-flex; align-items: center;
     }
-    .time-range-pill i { width: 14px; height: 14px; color: var(--text-muted); }
-    .refresh-label { color: var(--orange); white-space: nowrap; margin: 0 4px; cursor: pointer; }
+    .fo-btn:hover { background: #24252b; border-color: var(--teal); }
+    .fo-auto-toggle { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); cursor: pointer; user-select: none; }
+    .gear-menu-wrap { position: relative; }
+    .gear-dropdown {
+        display: none; position: absolute; right: 0; top: 36px; background: var(--bg-panel);
+        border: 1px solid var(--border); border-radius: 6px; min-width: 150px; z-index: 50;
+        overflow: hidden; box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+    }
+    .gear-dropdown.open { display: block; }
+    .gear-dropdown-item {
+        display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px;
+        background: none; border: none; color: var(--text); font-size: 12.5px; cursor: pointer; text-align: left;
+    }
+    .gear-dropdown-item:hover { background: #24252b; }
+    .gear-dropdown-item i { width: 14px; height: 14px; color: var(--text-muted); }
+    .pmm-modal-overlay {
+        display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, .6);
+        align-items: center; justify-content: center; z-index: 100;
+    }
+    .pmm-modal-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 24px; width: 320px; }
+    .pmm-modal-card h3 { margin: 0 0 16px; color: var(--text); font-size: 15px; }
+    .pmm-form-group { margin-bottom: 12px; }
+    .pmm-form-group label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+    .pmm-form-group input {
+        width: 100%; padding: 7px 9px; background: #17181c; border: 1px solid var(--border);
+        border-radius: 4px; color: var(--text); font-size: 13px; box-sizing: border-box;
+    }
+    .pmm-modal-btn {
+        flex: 1; padding: 8px; border-radius: 4px; border: 1px solid var(--border);
+        background: #17181c; color: var(--text); cursor: pointer; font-size: 13px;
+    }
+    .pmm-modal-btn.primary { background: var(--teal); border-color: var(--teal); color: #0b1e21; font-weight: 600; }
+    .pmm-modal-error { color: #ef4444; font-size: 12px; margin-top: 8px; min-height: 14px; display: none; }
 
     /* ---------- Filter bar ---------- */
     .pmm-filterbar {
@@ -117,18 +208,6 @@
     }
     .toggle-box i { width: 10px; height: 10px; color: #111217; }
 
-    /* ---------- Top nav tabs ---------- */
-    .pmm-navtabs {
-        height: 36px; flex: 0 0 36px;
-        display: flex; align-items: center; justify-content: flex-end; gap: 18px;
-        padding: 0 16px;
-        border-bottom: 1px solid var(--border);
-        font-size: 12.5px;
-    }
-    .navtab { display: flex; align-items: center; gap: 5px; color: var(--text-muted); cursor: pointer; }
-    .navtab i { width: 13px; height: 13px; }
-    .navtab.active { color: var(--teal); }
-    .navtab:hover { color: var(--text); }
     .back-link {
         display: inline-flex; align-items: center; gap: 4px;
         color: var(--text-muted); text-decoration: none; font-size: 12px;
@@ -224,23 +303,40 @@
     .detail-row-title { font-weight: 600; margin: 18px 0 8px; display: flex; align-items: center; gap: 8px; }
     .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 12px; }
     .ts-panel {
-        background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px 4px;
+        background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; padding: 8px calc(10px + 0.5cm) 4px;
     }
     .ts-panel .panel-title { color: var(--text-muted); font-size: 11.5px; text-align: center; margin-bottom: 2px; }
     .ts-panel .y-label { fill: var(--text-muted); font-size: 8px; }
+    .ts-panel .live-table { font-size: 13px; }
 </style>
 </head>
 <body>
+<div id="pmmPwdModal" class="pmm-modal-overlay">
+    <div class="pmm-modal-card">
+        <h3>비밀번호 변경</h3>
+        <form id="pmmPwdForm">
+            <div class="pmm-form-group"><label>현재 비밀번호</label><input type="password" id="pmmPwdCurrent" required></div>
+            <div class="pmm-form-group"><label>새 비밀번호</label><input type="password" id="pmmPwdNew" required></div>
+            <div class="pmm-form-group"><label>새 비밀번호 확인</label><input type="password" id="pmmPwdConfirm" required></div>
+            <div style="display:flex; gap:10px; margin-top:15px;">
+                <button type="submit" class="pmm-modal-btn primary">변경</button>
+                <button type="button" class="pmm-modal-btn" id="pmmPwdCancel">취소</button>
+            </div>
+            <div id="pmmPwdError" class="pmm-modal-error"></div>
+        </form>
+    </div>
+</div>
 <div class="pmm-app">
     <aside class="pmm-sidebar">
-        <div class="side-icon grafana-mark"><i data-lucide="flame"></i></div>
-        <div class="side-icon"><i data-lucide="plus"></i></div>
-        <div class="side-icon active"><i data-lucide="layout-grid"></i></div>
-        <div class="side-icon"><i data-lucide="bell"></i></div>
-        <div class="side-icon"><i data-lucide="settings"></i></div>
-        <div class="spacer"></div>
-        <div class="plugin-dot"><i data-lucide="bot"></i></div>
-        <div class="side-icon"><i data-lucide="help-circle"></i></div>
+        <a href="fleet-overview.html" class="pmm-brand" title="Fleet Overview로 이동">
+            <i data-lucide="activity" class="brand-icon"></i>
+            <span>DB InsightFlow</span>
+        </a>
+        <div class="pmm-org-badge">
+            <img src="KIPI_Symbol.jpg" alt="한국특허정보원 로고">
+            <span>한국특허정보원</span>
+        </div>
+        <div id="dbTree" class="db-tree">불러오는 중...</div>
     </aside>
 
     <div class="pmm-main">
@@ -251,18 +347,21 @@
                 <i data-lucide="chevron-down" class="caret"></i>
             </div>
             <div class="pmm-header-icons">
-                <div class="hdr-icon"><i data-lucide="bar-chart-2"></i></div>
-                <div class="hdr-icon"><i data-lucide="star"></i></div>
-                <div class="hdr-icon"><i data-lucide="share-2"></i></div>
-                <div class="hdr-icon"><i data-lucide="save"></i></div>
-                <div class="hdr-icon"><i data-lucide="settings"></i></div>
-                <div class="divider"></div>
-                <div class="hdr-icon"><i data-lucide="chevron-left"></i></div>
-                <div class="hdr-icon"><i data-lucide="search"></i></div>
-                <div class="hdr-icon"><i data-lucide="chevron-right"></i></div>
-                <div class="time-range-pill"><i data-lucide="clock"></i><span>Last 12 hours</span></div>
-                <span class="refresh-label">Refresh every 1m</span>
-                <div class="hdr-icon"><i data-lucide="refresh-cw"></i></div>
+                <a class="icon-btn fo-btn" href="fleet-overview.html" title="Fleet Overview (전체 DB 현황판)" id="pmmFoBtn">FO</a>
+                <label class="fo-auto-toggle" id="pmmFoAutoWrap" title="로그인 시 Fleet Overview로 자동 이동">
+                    <input type="checkbox" id="pmmFoAutoInput"><span>자동</span>
+                </label>
+                <button class="icon-btn" id="pmmChangePwdBtn" title="비밀번호 변경"><i data-lucide="key"></i></button>
+                <button class="icon-btn" id="pmmLogoutBtn" title="로그아웃"><i data-lucide="log-out"></i></button>
+                <button class="icon-btn" id="pmmThemeBtn" title="화면 배색 전환"><i data-lucide="palette"></i></button>
+                <div class="gear-menu-wrap admin-only" id="pmmGearWrap">
+                    <button class="icon-btn" id="pmmGearTrigger" title="설정"><i data-lucide="settings"></i></button>
+                    <div id="pmmGearDropdown" class="gear-dropdown">
+                        <button type="button" class="gear-dropdown-item" id="pmmOpenAccountMgmt"><i data-lucide="users"></i><span>계정 관리</span></button>
+                        <button type="button" class="gear-dropdown-item" id="pmmOpenDbMgmt"><i data-lucide="database"></i><span>DB 관리</span></button>
+                        <button type="button" class="gear-dropdown-item" id="pmmOpenMenuVisibility"><i data-lucide="list-checks"></i><span>메뉴 표시 설정</span></button>
+                    </div>
+                </div>
             </div>
         </header>
 
@@ -280,12 +379,6 @@
                 <div class="toggle-box"><i data-lucide="check"></i></div>
             </div>
         </div>
-
-        <nav class="pmm-navtabs">
-            <div class="navtab" id="navMysql"><i data-lucide="database"></i>MySQL</div>
-            <div class="navtab" id="navMariadb"><i data-lucide="database"></i>MariaDB</div>
-            <div class="navtab" id="navPostgres"><i data-lucide="database"></i>PostgreSQL</div>
-        </nav>
 
         <main class="pmm-content">
             <div class="view-tabs">
@@ -348,7 +441,6 @@
                         <div class="kpi-gauge-track"><div class="kpi-gauge-fill" id="kpiHitRateGauge2" style="width:0;"></div></div>
                     </div>
                 </div>
-                <p class="detail-note">mysql-overview-dashboard-panels-detail.md가 묘사한 시계열 차트+범례 스타일로, 이 인스턴스의 실제 값을 표시합니다 - 시계열 이력 저장소가 없어 그래프는 평탄선으로만 표시됩니다.</p>
                 <div id="detailRows"></div>
             </div>
         </main>
@@ -356,6 +448,13 @@
 </div>
 
 <script>
+// index.html과 동일한 저장된 배색 선택을 적용 (같은 origin의 localStorage 공유) - 페인트 전에
+// 최대한 일찍 적용해서 다크->네이비 전환이 눈에 띄게 깜빡이지 않도록 함.
+(function () {
+    if (localStorage.getItem('dbagent_theme') === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+    }
+})();
 (function () {
     // Instance name comes from the Fleet Overview / sidebar link that navigated here
     // (?db_id=...&db_type=...&name=...) - falls back to the generic title if opened directly.
@@ -368,42 +467,69 @@
         document.getElementById('pmmTitle').textContent = instanceName;
     }
 
-    // Top-right engine nav (MySQL/MariaDB/PostgreSQL) - jumps to the first registered instance of that
-    // engine type (from the public /api/config instance list), landing on whichever dashboard page
-    // handles it (mysql-overview-dashboard.html for mysql/mariadb, postgres-overview-dashboard.html for
-    // postgres). The button for the current page's own engine is marked active and not clickable; a
-    // button for an engine with no registered instance is dimmed and inert instead of dead-linking.
-    (function wireEngineNav() {
-        const dbType = qs.get('db_type') || '';
-        const TARGET_PAGE = { mysql: 'mysql-overview-dashboard.html', mariadb: 'mysql-overview-dashboard.html', postgres: 'postgres-overview-dashboard.html' };
-        const NAV_IDS = { mysql: 'navMysql', mariadb: 'navMariadb', postgres: 'navPostgres' };
+    // Left sidebar DB tree (databases.json's own group/instance structure, via /api/config) - lets the
+    // user jump to any registered RDB instance from any RDB dashboard page, not just same-engine ones
+    // like the old top-right engine nav did. Oracle instances are intentionally excluded (사용자 요청,
+    // 2026-09-04) - Oracle lives entirely in index.html's own tab-based UI, not this PMM-style shell, so
+    // there's nowhere on this page for an Oracle click to sensibly land. A group with no non-Oracle
+    // instances left after filtering is dropped from the tree entirely rather than showing an empty header.
+    function dbTreeTargetPage(dbType) {
+        if (dbType === 'mysql' || dbType === 'mariadb') return 'mysql-overview-dashboard.html';
+        if (dbType === 'postgres') return 'postgres-overview-dashboard.html';
+        if (dbType === 'mssql') return 'mssql-overview-dashboard.html';
+        return 'rdb-dashboard.html';
+    }
+    (function buildDbTree() {
+        const mount = document.getElementById('dbTree');
         fetch('/api/config').then(res => res.json()).then(cfg => {
-            const firstByType = {};
-            (cfg.groups || []).forEach(g => (g.instances || []).forEach(inst => {
-                if (TARGET_PAGE[inst.db_type] && !firstByType[inst.db_type]) {
-                    firstByType[inst.db_type] = inst;
-                }
-            }));
-            Object.keys(NAV_IDS).forEach(engine => {
-                const el = document.getElementById(NAV_IDS[engine]);
-                if (!el) return;
-                if (engine === dbType) {
-                    el.classList.add('active');
-                    el.style.cursor = 'default';
-                    return;
-                }
-                const inst = firstByType[engine];
-                if (inst) {
-                    el.addEventListener('click', () => {
-                        window.location.href = `${TARGET_PAGE[engine]}?db_id=${encodeURIComponent(inst.id)}&db_type=${encodeURIComponent(engine)}&name=${encodeURIComponent(inst.name || inst.id)}`;
-                    });
-                } else {
-                    el.style.opacity = '0.4';
-                    el.style.cursor = 'default';
-                    el.title = '등록된 인스턴스가 없습니다.';
-                }
+            const groups = cfg.groups || [];
+            mount.innerHTML = '';
+            let rendered = 0;
+            groups.forEach(g => {
+                const instances = (g.instances || []).filter(inst => inst.db_type && inst.db_type !== 'oracle');
+                if (!instances.length) return;
+                rendered++;
+                const hasActive = instances.some(inst => inst.id === dbId);
+
+                const block = document.createElement('div');
+                block.className = 'db-tree-group-block';
+
+                const header = document.createElement('div');
+                header.className = 'db-tree-group';
+                header.innerHTML = `<span>${g.group_name}</span><i data-lucide="chevron-right" class="db-tree-chevron${hasActive ? ' rotated' : ''}"></i>`;
+
+                const body = document.createElement('div');
+                body.className = 'db-tree-instances' + (hasActive ? '' : ' collapsed');
+                body.innerHTML = instances.map(inst => {
+                    const active = inst.id === dbId;
+                    const page = dbTreeTargetPage(inst.db_type);
+                    const href = `${page}?db_id=${encodeURIComponent(inst.id)}&db_type=${encodeURIComponent(inst.db_type)}&name=${encodeURIComponent(inst.name || inst.id)}`;
+                    return `<div class="db-tree-item${active ? ' active' : ''}" data-href="${href}" title="${inst.name || inst.id}">` +
+                        `<i data-lucide="database" class="item-icon-static"></i>` +
+                        `<i data-lucide="activity" class="item-icon-live"></i>` +
+                        `<span>${inst.name || inst.id}</span></div>`;
+                }).join('');
+
+                // index.html의 그룹 아코디언(클릭 시 화살표 회전 + 펼침/접힘)과 동일한 동작.
+                header.addEventListener('click', () => {
+                    const collapsed = body.classList.toggle('collapsed');
+                    header.querySelector('.db-tree-chevron').classList.toggle('rotated', !collapsed);
+                });
+
+                block.appendChild(header);
+                block.appendChild(body);
+                mount.appendChild(block);
             });
-        }).catch(() => {});
+            if (!rendered) {
+                mount.innerHTML = '<div class="db-tree-error">등록된 DB가 없습니다.</div>';
+            }
+            mount.querySelectorAll('.db-tree-item:not(.active)').forEach(el => {
+                el.addEventListener('click', (e) => { e.stopPropagation(); window.location.href = el.getAttribute('data-href'); });
+            });
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        }).catch(() => {
+            mount.innerHTML = '<div class="db-tree-error">DB 목록을 불러오지 못했습니다.</div>';
+        });
     })();
 
     // Every row except "System Charts" is wired to real data (see /api/rdb/storage, /api/rdb/sessions,
@@ -736,25 +862,30 @@
     // flat horizontal line at a single value - not a real historical trend.
     function renderTimeSeriesPanel(container, opts) {
         const svgNS = 'http://www.w3.org/2000/svg';
-        const W = 400, H = 150;
+        // viewBox width is measured from the actual rendered box (minus .ts-panel's own padding)
+        // instead of a fixed 400 - with preserveAspectRatio left at its "meet" default, a viewBox
+        // whose aspect ratio doesn't match the box it's stretched into forces the browser to scale
+        // x/y unevenly, which visibly smears text glyphs. Matching pixel dimensions 1:1 keeps text crisp.
+        const H = 160;
+        const W = Math.max(200, (container.clientWidth || 400) - 58); // 20px base padding + 0.5cm extra per side (~37.8px)
         const padL = 34, padR = 8, padT = 10, padB = 20;
         const plotW = W - padL - padR, plotH = H - padT - padB;
         const yTicks = opts.yTicks;
         const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
         function yPix(v) { return padT + plotH - ((v - yMin) / ((yMax - yMin) || 1)) * plotH; }
 
-        let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:130px;display:block;">`;
+        let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;display:block;">`;
         yTicks.forEach(t => {
             const y = yPix(t);
             svg += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#2c2d32" stroke-width="1"/>`;
-            svg += `<text x="${padL - 4}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="8" fill="#8e8e8e">${t}</text>`;
+            svg += `<text x="${padL - 4}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#8e8e8e">${t}</text>`;
         });
         (opts.xTicks || ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00']).forEach((t, i, arr) => {
             const x = padL + (plotW * i) / (arr.length - 1);
-            svg += `<text x="${x.toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="8" fill="#8e8e8e">${t}</text>`;
+            svg += `<text x="${x.toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="10" fill="#8e8e8e">${t}</text>`;
         });
         if (opts.yLabel) {
-            svg += `<text x="10" y="${padT + plotH / 2}" text-anchor="middle" font-size="8" fill="#8e8e8e" transform="rotate(-90 10 ${padT + plotH / 2})">${opts.yLabel}</text>`;
+            svg += `<text x="10" y="${padT + plotH / 2}" text-anchor="middle" font-size="10" fill="#8e8e8e" transform="rotate(-90 10 ${padT + plotH / 2})">${opts.yLabel}</text>`;
         }
         opts.series.forEach(s => {
             const baseY = yPix(s.value);
@@ -948,6 +1079,129 @@
         kpiToggle.classList.toggle('collapsed');
         kpiRow.classList.toggle('collapsed');
     });
+
+    // ---- Header actions ported from index.html's .header-actions (사용자 요청, 2026-09-04) - same
+    // origin/sessionStorage as index.html, so login state (dbagent_token/role/fleet_overview*) is
+    // reused as-is rather than re-implemented. FO 자동 이동 체크박스, 비밀번호 변경, 로그아웃, 배색
+    // 전환(:root[data-theme="light"] 팔레트로 즉시 전환 - 실제로는 흰 배경이 아니라 톤이 다른 두
+    // 번째 다크 팔레트, 자세한 내용은 위 :root 블록 주석 참고), 관리자 설정 드롭다운(계정
+    // 관리/DB 관리/메뉴 표시 설정 - 기존 팝업 창을 그대로 재사용) 전부 동일 로직으로 이식.
+    (function wireHeaderActions() {
+        if (sessionStorage.getItem('dbagent_role') !== 'admin') {
+            document.querySelectorAll('.admin-only').forEach(el => { el.style.display = 'none'; });
+        }
+        const canFleetOverview = sessionStorage.getItem('dbagent_role') === 'admin'
+            || sessionStorage.getItem('dbagent_fleet_overview') === 'true';
+        const foBtn = document.getElementById('pmmFoBtn');
+        const foAutoWrap = document.getElementById('pmmFoAutoWrap');
+        const foAutoInput = document.getElementById('pmmFoAutoInput');
+        if (!canFleetOverview) {
+            if (foBtn) foBtn.style.display = 'none';
+            if (foAutoWrap) foAutoWrap.style.display = 'none';
+        } else if (foAutoInput) {
+            foAutoInput.checked = sessionStorage.getItem('dbagent_fleet_overview_auto_redirect') === 'true';
+            foAutoInput.addEventListener('change', async () => {
+                const autoRedirect = foAutoInput.checked;
+                sessionStorage.setItem('dbagent_fleet_overview_auto_redirect', autoRedirect ? 'true' : 'false');
+                try {
+                    await fetch('/api/me/fleet_overview_auto_redirect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token: getToken(), auto_redirect: autoRedirect })
+                    });
+                } catch (e) { console.error('Failed to save Fleet Overview auto-redirect preference', e); }
+            });
+        }
+
+        document.getElementById('pmmLogoutBtn')?.addEventListener('click', async () => {
+            const token = getToken();
+            try {
+                await fetch('/api/logout', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token })
+                });
+            } catch (e) { console.error('Logout request failed', e); }
+            sessionStorage.removeItem('dbagent_token');
+            sessionStorage.removeItem('dbagent_role');
+            sessionStorage.removeItem('dbagent_account_hidden_menus');
+            sessionStorage.removeItem('dbagent_account_hidden_dbs');
+            sessionStorage.removeItem('dbagent_fleet_overview');
+            sessionStorage.removeItem('dbagent_fleet_overview_auto_redirect');
+            window.location.href = 'index.html';
+        });
+
+        document.getElementById('pmmThemeBtn')?.addEventListener('click', () => {
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            const next = isLight ? 'dark' : 'light';
+            localStorage.setItem('dbagent_theme', next);
+            if (next === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+            }
+        });
+
+        const pwdModal = document.getElementById('pmmPwdModal');
+        document.getElementById('pmmChangePwdBtn')?.addEventListener('click', () => { pwdModal.style.display = 'flex'; });
+        document.getElementById('pmmPwdCancel')?.addEventListener('click', () => {
+            pwdModal.style.display = 'none';
+            document.getElementById('pmmPwdForm').reset();
+            document.getElementById('pmmPwdError').style.display = 'none';
+        });
+        document.getElementById('pmmPwdForm')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const current = document.getElementById('pmmPwdCurrent').value;
+            const newPwd = document.getElementById('pmmPwdNew').value;
+            const confirmPwd = document.getElementById('pmmPwdConfirm').value;
+            const errDiv = document.getElementById('pmmPwdError');
+            if (newPwd !== confirmPwd) {
+                errDiv.textContent = '새 비밀번호가 일치하지 않습니다.';
+                errDiv.style.display = 'block';
+                return;
+            }
+            try {
+                const res = await fetch('/api/change-password', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: getToken(), current_password: current, new_password: newPwd })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    alert('비밀번호가 성공적으로 변경되었습니다. 다시 로그인해주세요.');
+                    sessionStorage.removeItem('dbagent_token');
+                    sessionStorage.removeItem('dbagent_role');
+                    window.location.href = 'index.html';
+                } else {
+                    errDiv.textContent = data.message || '변경 실패';
+                    errDiv.style.display = 'block';
+                }
+            } catch (e) {
+                errDiv.textContent = '서버 오류';
+                errDiv.style.display = 'block';
+            }
+        });
+
+        const gearTrigger = document.getElementById('pmmGearTrigger');
+        const gearDropdown = document.getElementById('pmmGearDropdown');
+        gearTrigger?.addEventListener('click', (e) => { e.stopPropagation(); gearDropdown.classList.toggle('open'); });
+        document.addEventListener('click', (e) => {
+            if (gearDropdown && gearDropdown.classList.contains('open') && !gearDropdown.contains(e.target) && e.target !== gearTrigger) {
+                gearDropdown.classList.remove('open');
+            }
+        });
+        function openAdminPopup(url, name, features) {
+            gearDropdown.classList.remove('open');
+            const popup = window.open(url, name, features);
+            if (popup) popup.focus();
+        }
+        document.getElementById('pmmOpenAccountMgmt')?.addEventListener('click', () => {
+            openAdminPopup('account-mgmt.html', 'dbagent_account_mgmt', 'width=620,height=760,resizable=yes,scrollbars=yes');
+        });
+        document.getElementById('pmmOpenDbMgmt')?.addEventListener('click', () => {
+            openAdminPopup('db-mgmt.html', 'dbagent_db_mgmt', 'width=980,height=820,resizable=yes,scrollbars=yes');
+        });
+        document.getElementById('pmmOpenMenuVisibility')?.addEventListener('click', () => {
+            openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', 'width=560,height=560,resizable=yes,scrollbars=yes');
+        });
+    })();
 
     if (typeof lucide !== 'undefined') lucide.createIcons();
 })();

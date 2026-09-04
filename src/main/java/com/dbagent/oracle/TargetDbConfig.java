@@ -4,7 +4,7 @@ public final class TargetDbConfig {
 
     private final String id;
     private final String name;
-    // "oracle" (default, legacy instances have no db_type in databases.json) / "mysql" / "mariadb" / "postgres".
+    // "oracle" (default, legacy instances have no db_type in databases.json) / "mysql" / "mariadb" / "postgres" / "mssql".
     private final String dbType;
     private final String user;
     private final String password;

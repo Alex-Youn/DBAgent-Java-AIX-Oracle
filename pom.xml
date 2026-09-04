@@ -63,6 +63,13 @@
             <version>42.7.3</version>
         </dependency>
 
+        <!-- MS SQL Server JDBC driver - jre8 classifier, matching this AIX build's Java 8 target. -->
+        <dependency>
+            <groupId>com.microsoft.sqlserver</groupId>
+            <artifactId>mssql-jdbc</artifactId>
+            <version>12.8.1.jre8</version>
+        </dependency>
+
         <!-- Password hashing (replaces werkzeug.security) -->
         <dependency>
             <groupId>org.springframework.security</groupId>
