@@ -154,19 +154,33 @@ public class MySqlMonitorService implements EngineMonitorService {
             }
 
             double qps = uptimeSeconds > 0 ? (double) queries / uptimeSeconds : 0;
-            // On a near-idle instance (tiny read_requests count), Innodb_buffer_pool_reads can exceed
-            // read_requests - it also counts background/startup page reads (redo/undo, doublewrite)
-            // that aren't tied to a logical read request, which would otherwise make this go negative.
-            // Clamped to [0, 100] since a hit rate outside that range isn't meaningful to show.
-            double hitRatePct = readRequests > 0 ? (1.0 - ((double) diskReads / readRequests)) * 100.0 : 100.0;
-            hitRatePct = Math.max(0.0, Math.min(100.0, hitRatePct));
+
+            // Innodb_buffer_pool_reads counts background/startup page reads (redo/undo, doublewrite)
+            // that aren't tied to a logical read request, so on a freshly started instance it can
+            // exceed read_requests and make (1 - reads/read_requests) negative. This used to clamp
+            // that to 0, which is worse than showing nothing: "hit rate 0%" reads as "the cache never
+            // hits", an alarming claim about a server that has simply not served any real reads yet
+            // (2026-09-05: a just-started MariaDB showed 0% with reads=155 > read_requests=43).
+            // Now the value is left null in that window and the dashboard shows "-" with the reason.
+            Double hitRatePct = null;
+            String hitRateNote = null;
+            if (readRequests <= 0) {
+                hitRateNote = "논리 읽기 요청이 아직 없어 버퍼 풀 적중률을 계산할 수 없습니다.";
+            } else if (diskReads > readRequests) {
+                hitRateNote = "기동 직후라 버퍼 풀 카운터가 아직 유효하지 않습니다"
+                        + " (reads=" + diskReads + " > read_requests=" + readRequests + ").";
+            } else {
+                double pct = (1.0 - ((double) diskReads / readRequests)) * 100.0;
+                hitRatePct = Math.round(pct * 100.0) / 100.0;
+            }
 
             result.put("uptimeSeconds", uptimeSeconds);
             result.put("uptimeLabel", formatUptime(uptimeSeconds));
             result.put("qps", Math.round(qps * 100.0) / 100.0);
             result.put("bufferPoolBytes", bufferPoolBytes);
             result.put("bufferPoolGib", Math.round((bufferPoolBytes / 1073741824.0) * 100.0) / 100.0);
-            result.put("bufferPoolHitRatePct", Math.round(hitRatePct * 100.0) / 100.0);
+            result.put("bufferPoolHitRatePct", hitRatePct);
+            result.put("bufferPoolHitRateNote", hitRateNote);
         } catch (SQLException e) {
             result.put("error", "DB에 연결할 수 없습니다.");
         }

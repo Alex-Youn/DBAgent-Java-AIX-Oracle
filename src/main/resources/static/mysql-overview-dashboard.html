@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MySQL Overview</title>
 <script src="lib/lucide.js"></script>
+<script src="dbagent-common.js?v=2"></script>
 <style>
     :root {
         --bg-page: #111217;
@@ -16,6 +17,13 @@
         --orange: #ff9830;
         --green: #73bf69;
         --blue: #5794f2;
+        /* Oracle 바로가기 버튼 전용. 이 페이지의 다른 색은 전부 의미가 배정되어 있어
+           (teal=FO/인터랙션, green=정상, orange=경고, #ef4444=오류, blue=데이터 수치) 네비게이션
+           버튼을 구분할 색이 남지 않아 새로 추가했다. 보라는 이 대시보드에서 어떤 상태도
+           의미하지 않는다. :root[data-theme="light"]에서 재정의하지 않는 이유는 이 값이 두 배색
+           배경(#111217 / #0f172a) 모두에서 6.5:1 이상으로 대비가 충분하기 때문. 참고로 --blue는
+           쓸 수 없다 - 두 번째 배색에서 --teal과 똑같이 #3b82f6이 되어 FO와 구분이 사라진다. */
+        --ora: #a78bfa;
         --font: "Inter", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "맑은 고딕", sans-serif;
     }
     /* index.html의 배색 전환(팔레트 아이콘)은 흰 배경 라이트 테마가 아니라 톤이 다른 두 번째 다크
@@ -54,10 +62,20 @@
         overflow-y: auto;
         border-right: 1px solid var(--border);
     }
+    /* index.html의 .sidebar-header와 같은 구성(사용자 요청, 2026-09-04): 브랜드와 기관 배지를
+       한 블록으로 묶고 구분선은 그 블록 "아래"에 둔다. 이전에는 .pmm-brand 자신이
+       border-bottom을 갖고 있어서 구분선이 DB InsightFlow와 한국특허정보원 사이를 갈라놓아,
+       기관 배지가 별개 영역처럼 보였다. */
+    .pmm-sidebar-header {
+        display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+        padding: 0 12px 10px; margin-bottom: 8px; border-bottom: 1px solid var(--border);
+    }
     .pmm-brand {
         display: flex; align-items: center; gap: 8px;
-        padding: 0 12px 10px; margin-bottom: 8px; border-bottom: 1px solid var(--border);
-        color: var(--text); text-decoration: none; font-weight: 700; font-size: 1.08rem;
+        padding: 0; margin: 0;
+        /* index.html .sidebar-header h2(1.35rem)에 zoom:90%가 적용된 실제 크기와 동일한 값.
+           그쪽을 바꾸면 이 값도 같이 바꿔야 두 화면의 브랜드 글씨가 같아 보인다. */
+        color: var(--text); text-decoration: none; font-weight: 700; font-size: 1.215rem;
     }
     .pmm-brand:hover { color: var(--teal); }
     /* 2026-09-04 사용자 요청: DB InsightFlow 로고 아이콘도 index.html 사이드바 로고처럼 커졌다
@@ -73,9 +91,10 @@
         width: 25px; height: 25px; flex: 0 0 auto; display: inline-block;
         animation: brand-icon-pulse 2s ease-in-out infinite;
     }
+    /* 상단 패딩/좌우 패딩은 이제 .pmm-sidebar-header가 갖는다. */
     .pmm-org-badge {
         display: flex; align-items: center; gap: 8px;
-        padding: 8px 12px 12px;
+        padding: 0;
     }
     .pmm-org-badge img { width: 22px; height: 22px; border-radius: 4px; object-fit: contain; background: #fff; padding: 2px; }
     .pmm-org-badge span { font-size: 12px; font-weight: 600; color: var(--text-muted); }
@@ -132,8 +151,35 @@
         padding: 0 16px;
         border-bottom: 1px solid var(--border);
     }
-    .pmm-title { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600; }
-    .pmm-title .caret { color: var(--text-muted); width: 16px; height: 16px; }
+    /* 타이틀 전체가 인스턴스 전환 드롭다운의 트리거다. chevron은 원래 장식이었는데(핸들러 없음)
+       사용자 요청으로 실제 동작을 붙였다. 드롭다운 자체는 이 페이지의 .gear-dropdown 패턴을
+       그대로 따르되 오른쪽이 아닌 왼쪽 기준으로 붙는다. */
+    .pmm-title {
+        display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600;
+        position: relative; cursor: pointer; user-select: none;
+    }
+    .pmm-title .caret { color: var(--text-muted); width: 16px; height: 16px; transition: transform .15s ease; }
+    .pmm-title.open .caret { transform: rotate(180deg); color: var(--text); }
+    .title-dropdown {
+        display: none; position: absolute; left: 0; top: 30px; background: var(--bg-panel);
+        border: 1px solid var(--border); border-radius: 6px; min-width: 260px; z-index: 60;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+        font-size: 12.5px; font-weight: 400; max-height: 60vh; overflow-y: auto;
+    }
+    .title-dropdown.open { display: block; }
+    .title-dropdown .td-group {
+        padding: 7px 12px 3px; color: var(--text-muted); font-size: 11px; font-weight: 600;
+        border-top: 1px solid var(--border);
+    }
+    .title-dropdown .td-group:first-child { border-top: none; }
+    .title-dropdown .td-item {
+        display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+        color: var(--text); cursor: pointer; white-space: nowrap;
+    }
+    .title-dropdown .td-item:hover { background: #24252b; }
+    .title-dropdown .td-item.active { color: var(--teal); cursor: default; }
+    .title-dropdown .td-item.active:hover { background: none; }
+    .title-dropdown .td-host { color: var(--text-muted); margin-left: auto; font-size: 11.5px; }
     /* ---------- Header actions: ported from index.html's .header-actions (사용자 요청, 2026-09-04) -
        기존 장식용 아이콘(bar-chart-2/star/share-2/save/...)을 전부 제거하고 오라클 대시보드 우측 상단의
        실제 기능(FO 이동/자동토글/비밀번호변경/로그아웃/배색전환/관리자 설정)을 그대로 이식. 이 페이지는
@@ -149,11 +195,28 @@
     .icon-btn i { width: 16px; height: 16px; }
     .fo-btn {
         font-family: inherit; font-weight: 800; font-size: 12px; letter-spacing: .02em;
-        padding: 0 10px; height: 30px; box-sizing: border-box; border: 1px solid var(--border);
-        border-radius: 8px; background: var(--bg-panel); color: var(--text); text-decoration: none;
+        padding: 0 10px; height: 30px; box-sizing: border-box; border: 1px solid var(--teal);
+        border-radius: 8px; background: var(--teal); color: #0b1e21; text-decoration: none;
         display: inline-flex; align-items: center;
     }
-    .fo-btn:hover { background: #24252b; border-color: var(--teal); }
+    .fo-btn:hover { background: #7ad5e5; border-color: #7ad5e5; }
+    /* Oracle 화면(index.html) 바로가기. 로고 이미지(Oracle_icon.jpg / oracle_icon.png)는 둘 다
+       알파 채널이 없어 어두운 헤더에 흰 배경이 사각형으로 드러나서 포기하고, FO 버튼과 같은
+       텍스트 필로 통일했다. FO가 솔리드(주 동선)이므로 이쪽은 아웃라인으로 한 단계 낮춘 위계.
+       Oracle 브랜드 빨강은 쓰지 않는다 - 이 페이지에서 빨강(#ef4444)은 .live-error, 즉 오류
+       상태색이라 "지금 장애 중"으로 오해될 수 있다. */
+    .ora-btn {
+        font-family: inherit; font-weight: 800; font-size: 9px; letter-spacing: .06em;
+        padding: 0 8px; height: 30px; box-sizing: border-box; border: 1px solid var(--ora);
+        border-radius: 8px; background: transparent; color: var(--ora); text-decoration: none;
+        display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+    }
+    /* lucide SVG는 stroke="currentColor"라 아이콘 색도 위 color를 그대로 따라간다. */
+    .ora-btn:hover { background: rgba(167, 139, 250, .14); }
+    .ora-btn i { width: 13px; height: 13px; flex: 0 0 auto; }
+    /* ORACLE을 ORA / CLE 두 줄로 쌓아 30px 높이 안에 전체 단어를 담는다. 두 줄이 들어가야 하므로
+       line-height를 1로 조이고 폰트를 9px로 줄였다 - 이보다 키우면 버튼 높이를 넘긴다. */
+    .ora-btn .ora-word { line-height: 1; text-align: center; white-space: nowrap; }
     .fo-auto-toggle { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); cursor: pointer; user-select: none; }
     .gear-menu-wrap { position: relative; }
     .gear-dropdown {
@@ -197,24 +260,23 @@
     .filter-group { display: flex; align-items: center; gap: 6px; }
     .filter-label { color: var(--teal); font-weight: 600; }
     .filter-label.white { color: var(--text); }
-    .filter-control {
-        display: flex; align-items: center; gap: 4px;
-        color: var(--text); background: transparent; cursor: pointer;
+    .filter-select {
+        font-family: inherit; font-size: inherit; color: var(--text);
+        background: transparent; border: 1px solid var(--border); border-radius: 4px;
+        padding: 2px 4px; cursor: pointer; max-width: 280px;
     }
-    .filter-control i { width: 12px; height: 12px; color: var(--text-muted); }
-    .toggle-box {
-        width: 14px; height: 14px; border-radius: 2px;
-        background: var(--orange); display: flex; align-items: center; justify-content: center;
+    .filter-select:hover { border-color: var(--teal); }
+    .filter-select:focus { outline: none; border-color: var(--teal); }
+    .filter-select option { background: var(--bg-panel); color: var(--text); }
+    .filter-num {
+        font-family: inherit; font-size: inherit; color: var(--text);
+        background: transparent; border: 1px solid var(--border); border-radius: 4px;
+        padding: 2px 4px; width: 62px;
     }
-    .toggle-box i { width: 10px; height: 10px; color: #111217; }
-
-    .back-link {
-        display: inline-flex; align-items: center; gap: 4px;
-        color: var(--text-muted); text-decoration: none; font-size: 12px;
-        padding: 4px 8px 4px 4px;
-    }
-    .back-link:hover { color: var(--teal); }
-    .back-link i { width: 14px; height: 14px; }
+    .filter-num:hover { border-color: var(--teal); }
+    .filter-num:focus { outline: none; border-color: var(--teal); }
+    .filter-unit { color: var(--text-muted); }
+    .filter-num[hidden], .filter-unit[hidden] { display: none; }
     .live-badge {
         font-size: 10px; font-weight: 700; letter-spacing: .03em;
         color: #0b3d2e; background: var(--green); border-radius: 999px;
@@ -291,12 +353,23 @@
 
     /* ---------- Overview/Detail view tabs ---------- */
     .view-tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+    /* Detail 탭 제거 후 탭이 하나만 남아 전환 대상이 없다(사용자 요청, 2026-09-04). 그래서
+       cursor를 pointer가 아닌 default로 두어 "누를 수 있는 것"처럼 보이지 않게 했다.
+       사실상 섹션 제목 역할이라 hover 색 변화도 없앴다.
+
+       font-size 16px은 오라클 화면(index.html)의 사이드바 DASHBOARD 항목과 맞춘 값이다.
+       그쪽 .nav-item에는 font-size 선언이 아예 없고 body/.sidebar/.sidebar-nav/html 어디에도
+       지정이 없어 브라우저 기본값 16px로 렌더링된다 - 그래서 rem이 아니라 16px로 고정한다.
+       활성 색은 오라클 쪽 .nav-item.active의 var(--primary)(#3987e5)에 대응하는 이 팔레트의
+       파랑 var(--blue)를 쓴다. 밑줄도 같은 색으로 맞췄다 - 글자만 파랑이고 밑줄이 teal이면
+       한 요소에 강조색이 둘이라 실수처럼 보인다. */
     .view-tab {
-        background: none; border: none; color: var(--text-muted); font-size: 13px; font-weight: 600;
-        padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; font-family: inherit;
+        background: none; border: none; color: var(--text-muted); font-size: 16px; font-weight: 600;
+        padding: 8px 16px; cursor: default; border-bottom: 2px solid transparent; font-family: inherit;
+        display: inline-flex; align-items: center; gap: 8px;
     }
-    .view-tab.active { color: var(--text); border-bottom-color: var(--teal); }
-    .view-tab:hover { color: var(--text); }
+    .view-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .view-tab i { width: 18px; height: 18px; }
 
     /* ---------- Detail view (real-data time-series+legend panels) ---------- */
     .detail-note { color: var(--text-muted); font-size: 11.5px; margin: 0 0 14px; max-width: 900px; line-height: 1.5; }
@@ -328,25 +401,28 @@
 </div>
 <div class="pmm-app">
     <aside class="pmm-sidebar">
-        <a href="fleet-overview.html" class="pmm-brand" title="Fleet Overview로 이동">
-            <i data-lucide="activity" class="brand-icon"></i>
-            <span>DB InsightFlow</span>
-        </a>
-        <div class="pmm-org-badge">
-            <img src="KIPI_Symbol.jpg" alt="한국특허정보원 로고">
-            <span>한국특허정보원</span>
+        <div class="pmm-sidebar-header">
+            <a href="fleet-overview.html" class="pmm-brand" title="Fleet Overview로 이동">
+                <i data-lucide="activity" class="brand-icon"></i>
+                <span>DB InsightFlow</span>
+            </a>
+            <div class="pmm-org-badge">
+                <img src="KIPI_Symbol.jpg" alt="한국특허정보원 로고">
+                <span>한국특허정보원</span>
+            </div>
         </div>
         <div id="dbTree" class="db-tree">불러오는 중...</div>
     </aside>
 
     <div class="pmm-main">
-        <a class="back-link" href="fleet-overview.html"><i data-lucide="arrow-left"></i> Fleet Overview로 돌아가기</a>
         <header class="pmm-header">
-            <div class="pmm-title">
+            <div class="pmm-title" id="pmmTitleWrap" title="다른 DB 인스턴스로 전환">
                 <span id="pmmTitle">MySQL Overview</span>
                 <i data-lucide="chevron-down" class="caret"></i>
+                <div id="pmmTitleDropdown" class="title-dropdown"></div>
             </div>
             <div class="pmm-header-icons">
+                <a class="ora-btn" href="index.html" title="Oracle 화면으로 이동" id="pmmOracleBtn" style="display: none;"><i data-lucide="database"></i><span class="ora-word">ORA<br>CLE</span></a>
                 <a class="icon-btn fo-btn" href="fleet-overview.html" title="Fleet Overview (전체 DB 현황판)" id="pmmFoBtn">FO</a>
                 <label class="fo-auto-toggle" id="pmmFoAutoWrap" title="로그인 시 Fleet Overview로 자동 이동">
                     <input type="checkbox" id="pmmFoAutoInput"><span>자동</span>
@@ -368,22 +444,30 @@
         <div class="pmm-filterbar">
             <div class="filter-group">
                 <span class="filter-label">Interval</span>
-                <div class="filter-control"><span>auto</span><i data-lucide="chevron-down"></i></div>
+                <select class="filter-select" id="refreshIntervalSelect" title="자동 새로고침 주기">
+                    <option value="0">off</option>
+                    <option value="5000">5s</option>
+                    <option value="10000">10s</option>
+                    <option value="30000">30s</option>
+                    <option value="60000">1m</option>
+                    <option value="300000">5m</option>
+                    <option value="custom">직접 입력</option>
+                </select>
+                <input type="number" class="filter-num" id="customIntervalInput"
+                       min="1" max="3600" step="1" value="15" title="새로고침 주기(초)" hidden>
+                <span class="filter-unit" id="customIntervalUnit" hidden>초</span>
             </div>
             <div class="filter-group">
                 <span class="filter-label">Host</span>
-                <div class="filter-control"><span>ecy-s-dbrm-001</span><i data-lucide="chevron-down"></i></div>
-            </div>
-            <div class="filter-group">
-                <span class="filter-label white">PMM Annotations</span>
-                <div class="toggle-box"><i data-lucide="check"></i></div>
+                <select class="filter-select" id="hostSelect" title="접속 대상 인스턴스 전환">
+                    <option>불러오는 중...</option>
+                </select>
             </div>
         </div>
 
         <main class="pmm-content">
             <div class="view-tabs">
-                <button type="button" class="view-tab active" id="tabDetailBtn" data-view="detail">Overview</button>
-                <button type="button" class="view-tab" id="tabOverviewBtn" data-view="overview">Detail</button>
+                <button type="button" class="view-tab active" id="tabDetailBtn" data-view="detail"><i data-lucide="layout-dashboard"></i>DASHBOARD</button>
             </div>
 
             <div id="overviewView" style="display:none;">
@@ -483,6 +567,16 @@
         const mount = document.getElementById('dbTree');
         fetch('/api/config').then(res => res.json()).then(cfg => {
             const groups = cfg.groups || [];
+
+            // ORA/CLE 버튼은 오라클·RDB 양쪽 모두에 접근 권한이 있는 계정에게만 보인다
+            // (사용자 지시, 2026-09-05). 마크업에서는 display:none 으로 숨겨둔 채 시작해
+            // 판정된 뒤에만 드러난다 - 판정에 실패하면 감춰진 쪽이 안전하다(fail-closed).
+            // 이미 받아둔 cfg 를 그대로 쓴다 - 추가 요청 없음.
+            const oraBtn = document.getElementById('pmmOracleBtn');
+            if (oraBtn && window.dbagentCrossNavAccess) {
+                const acc = window.dbagentCrossNavAccess(window.dbagentInstancesFromConfig(cfg));
+                if (acc.allowed) oraBtn.style.display = '';
+            }
             mount.innerHTML = '';
             let rendered = 0;
             groups.forEach(g => {
@@ -1024,18 +1118,14 @@
     loadStatusOverview();
 
     // Overview / Detail tab switching.
-    const tabOverviewBtn = document.getElementById('tabOverviewBtn');
-    const tabDetailBtn = document.getElementById('tabDetailBtn');
+    // Detail 탭 제거(사용자 요청, 2026-09-04). 전환 대상이 없어졌으므로 showView()와 클릭
+    // 핸들러를 걷어내고 표시 상태만 한 번 고정한다. tabOverviewBtn을 지운 채 기존 코드를 남기면
+    // getElementById가 null을 반환해 classList/addEventListener에서 스크립트가 통째로 죽는다.
+    // overviewView 마크업은 지우지 않고 남겨둔다 - 나중에 되살릴 여지를 두되 노출만 막는다.
     const overviewView = document.getElementById('overviewView');
     const detailView = document.getElementById('detailView');
-    function showView(view) {
-        overviewView.style.display = view === 'overview' ? 'block' : 'none';
-        detailView.style.display = view === 'detail' ? 'block' : 'none';
-        tabOverviewBtn.classList.toggle('active', view === 'overview');
-        tabDetailBtn.classList.toggle('active', view === 'detail');
-    }
-    tabOverviewBtn.addEventListener('click', () => showView('overview'));
-    tabDetailBtn.addEventListener('click', () => showView('detail'));
+    if (overviewView) overviewView.style.display = 'none';
+    if (detailView) detailView.style.display = 'block';
 
     // ---- Real data: KPI row (uptime/QPS/buffer pool) via /api/rdb/mysql_overview ----
     // MySQL/MariaDB only (see MySqlMonitorService.getOverviewStats) - this page is only reached for
@@ -1056,14 +1146,20 @@
                 ['kpiUptime', 'kpiUptime2'].forEach(id => { document.getElementById(id).textContent = data.uptimeLabel; });
                 ['kpiQps', 'kpiQps2'].forEach(id => { document.getElementById(id).textContent = data.qps; });
                 ['kpiBufferPool', 'kpiBufferPool2'].forEach(id => { document.getElementById(id).textContent = `${data.bufferPoolGib} GiB`; });
+                // 적중률은 값이 없을 수 있다(null) - 갓 기동한 인스턴스는 버퍼 풀 카운터가 아직
+                // 유효하지 않아 서버가 계산을 포기하고 사유(bufferPoolHitRateNote)만 준다.
+                // 예전엔 그 구간을 0%로 잘라 보여줘서 "캐시가 전혀 안 맞는다"로 읽혔다(2026-09-05).
                 const hitRate = data.bufferPoolHitRatePct;
+                const hitRateKnown = (hitRate !== null && hitRate !== undefined);
                 ['kpiHitRate', 'kpiHitRate2'].forEach(id => {
                     const el = document.getElementById(id);
-                    el.textContent = `${hitRate}%`;
-                    el.className = 'kpi-value ' + (hitRate >= 99 ? 'green' : 'orange');
+                    el.textContent = hitRateKnown ? `${hitRate}%` : '-';
+                    el.className = 'kpi-value' + (hitRateKnown ? (hitRate >= 99 ? ' green' : ' orange') : '');
+                    el.title = hitRateKnown ? '' : (data.bufferPoolHitRateNote || '아직 계산할 수 없습니다.');
                 });
                 ['kpiHitRateGauge', 'kpiHitRateGauge2'].forEach(id => {
-                    document.getElementById(id).style.width = Math.min(100, Math.max(0, hitRate)) + '%';
+                    document.getElementById(id).style.width =
+                        hitRateKnown ? Math.min(100, Math.max(0, hitRate)) + '%' : '0%';
                 });
             })
             .catch(err => {
@@ -1193,17 +1289,212 @@
             if (popup) popup.focus();
         }
         document.getElementById('pmmOpenAccountMgmt')?.addEventListener('click', () => {
-            openAdminPopup('account-mgmt.html', 'dbagent_account_mgmt', 'width=620,height=760,resizable=yes,scrollbars=yes');
+            openAdminPopup('account-mgmt.html', 'dbagent_account_mgmt', window.dbagentAdminPopupFeatures('account'));
         });
         document.getElementById('pmmOpenDbMgmt')?.addEventListener('click', () => {
             openAdminPopup('db-mgmt.html', 'dbagent_db_mgmt', 'width=980,height=820,resizable=yes,scrollbars=yes');
         });
         document.getElementById('pmmOpenMenuVisibility')?.addEventListener('click', () => {
-            openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', 'width=560,height=560,resizable=yes,scrollbars=yes');
+            openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', window.dbagentAdminPopupFeatures('menu'));
         });
     })();
 
     if (typeof lucide !== 'undefined') lucide.createIcons();
+    // ---------------------------------------------------------------------
+    // 필터바 Interval / Host
+    //
+    // 이전에는 세 항목 모두 정적 목업이었고(auto / ecy-s-dbrm-001 / PMM Annotations 체크박스),
+    // 이 대시보드에는 자동 새로고침 자체가 없어 페이지 로드 시 1회만 조회했다. PMM Annotations는
+    // 연동할 대상(PMM 서버)이 없어 삭제했고, 나머지 둘을 실제로 동작하게 만들었다.
+    // ---------------------------------------------------------------------
+
+    /**
+     * 페이지별로 적재 함수 구성이 다르다(mssql/postgres는 loadAll, mysql은 loadStatusOverview +
+     * loadKpiStats). 세 대시보드가 이 블록을 그대로 공유할 수 있도록, 선언되지 않은 식별자에도
+     * 안전한 typeof로 존재하는 것만 호출한다.
+     */
+    function refreshAllPanels() {
+        if (typeof loadStorage === 'function') loadStorage();
+        if (typeof loadConnections === 'function') loadConnections();
+        if (typeof loadAll === 'function') loadAll();
+        if (typeof loadStatusOverview === 'function') loadStatusOverview();
+        if (typeof loadKpiStats === 'function') loadKpiStats();
+    }
+
+    (function wireFilterBar() {
+        const INTERVAL_KEY = 'rdb_refresh_interval';
+        const CUSTOM_KEY = 'rdb_refresh_custom_sec';
+        const intervalSel = document.getElementById('refreshIntervalSelect');
+        const customInput = document.getElementById('customIntervalInput');
+        const customUnit = document.getElementById('customIntervalUnit');
+        const hostSel = document.getElementById('hostSelect');
+        let timerId = null;
+        // 선택값이 저장되어 있지 않을 때의 기본 주기 = 5초 (사용자 지정, 2026-09-04).
+        // /api/config의 polling_interval_ms는 오라클 메인 화면 전용 값이라 여기서는 쓰지 않는다 -
+        // 이 대시보드의 주기는 이 상수와 사용자가 고른 값으로만 결정된다.
+        // 예전에는 'auto (5s)' 옵션이 따로 있었는데 아래 '5s' 와 값이 같아 고를 이유가 없었다.
+        // 그래서 옵션을 없애고, 저장돼 있던 'auto' 는 아래에서 5s 로 옮긴다(2026-09-05).
+        const DEFAULT_MS = 5000;
+        // 직접 입력 허용 범위(초). 1초 미만은 의미가 없고, 상한이 없으면 오타 하나로 사실상
+        // 갱신이 멈춘 것처럼 보이므로 1시간에서 자른다.
+        const CUSTOM_MIN_SEC = 1;
+        const CUSTOM_MAX_SEC = 3600;
+
+        function customSec() {
+            const raw = parseInt(customInput ? customInput.value : "", 10);
+            if (isNaN(raw)) return CUSTOM_MIN_SEC;
+            return Math.min(CUSTOM_MAX_SEC, Math.max(CUSTOM_MIN_SEC, raw));
+        }
+
+        function currentMs() {
+            if (!intervalSel) return 0;
+            if (intervalSel.value === 'custom') return customSec() * 1000;
+            return parseInt(intervalSel.value, 10) || 0;
+        }
+
+        /** custom 선택일 때만 숫자 입력칸을 보여준다. */
+        function syncCustomVisibility() {
+            const on = !!intervalSel && intervalSel.value === 'custom';
+            if (customInput) customInput.hidden = !on;
+            if (customUnit) customUnit.hidden = !on;
+        }
+
+        function applyInterval() {
+            if (timerId) { clearInterval(timerId); timerId = null; }
+            const ms = currentMs();
+            if (ms > 0) {
+                // 탭이 백그라운드일 땐 건너뛴다 - 안 보는 화면 때문에 DB를 계속 치지 않기 위함.
+                timerId = setInterval(function () { if (!document.hidden) refreshAllPanels(); }, ms);
+            }
+        }
+
+        if (intervalSel) {
+            const savedCustom = parseInt(localStorage.getItem(CUSTOM_KEY), 10);
+            if (customInput && !isNaN(savedCustom)) customInput.value = savedCustom;
+            let saved = localStorage.getItem(INTERVAL_KEY);
+            // 없어진 'auto' 옵션을 고르고 있던 브라우저를 같은 값의 5s 로 옮긴다.
+            // 이걸 안 하면 저장값이 옵션 목록에 없어 무시되고, 첫 옵션인 off 가 선택돼
+            // 자동 새로고침이 꺼진다.
+            if (saved === 'auto') {
+                saved = String(DEFAULT_MS);
+                localStorage.setItem(INTERVAL_KEY, saved);
+            }
+            if (saved !== null && Array.prototype.some.call(intervalSel.options, function (o) { return o.value === saved; })) {
+                intervalSel.value = saved;
+            } else {
+                intervalSel.value = String(DEFAULT_MS);
+            }
+            syncCustomVisibility();
+            intervalSel.addEventListener('change', function () {
+                localStorage.setItem(INTERVAL_KEY, intervalSel.value);
+                syncCustomVisibility();
+                if (intervalSel.value === 'custom' && customInput) customInput.focus();
+                applyInterval();
+                if (currentMs() > 0) refreshAllPanels();   // 주기를 바꾸면 즉시 한 번 갱신
+            });
+        }
+
+        if (customInput) {
+            // 'input'이 아니라 'change'로 받는다 - 타이핑 중간값(예: '1' -> '15')마다 타이머를
+            // 재설정하면 1초 주기로 잠깐 폭주한다. 확정(blur/Enter/스피너) 시점에만 반영.
+            customInput.addEventListener('change', function () {
+                const sec = customSec();
+                customInput.value = sec;            // 범위를 벗어난 입력은 잘라서 되돌려 보여줌
+                localStorage.setItem(CUSTOM_KEY, String(sec));
+                if (intervalSel && intervalSel.value === 'custom') {
+                    applyInterval();
+                    refreshAllPanels();
+                }
+            });
+        }
+
+        fetch('/api/config').then(function (res) { return res.json(); }).then(function (cfg) {
+            applyInterval();
+
+            if (!hostSel) return;
+            const rdb = [];
+            (cfg.groups || []).forEach(function (g) {
+                (g.instances || []).forEach(function (inst) {
+                    if (inst.db_type && inst.db_type !== 'oracle') rdb.push(inst);
+                });
+            });
+
+            // 헤더 타이틀 옆 chevron 드롭다운. Host 셀렉트와 같은 목록을 쓰지만 그룹 헤더까지
+            // 보여줘서 좌측 트리와 같은 구조로 읽힌다. /api/config를 다시 받지 않고 이 then의
+            // cfg를 그대로 재사용한다.
+            const titleWrap = document.getElementById('pmmTitleWrap');
+            const titleDd = document.getElementById('pmmTitleDropdown');
+            if (titleWrap && titleDd) {
+                let ddHtml = '';
+                (cfg.groups || []).forEach(function (g) {
+                    const list = (g.instances || []).filter(function (i) {
+                        return i.db_type && i.db_type !== 'oracle';
+                    });
+                    if (!list.length) return;
+                    ddHtml += '<div class="td-group">' + g.group_name + '</div>';
+                    ddHtml += list.map(function (inst) {
+                        const page = dbTreeTargetPage(inst.db_type);
+                        const href = page + '?db_id=' + encodeURIComponent(inst.id)
+                            + '&db_type=' + encodeURIComponent(inst.db_type)
+                            + '&name=' + encodeURIComponent(inst.name || inst.id);
+                        const active = inst.id === dbId;
+                        // 현재 보고 있는 인스턴스는 data-href를 주지 않아 클릭해도 이동하지 않는다.
+                        return '<div class="td-item' + (active ? ' active' : '') + '"'
+                            + (active ? '' : ' data-href="' + href + '"') + '>'
+                            + '<span>' + (inst.name || inst.id) + '</span>'
+                            + '<span class="td-host">' + (inst.host || '') + ':' + inst.port + '</span></div>';
+                    }).join('');
+                });
+                titleDd.innerHTML = ddHtml || '<div class="td-group">등록된 RDB DB가 없습니다</div>';
+
+                titleWrap.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    const open = titleDd.classList.toggle('open');
+                    titleWrap.classList.toggle('open', open);
+                });
+                // 드롭다운 내부 클릭이 위 토글까지 올라가 바로 닫히지 않도록 막는다.
+                titleDd.addEventListener('click', function (e) { e.stopPropagation(); });
+                Array.prototype.forEach.call(titleDd.querySelectorAll('.td-item[data-href]'), function (el) {
+                    el.addEventListener('click', function (e) {
+                        e.stopPropagation();
+                        window.location.href = el.getAttribute('data-href');
+                    });
+                });
+                document.addEventListener('click', function () {
+                    titleDd.classList.remove('open');
+                    titleWrap.classList.remove('open');
+                });
+            }
+
+            if (!rdb.length) {
+                hostSel.innerHTML = '<option>등록된 DB 없음</option>';
+                hostSel.disabled = true;
+                return;
+            }
+            hostSel.innerHTML = rdb.map(function (inst) {
+                const page = dbTreeTargetPage(inst.db_type);
+                const href = page + '?db_id=' + encodeURIComponent(inst.id)
+                    + '&db_type=' + encodeURIComponent(inst.db_type)
+                    + '&name=' + encodeURIComponent(inst.name || inst.id);
+                const host = inst.host || '(host 미지정)';
+                const label = host + ':' + inst.port + ' \u00b7 ' + (inst.name || inst.id);
+                return '<option value="' + href + '"' + (inst.id === dbId ? ' selected' : '') + '>' + label + '</option>';
+            }).join('');
+            hostSel.addEventListener('change', function () {
+                if (hostSel.value) window.location.href = hostSel.value;
+            });
+        }).catch(function (err) {
+            // 에러를 삼키면 원인 파악이 불가능하다 - 콘솔과 드롭다운 양쪽에 그대로 드러낸다.
+            console.error('[filterbar] /api/config 처리 실패:', err);
+            applyInterval();
+            if (hostSel) {
+                var reason = (err && err.message) ? err.message : String(err);
+                hostSel.innerHTML = '<option>실패: ' + reason + '</option>';
+                hostSel.disabled = true;
+            }
+        });
+    })();
+
 })();
 </script>
 </body>

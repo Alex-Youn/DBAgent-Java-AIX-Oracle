@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=25">
+    <link rel="stylesheet" href="style.css?v=26">
     <script src="lib/lucide.js"></script>
+    <script src="dbagent-common.js?v=2"></script>
     <script src="lib/mermaid.min.js"></script>
     <script src="lib/chart.js"></script>
     <script src="lib/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -160,6 +161,7 @@
                 <div style="display: flex; justify-content: flex-end; align-items: center; padding-bottom: 15px;">
                     <h1 id="page-title" style="display: none;">대시보드</h1>
                     <div class="header-actions">
+                        <button class="icon-btn rdb-btn" id="rdb-dashboard-btn" style="display: none;" title="RDB 대시보드 (MySQL/MariaDB/PostgreSQL/MS SQL)"><i data-lucide="database"></i>RDB</button>
                         <button class="icon-btn fo-btn" id="fleet-overview-btn" title="Fleet Overview (전체 DB 현황판)">FO</button>
                         <label class="fo-auto-toggle" id="fo-auto-toggle-wrap" title="로그인 시 Fleet Overview로 자동 이동">
                             <input type="checkbox" id="fo-auto-toggle-input"><span>자동</span>
@@ -933,6 +935,6 @@
         </div>
     </div>
     
-    <script src="app.js?v=84"></script>
+    <script src="app.js?v=87"></script>
 </body>
 </html>

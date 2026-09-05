@@ -173,6 +173,32 @@ function getToken() {
             window.location.href = 'fleet-overview.html';
         });
 
+        // RDB 대시보드 바로가기. RDB 화면은 db_id 없이는 아무것도 못 그리므로(각 패널이
+        // /api/rdb/*?db_id=... 로 조회한다) 계정이 접근할 수 있는 첫 RDB 인스턴스를 찾아
+        // 그 화면으로 보낸다.
+        //
+        // 노출 조건은 dbagentCrossNavAccess() - 오라클과 RDB 양쪽 모두에 접근 권한이 있는
+        // 계정에만 보인다(사용자 지시, 2026-09-05). 이전에는 게이팅이 전혀 없어서, RDB 권한이
+        // 없는 계정도 버튼을 보고 건너간 뒤 "해당 DB에 대한 접근 권한이 없습니다" 만 봤다.
+        const rdbBtn = document.getElementById('rdb-dashboard-btn');
+        if (rdbBtn) {
+            rdbBtn.style.display = 'none'; // 판정 전에는 감춰 둔다 - 잠깐 떴다 사라지지 않도록
+            window.dbagentLoadDbInstances().then(list => {
+                const acc = window.dbagentCrossNavAccess(list);
+                if (!acc.allowed) return;
+                const first = acc.rdb[0];
+                const href = window.dbagentRdbPageFor(first.engine)
+                    + '?db_id=' + encodeURIComponent(first.id)
+                    + '&db_type=' + encodeURIComponent(first.engine)
+                    + '&name=' + encodeURIComponent(first.label);
+                rdbBtn.title = 'RDB 대시보드 (' + first.label + ')';
+                rdbBtn.addEventListener('click', () => { window.location.href = href; });
+                rdbBtn.style.display = '';
+            }).catch(err => {
+                console.error('[rdb-btn] /api/config 조회 실패:', err);
+            });
+        }
+
         document.getElementById('logout-btn')?.addEventListener('click', async () => {
             const token = getToken();
             // Only invalidates this device's own session - other concurrent logins to the same
@@ -292,13 +318,13 @@ function getToken() {
             if (popup) popup.focus();
         }
         document.getElementById('open-account-mgmt-btn')?.addEventListener('click', () => {
-            openAdminPopup('account-mgmt.html', 'dbagent_account_mgmt', 'width=620,height=760,resizable=yes,scrollbars=yes');
+            openAdminPopup('account-mgmt.html', 'dbagent_account_mgmt', window.dbagentAdminPopupFeatures('account'));
         });
         document.getElementById('open-db-mgmt-btn')?.addEventListener('click', () => {
             openAdminPopup('db-mgmt.html', 'dbagent_db_mgmt', 'width=980,height=820,resizable=yes,scrollbars=yes');
         });
         document.getElementById('open-menu-visibility-btn')?.addEventListener('click', () => {
-            openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', 'width=560,height=560,resizable=yes,scrollbars=yes');
+            openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', window.dbagentAdminPopupFeatures('menu'));
         });
 
         // --- Menu visibility settings (admin only) ---

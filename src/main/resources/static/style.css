@@ -12,6 +12,12 @@
     --warning: #fab219;
     --danger: #d03b3b;
     --info: #3987e5;
+
+    /* RDB 대시보드 바로가기 버튼 전용. --primary(FO)와 뚜렷이 구분되어야 하는데 --success/
+       --warning/--danger는 전부 상태색이라 네비게이션에 쓸 수 없어 새로 추가했다. RDB 대시보드
+       쪽의 Oracle 버튼(.ora-btn)도 같은 보라를 쓴다 - "다른 DB 계열로 건너간다"는 같은 역할에
+       같은 색을 배정한 것. 기본 배색(#0d0d0d) 7.1:1, 네이비 배색(#0f172a) 6.6:1로 대비 충분. */
+    --rdb: #a78bfa;
     
     --glass-bg: rgba(13, 13, 13, 0.6);
     --glass-border: rgba(255, 255, 255, 0.05);
@@ -167,7 +173,10 @@ body {
 }
 
 .sidebar-header h2 {
-    font-size: 1.2rem;
+    /* 2026-09-04 사용자 요청으로 한 단계 확대(1.2 -> 1.35rem). .app-container의 zoom:90%
+       때문에 실제 렌더 크기는 1.215rem이고, RDB 대시보드의 .pmm-brand(zoom 없음)를 같은
+       1.215rem으로 맞춰 두 화면의 브랜드 글씨가 같아 보이게 했다. 한쪽만 고치면 어긋난다. */
+    font-size: 1.35rem;
     white-space: nowrap;
     margin: 0;
 }
@@ -268,6 +277,16 @@ body {
     gap: 16px;
 }
 
+/* 설정(톱니)만 드롭다운 앵커 역할을 하는 .gear-menu-wrap 안에 한 단계 더 들어가 있다. .header-actions의
+   flex 정렬은 그 래퍼까지만 걸리고 안쪽 버튼에는 걸리지 않아, 아이콘이 래퍼 위쪽에 붙어 옆의 아이콘들보다
+   ~5px 위로 떠 보였다(아이콘 중심 32.4 vs 열쇠/로그아웃/팔레트 37.3). 래퍼를 flex로 만들어 안쪽 버튼을
+   세로 가운데로 내린다. .gear-dropdown은 position:absolute라 위치에 영향받지 않는다.
+   RDB 대시보드 쪽은 .pmm-header-icons가 이미 align-items:center를 갖고 있어 같은 증상이 없다. */
+.gear-menu-wrap {
+    display: flex;
+    align-items: center;
+}
+
 .icon-btn {
     background: transparent;
     border: none;
@@ -289,16 +308,44 @@ body {
     font-size: 12px;
     letter-spacing: 0.02em;
     padding: 6px 10px;
-    border: 1px solid var(--border) !important;
+    border: 1px solid var(--primary) !important;
     border-radius: 8px;
-    background: var(--bg-panel);
+    background: var(--primary);
+    color: #0a1a2b;
 }
 
 .fo-btn:hover {
-    background: var(--bg-hover);
-    border-color: var(--primary) !important;
-    color: var(--primary);
+    background: #5b9dee;
+    border-color: #5b9dee !important;
+    color: #0a1a2b;
 }
+
+/* RDB(MySQL/MariaDB/PostgreSQL/MS SQL) 대시보드 바로가기. FO가 솔리드라 이쪽은 아웃라인으로
+   위계를 한 단계 낮췄다. border에 !important를 붙이는 이유는 .icon-btn이 border:none을 걸어
+   두었기 때문(.fo-btn과 동일한 사정). lucide SVG는 stroke="currentColor"라 아이콘도 color를
+   따라간다. */
+.rdb-btn {
+    font-family: inherit;
+    font-weight: 800;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    padding: 6px 10px;
+    border: 1px solid var(--rdb) !important;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--rdb);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rdb-btn:hover {
+    background: rgba(167, 139, 250, 0.14);
+    border-color: #c4b5fd !important;
+    color: #c4b5fd;
+}
+
+.rdb-btn i { width: 13px; height: 13px; }
 
 /* Personal "로그인 시 자동 이동" preference next to the FO button (사용자 요청: "admin 권한도 진입
    옵션 선택할 수 있나") - same visibility rule as the FO button itself (hidden entirely for accounts

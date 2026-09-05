@@ -4,18 +4,41 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>계정 관리</title>
-    <link rel="stylesheet" href="style.css?v=17">
+    <link rel="stylesheet" href="style.css?v=26">
     <script>
         (function () {
             const saved = localStorage.getItem('dbagent_theme') || 'dark';
             if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
         })();
     </script>
+    <script src="dbagent-common.js?v=2"></script>
     <style>
         html, body { height: 100%; }
         body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); box-sizing: border-box; }
         .login-card { max-width: 1200px; margin: 0; max-height: none; box-sizing: border-box; }
         .field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+        /* 메뉴/DB 두 목록은 각자 필요한 만큼만 차지하고 나란히 놓인다. 1fr 그리드로 두면
+           칸 폭이 창 크기에 묶여, 항목이 늘어도 창을 얼마나 키워야 하는지 잴 수 없다
+           (dbagentAutoSizePopup 의 max-content 측정이 무력화됨). */
+        .access-field-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+        .access-field-row > div { flex: 0 0 auto; }
+        .engine-badge {
+            flex-shrink: 0;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            padding: 1px 6px;
+            border-radius: 4px;
+            border: 1px solid currentColor;
+            opacity: 0.9;
+        }
+        .engine-oracle { color: #e0777d; }
+        .engine-mysql { color: #5aa9d6; }
+        .engine-mariadb { color: #c99a6e; }
+        .engine-postgres, .engine-postgresql { color: #7f9fd4; }
+        .engine-mssql { color: #8fbf7f; }
+        .engine-other { color: var(--text-muted); }
+        .access-load-error { color: var(--danger); font-size: 0.85rem; }
         .login-form-group select {
             width: 100%;
             padding: 12px;
@@ -49,26 +72,51 @@
             }
             const token = sessionStorage.getItem('dbagent_token');
 
-            function renderMenuCheckboxes(container, hiddenSet) {
-                container.innerHTML = '';
-                window.opener.document.querySelectorAll('.top-nav .nav-item[data-target]').forEach(item => {
-                    const target = item.getAttribute('data-target');
-                    if (target === 'dashboard') return;
-                    const label = item.querySelector('span') ? item.querySelector('span').innerText : target;
-                    const row = document.createElement('label');
-                    row.innerHTML = `<input type="checkbox" data-menu-target="${target}" ${hiddenSet.has(target) ? '' : 'checked'}><span>${label}</span>`;
-                    container.appendChild(row);
+            // 목록의 출처는 opener DOM 이 아니라 dbagent-common.js (메뉴 상수 + /api/config) 다.
+            // 이유는 그 파일 상단 주석 참고 - 요약하면 (1) 오라클 사이드바가 RDB 인스턴스를 빼면서
+            // 권한 화면에서도 같이 사라졌고, (2) RDB 대시보드에서 이 팝업을 열면 opener 에 해당
+            // DOM 이 없어 목록이 비고, 그 상태로 저장하면 계정 권한이 조용히 초기화됐다.
+            let dbInstances = null;   // null = 아직 로딩 전이거나 실패
+            let dbLoadError = '';
+
+            function loadDbInstances() {
+                return window.dbagentLoadDbInstances()
+                    .then(list => { dbInstances = list; dbLoadError = ''; })
+                    .catch(err => {
+                        dbInstances = null;
+                        dbLoadError = 'DB 목록을 불러오지 못했습니다 (' + (err && err.message ? err.message : err) + ')';
+                        console.error('[account-mgmt] /api/config 조회 실패', err);
+                    });
+            }
+
+            // 목록에 없는 id 가 계정에 남아 있으면(인스턴스가 삭제됐거나 이름이 바뀐 경우) 저장할 때
+            // 조용히 사라져 권한이 풀린다. 별도 행으로 함께 보여주고 체크 해제 상태를 유지한다.
+            function withUnknown(items, hiddenSet) {
+                const known = new Set(items.map(i => i.id));
+                const merged = items.slice();
+                hiddenSet.forEach(id => {
+                    if (!known.has(id)) merged.push({ id, label: id, missing: true });
                 });
+                return merged;
+            }
+
+            function renderMenuCheckboxes(container, hiddenSet) {
+                const openerDoc = (window.opener && !window.opener.closed) ? window.opener.document : null;
+                const items = withUnknown(window.dbagentMenuItems(openerDoc), hiddenSet);
+                window.dbagentRenderCheckboxGrid(container, items, hiddenSet, 'data-menu-target');
             }
             function renderDbCheckboxes(container, hiddenSet) {
-                container.innerHTML = '';
-                window.opener.document.querySelectorAll('#db-groups-container .instance-item[data-db-id]').forEach(item => {
-                    const dbId = item.getAttribute('data-db-id');
-                    const label = item.querySelector('span') ? item.querySelector('span').innerText : dbId;
-                    const row = document.createElement('label');
-                    row.innerHTML = `<input type="checkbox" data-db-target="${dbId}" ${hiddenSet.has(dbId) ? '' : 'checked'}><span>${label}</span>`;
-                    container.appendChild(row);
-                });
+                container._hiddenSet = hiddenSet; // /api/config 가 늦게 도착하면 이걸로 다시 그린다
+                if (!dbInstances) {
+                    container.innerHTML = '';
+                    container.style.gridTemplateColumns = '1fr';
+                    const msg = document.createElement('div');
+                    msg.className = 'access-load-error';
+                    msg.textContent = dbLoadError || '불러오는 중...';
+                    container.appendChild(msg);
+                    return;
+                }
+                window.dbagentRenderCheckboxGrid(container, withUnknown(dbInstances, hiddenSet), hiddenSet, 'data-db-target');
             }
             function collectHidden(container, attr) {
                 const hidden = [];
@@ -76,6 +124,14 @@
                     if (!cb.checked) hidden.push(cb.getAttribute(attr));
                 });
                 return hidden;
+            }
+            // DB 목록을 못 읽은 채로 저장하면 hidden_dbs 가 빈 배열로 덮여 그 계정의 DB 제한이
+            // 전부 풀린다. 저장 자체를 막는다.
+            function blockedByDbLoadFailure(errorEl) {
+                if (dbInstances) return false;
+                errorEl.textContent = (dbLoadError || 'DB 목록을 불러오지 못했습니다') + ' - 저장할 수 없습니다. 창을 닫고 다시 열어 주세요.';
+                errorEl.style.display = 'block';
+                return true;
             }
 
             const accessFieldsHtml = (prefix) => `
@@ -91,13 +147,13 @@
                         <span>Fleet Overview 접근 허용 (관리자는 항상 접근 가능)</span>
                     </label>
                 </div>
-                <div class="field-row">
+                <div class="access-field-row">
                     <div style="text-align: left;">
                         <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">표시할 메뉴</label>
                         <div id="${prefix}-menu-list" class="menu-checkbox-grid"></div>
                     </div>
                     <div style="text-align: left;">
-                        <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">접속 대상 DB</label>
+                        <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">접속 대상 DB (Oracle / RDB 전체)</label>
                         <div id="${prefix}-db-list" class="menu-checkbox-grid"></div>
                     </div>
                 </div>
@@ -176,6 +232,8 @@
                     document.getElementById(v).style.display = (v === id) ? 'block' : 'none';
                 });
                 window.scrollTo(0, 0);
+                // 뷰마다 필요한 크기가 다르다 - 목록이 있는 생성/수정 뷰는 넓고 길다.
+                window.dbagentAutoSizePopup({ minWidth: 560, minHeight: 380 });
             }
 
             async function loadUserList() {
@@ -253,6 +311,7 @@
                     acctError.style.display = 'block';
                     return;
                 }
+                if (blockedByDbLoadFailure(acctError)) return;
                 const role = document.getElementById('new-user-is-admin').checked ? 'admin' : 'user';
                 const fleetOverview = document.getElementById('new-user-fleet-overview').checked;
                 const hiddenMenus = collectHidden(document.getElementById('new-user-menu-list'), 'data-menu-target');
@@ -290,6 +349,7 @@
 
             document.getElementById('edit-user-cancel-btn').addEventListener('click', () => showView('account-mgmt-main-view'));
             document.getElementById('edit-user-save-btn').addEventListener('click', async (e) => {
+                if (blockedByDbLoadFailure(editUserError)) return;
                 const username = e.target.dataset.username;
                 const role = document.getElementById('edit-user-is-admin').checked ? 'admin' : 'user';
                 const fleetOverview = document.getElementById('edit-user-fleet-overview').checked;
@@ -316,6 +376,16 @@
             });
 
             loadUserList();
+            // 계정 목록과 무관하므로 병렬로 받는다. 그 사이에 생성/수정 뷰를 열었다면 DB 목록 자리에
+            // "불러오는 중..." 이 보이므로, 도착한 뒤 그 뷰를 다시 그린다.
+            loadDbInstances().then(() => {
+                ['new-user-db-list', 'edit-user-db-list'].forEach(id => {
+                    const container = document.getElementById(id);
+                    if (container && container._hiddenSet) renderDbCheckboxes(container, container._hiddenSet);
+                });
+                window.dbagentAutoSizePopup({ minWidth: 560, minHeight: 380 });
+            });
+            window.dbagentAutoSizePopup({ minWidth: 560, minHeight: 380 });
         })();
     </script>
 </body>
