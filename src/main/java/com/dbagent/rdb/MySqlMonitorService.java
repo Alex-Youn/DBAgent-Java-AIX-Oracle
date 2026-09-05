@@ -4,6 +4,7 @@ import com.dbagent.oracle.TargetDbConfig;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -378,5 +379,317 @@ public class MySqlMonitorService implements EngineMonitorService {
             }
         }
         return 0L;
+    }
+
+    // =============================================================================================
+    // RDB 대시보드 세션 화면 3종 (문서 "세션리스트 및 세션 정보 조회 쿼리.md" 4절)
+    //
+    // !! MySQL 과 MariaDB 는 여기서 갈라진다. MariaDB 11.8 에는 performance_schema.processlist 도
+    //    data_locks/data_lock_waits 도 존재하지 않고(2026-09-04 실측: ERROR 1146), 반대로 MySQL 8.0
+    //    에서 제거된 information_schema.INNODB_LOCKS/INNODB_LOCK_WAITS 는 MariaDB 에 남아 있다.
+    //    wire protocol 이 호환된다고 모니터링 뷰까지 같지는 않다.
+    // =============================================================================================
+
+    /**
+     * MariaDB 여부. databases.json 의 db_type 을 그대로 믿지 않고 JDBC 메타데이터의 제품 버전
+     * 문자열("11.8.9-MariaDB-...")로 먼저 판정한다 - db_type 을 mysql 로 잘못 등록한 MariaDB 에
+     * MySQL 전용 쿼리를 날리면 ERROR 1146 으로 화면이 통째로 죽는데, 그건 설정 실수치고는 대가가
+     * 너무 크다. 메타데이터는 드라이버가 접속 시 이미 받아 둔 값이라 추가 쿼리가 나가지 않는다.
+     */
+    private boolean isMariaDb(TargetDbConfig target, Connection conn) {
+        try {
+            String version = conn.getMetaData().getDatabaseProductVersion();
+            if (version != null && !version.isEmpty()) {
+                return version.toLowerCase(Locale.US).contains("mariadb");
+            }
+        } catch (SQLException e) {
+            // 메타데이터를 못 읽으면 등록값으로 판단한다.
+        }
+        return "mariadb".equalsIgnoreCase(target.dbType());
+    }
+
+    @Override
+    public List<Map<String, Object>> getSessionList(TargetDbConfig target) throws SQLException {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target)) {
+            // 유휴 세션(Sleep)과 서버 자신의 백그라운드 스레드(Daemon - event_scheduler 등), 그리고
+            // 이 모니터링 쿼리 자신을 뺀다. Daemon 제외는 문서에 없는 추가분인데, 넣지 않으면 활성
+            // 세션 목록 맨 위에 항상 event_scheduler 한 줄이 상주해 실제 세션을 밀어낸다.
+            String sql = "SELECT id AS session_id, user, host, db, command, " +
+                    "time AS duration_seconds, state, LEFT(info, 500) AS query_preview " +
+                    "FROM " + processlistView(target, conn) + " " +
+                    "WHERE command NOT IN ('Sleep', 'Daemon') AND id <> CONNECTION_ID() " +
+                    "ORDER BY time DESC";
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery(sql)) {
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("session_id", rs.getObject("session_id"));
+                    row.put("user", rs.getString("user"));
+                    row.put("host", rs.getString("host"));
+                    row.put("db", rs.getString("db"));
+                    // MySQL/MariaDB 에는 클라이언트 프로그램명 개념이 없다(문서 2절 매핑표의 '-').
+                    row.put("program", null);
+                    row.put("status", rs.getString("command"));
+                    row.put("duration_seconds", rs.getObject("duration_seconds"));
+                    row.put("wait_event", rs.getString("state"));
+                    row.put("query_preview", rs.getString("query_preview"));
+                    rows.add(row);
+                }
+            }
+        }
+        return rows;
+    }
+
+    @Override
+    public Map<String, Object> getSessionDetail(TargetDbConfig target, long sessionId) throws SQLException {
+        Map<String, Object> result = new LinkedHashMap<>();
+        try (Connection conn = poolManager.getConnection(target)) {
+            String sql = "SELECT id, user, host, db, command, state, time, info " +
+                    "FROM " + processlistView(target, conn) + " WHERE id = ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setLong(1, sessionId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        result.put("found", false);
+                        return result;
+                    }
+                    List<Map<String, Object>> fields = new ArrayList<>();
+                    fields.add(field("세션 ID", rs.getObject("id")));
+                    fields.add(field("계정", rs.getString("user")));
+                    fields.add(field("접속 호스트", rs.getString("host")));
+                    fields.add(field("현재 DB", rs.getString("db")));
+                    fields.add(field("명령 유형", rs.getString("command")));
+                    fields.add(field("처리 상태", rs.getString("state")));
+                    fields.add(field("경과 시간(초)", rs.getObject("time")));
+                    result.put("found", true);
+                    result.put("session_id", rs.getObject("id"));
+                    result.put("fields", fields);
+                    result.put("sql_text", rs.getString("info"));
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public List<Map<String, Object>> getLockWaits(TargetDbConfig target) throws SQLException {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target)) {
+            boolean mariadb = isMariaDb(target, conn);
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery(mariadb ? MARIADB_LOCK_SQL : MYSQL_LOCK_SQL)) {
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("waiter_session_id", rs.getObject("waiter_session_id"));
+                    row.put("waiter_user", rs.getString("waiter_user"));
+                    row.put("waiter_host", rs.getString("waiter_host"));
+                    row.put("wait_duration_sec", rs.getObject("wait_duration_sec"));
+                    // 엔진별 대기 유형 표현이 달라 문자열로 합쳐 담는다 - 여기서는
+                    // "요청한 락 모드 (대상 테이블)" 형태.
+                    row.put("wait_type", lockWaitType(rs.getString("requested_mode"), rs.getString("target_table")));
+                    row.put("waiter_query", rs.getString("waiter_query"));
+                    row.put("blocker_session_id", rs.getObject("blocker_session_id"));
+                    row.put("blocker_user", rs.getString("blocker_user"));
+                    row.put("blocker_host", rs.getString("blocker_host"));
+                    row.put("blocker_state", rs.getString("holding_mode"));
+                    row.put("blocker_query", rs.getString("blocker_query"));
+                    rows.add(row);
+                }
+            }
+        }
+        return rows;
+    }
+
+    /** MySQL 8 은 performance_schema, MariaDB 는 information_schema - 위 구분 주석 참고. */
+    private String processlistView(TargetDbConfig target, Connection conn) {
+        return isMariaDb(target, conn) ? "information_schema.PROCESSLIST" : "performance_schema.processlist";
+    }
+
+    private Map<String, Object> field(String label, Object value) {
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("label", label);
+        f.put("value", value);
+        return f;
+    }
+
+    private String lockWaitType(String mode, String table) {
+        if (mode == null && table == null) {
+            return null;
+        }
+        if (table == null) {
+            return mode;
+        }
+        return (mode == null ? "?" : mode) + " (" + table + ")";
+    }
+
+    /**
+     * MySQL 8.0+ 락 대기 체인. 문서 4.4 를 실측(2026-09-05, MySQL 8.4.11)으로 고쳐 쓴 것이다 -
+     * 원문은 data_lock_waits 에서 requested_lock_mode / blocking_lock_mode 를 읽는데 그 뷰에는
+     * 두 컬럼이 없다(ERROR 1054). 락 모드는 data_locks 쪽에 있으므로 요청/블로킹 lock_id 로
+     * data_locks 를 각각 조인해서 가져온다.
+     */
+    private static final String MYSQL_LOCK_SQL =
+            "SELECT w_th.processlist_id AS waiter_session_id, " +
+            "       w_th.processlist_user AS waiter_user, " +
+            "       w_th.processlist_host AS waiter_host, " +
+            "       w_th.processlist_time AS wait_duration_sec, " +
+            "       w_l.lock_mode AS requested_mode, " +
+            "       CONCAT(w_l.object_schema, '.', w_l.object_name) AS target_table, " +
+            "       LEFT(w_th.processlist_info, 300) AS waiter_query, " +
+            "       b_th.processlist_id AS blocker_session_id, " +
+            "       b_th.processlist_user AS blocker_user, " +
+            "       b_th.processlist_host AS blocker_host, " +
+            "       b_l.lock_mode AS holding_mode, " +
+            "       LEFT(b_th.processlist_info, 300) AS blocker_query " +
+            "FROM performance_schema.data_lock_waits w " +
+            "JOIN performance_schema.data_locks w_l ON w_l.engine_lock_id = w.requesting_engine_lock_id " +
+            "JOIN performance_schema.data_locks b_l ON b_l.engine_lock_id = w.blocking_engine_lock_id " +
+            "JOIN performance_schema.threads w_th ON w_th.thread_id = w.requesting_thread_id " +
+            "JOIN performance_schema.threads b_th ON b_th.thread_id = w.blocking_thread_id " +
+            "ORDER BY w_th.processlist_time DESC";
+
+    /**
+     * MariaDB(및 MySQL 5.7 이하) 락 대기 체인. 문서 4.5 를 실측(2026-09-05, MariaDB 11.8.9)으로
+     * 고쳐 쓴 것이다 - 원문은 innodb_lock_waits 의 컬럼을 requesting_lock_id 로 적었는데 실제
+     * 이름은 requested_lock_id 다(ERROR 1054). 이 뷰가 트랜잭션 id 도 함께 주므로 원문처럼
+     * innodb_locks 를 거쳐 트랜잭션을 찾아갈 필요 없이 innodb_trx 로 바로 조인해 조인 수를 줄였고,
+     * 락 모드/대상 테이블만 innodb_locks 에서 LEFT JOIN 으로 덧붙인다 - 락 행이 그 사이 사라져도
+     * 대기 관계 자체는 사라지지 않게 하기 위함이다.
+     */
+    private static final String MARIADB_LOCK_SQL =
+            "SELECT w_p.id AS waiter_session_id, " +
+            "       w_p.user AS waiter_user, " +
+            "       w_p.host AS waiter_host, " +
+            "       w_p.time AS wait_duration_sec, " +
+            "       w_l.lock_mode AS requested_mode, " +
+            "       w_l.lock_table AS target_table, " +
+            "       LEFT(w_p.info, 300) AS waiter_query, " +
+            "       b_p.id AS blocker_session_id, " +
+            "       b_p.user AS blocker_user, " +
+            "       b_p.host AS blocker_host, " +
+            "       b_l.lock_mode AS holding_mode, " +
+            "       LEFT(b_p.info, 300) AS blocker_query " +
+            "FROM information_schema.innodb_lock_waits w " +
+            "JOIN information_schema.innodb_trx w_t ON w_t.trx_id = w.requesting_trx_id " +
+            "JOIN information_schema.processlist w_p ON w_p.id = w_t.trx_mysql_thread_id " +
+            "LEFT JOIN information_schema.innodb_locks w_l ON w_l.lock_id = w.requested_lock_id " +
+            "JOIN information_schema.innodb_trx b_t ON b_t.trx_id = w.blocking_trx_id " +
+            "JOIN information_schema.processlist b_p ON b_p.id = b_t.trx_mysql_thread_id " +
+            "LEFT JOIN information_schema.innodb_locks b_l ON b_l.lock_id = w.blocking_lock_id " +
+            "ORDER BY w_p.time DESC";
+
+    /**
+     * MySQL/MariaDB 는 {@code KILL <id>} 로 커넥션을 끊는다({@code KILL QUERY} 는 쿼리만 취소하고
+     * 커넥션은 남는데, 오라클 화면의 kill 이 세션 자체를 끊는 것과 맞추려고 커넥션을 끊는 쪽을 쓴다).
+     * 이 명령은 바인드 파라미터를 받지 못하므로 문자열로 조립한다 - 그래서 파라미터가 long 이다
+     * (EngineMonitorService.killSession 주석 참고).
+     */
+    @Override
+    public Map<String, Object> killSession(TargetDbConfig target, long sessionId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("session_id", sessionId);
+        try (Connection conn = poolManager.getConnection(target);
+             Statement st = conn.createStatement()) {
+            st.execute("KILL " + sessionId);
+            result.put("status", "killed");
+            result.put("message", null);
+        } catch (SQLException e) {
+            result.put("status", "error");
+            // ER_NO_SUCH_THREAD(1094) - 누르기 직전에 스스로 끝난 세션이다. 사용자에게는
+            // 원문 에러보다 "이미 종료되었다" 가 정확한 설명이다.
+            result.put("message", e.getErrorCode() == 1094
+                    ? "이미 종료된 세션입니다." : e.getMessage());
+        }
+        return result;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 용량 조회 (EngineMonitorService 의 용량 섹션 주석 참고)
+    //
+    // MySQL/MariaDB 에는 오라클의 테이블스페이스에 해당하는 관리 단위가 없다(InnoDB 의
+    // file-per-table 은 테이블 하나가 파일 하나일 뿐 묶음이 아니다). 그래서 스키마(=데이터베이스)를
+    // 1단으로 잡는다.
+    // ---------------------------------------------------------------------------------------------
+
+    @Override
+    public Map<String, Object> getCapacity(TargetDbConfig target) throws SQLException {
+        // getStorage() 와 달리 schemata 에서 시작해 LEFT JOIN 한다 - 테이블이 하나도 없는 스키마도
+        // 0 MB 행으로 나와야 한다(목록에서 빠지면 "조회 실패" 로 읽힌다).
+        String sql = "SELECT s.schema_name AS name, " +
+                "COUNT(t.table_name) AS table_count, " +
+                "ROUND(COALESCE(SUM(t.data_length), 0) / 1048576, 2) AS data_mb, " +
+                "ROUND(COALESCE(SUM(t.index_length), 0) / 1048576, 2) AS index_mb, " +
+                "ROUND(COALESCE(SUM(t.data_length + t.index_length), 0) / 1048576, 2) AS used_mb, " +
+                "ROUND(COALESCE(SUM(t.data_free), 0) / 1048576, 2) AS free_mb " +
+                "FROM information_schema.schemata s " +
+                "LEFT JOIN information_schema.tables t " +
+                "  ON t.table_schema = s.schema_name AND t.table_type = 'BASE TABLE' " +
+                "WHERE s.schema_name NOT IN ('information_schema','mysql','performance_schema','sys') " +
+                "GROUP BY s.schema_name ORDER BY used_mb DESC";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("name", rs.getString("name"));
+                row.put("table_count", rs.getObject("table_count"));
+                row.put("data_mb", rs.getObject("data_mb"));
+                row.put("index_mb", rs.getObject("index_mb"));
+                row.put("used_mb", rs.getObject("used_mb"));
+                // 미리 할당해 두는 개념이 없다 - 억지로 used 를 넣으면 사용률이 항상 100% 가 된다.
+                row.put("total_mb", null);
+                row.put("free_mb", rs.getObject("free_mb"));
+                row.put("used_pct", null);
+                rows.add(row);
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("unit", "스키마");
+        result.put("note", "MySQL/MariaDB에는 Oracle의 테이블스페이스에 해당하는 관리 단위가 없어 " +
+                "스키마(데이터베이스) 기준으로 집계합니다. 시스템 스키마" +
+                "(information_schema/mysql/performance_schema/sys)는 제외했습니다. " +
+                "미리 할당해 두는 개념이 없어 '할당'과 '사용률'은 표시하지 않습니다. " +
+                "'여유'는 InnoDB가 재사용할 수 있는 조각 공간(data_free)이며, 통계 기반이라 정확한 값이 아닙니다.");
+        result.put("rows", rows);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> getCapacityDetail(TargetDbConfig target, String scope) throws SQLException {
+        // scope 는 사용자가 고른 스키마명이다 - 반드시 바인딩한다.
+        String sql = "SELECT table_name AS name, table_rows AS row_count, " +
+                "ROUND(data_length / 1048576, 2) AS data_mb, " +
+                "ROUND(index_length / 1048576, 2) AS index_mb, " +
+                "ROUND((data_length + index_length) / 1048576, 2) AS total_mb, " +
+                "ROUND(data_free / 1048576, 2) AS free_mb " +
+                "FROM information_schema.tables " +
+                "WHERE table_schema = ? AND table_type = 'BASE TABLE' " +
+                "ORDER BY (data_length + index_length) DESC";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, scope);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("name", rs.getString("name"));
+                    row.put("row_count", rs.getObject("row_count"));
+                    row.put("data_mb", rs.getObject("data_mb"));
+                    row.put("index_mb", rs.getObject("index_mb"));
+                    row.put("total_mb", rs.getObject("total_mb"));
+                    row.put("free_mb", rs.getObject("free_mb"));
+                    rows.add(row);
+                }
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("scope", scope);
+        // table_rows 는 InnoDB 에서 통계 기반 추정치다 - 정확한 건수로 오해하지 않도록 밝혀둔다.
+        result.put("note", rows.isEmpty() ? "이 스키마에는 테이블이 없습니다."
+                : "행 수는 InnoDB 통계 기반 추정치라 실제와 다를 수 있습니다(정확한 값은 COUNT(*)).");
+        result.put("rows", rows);
+        return result;
     }
 }

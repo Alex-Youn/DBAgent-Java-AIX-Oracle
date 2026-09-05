@@ -4,6 +4,7 @@ import com.dbagent.oracle.TargetDbConfig;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -368,5 +369,267 @@ public class PostgresMonitorService implements EngineMonitorService {
             return String.format(Locale.US, "%.1f hours", hours);
         }
         return String.format(Locale.US, "%d min", seconds / 60);
+    }
+
+    // =============================================================================================
+    // RDB 대시보드 세션 화면 3종 (문서 "세션리스트 및 세션 정보 조회 쿼리.md" 3절)
+    //
+    // PostgreSQL 은 세션 정보와 실행 중인 SQL 이 pg_stat_activity 한 뷰에 함께 있어 MS SQL 처럼
+    // 뷰를 조인할 필요가 없다. 대신 락 관계는 pg_blocking_pids() 가 블로커 pid '배열' 을 주므로
+    // UNNEST 로 펼쳐 1:N 을 그대로 행으로 만든다.
+    // =============================================================================================
+
+    @Override
+    public List<Map<String, Object>> getSessionList(TargetDbConfig target) throws SQLException {
+        // getSessions() 와 달리 datname 으로 좁히지 않는다 - 이 화면은 DBA 가 인스턴스 전체의 활성
+        // 세션을 보는 곳이고, 다른 DB 에서 도는 무거운 쿼리가 목록에서 사라지면 오히려 못 찾는다.
+        // 대신 db 컬럼(datname)을 함께 내려 어느 DB 의 세션인지 화면에서 구분할 수 있게 한다.
+        // client_addr 는 유닉스 소켓 접속이면 NULL 이라 'local' 로 채운다(빈 칸은 조회 실패처럼 보인다).
+        String sql = "SELECT pid AS session_id, usename, " +
+                "COALESCE(HOST(client_addr), 'local') AS client_host, " +
+                "datname, application_name, state, wait_event_type, wait_event, " +
+                "ROUND(EXTRACT(EPOCH FROM (clock_timestamp() - query_start))::numeric, 2) AS duration_seconds, " +
+                "LEFT(query, 500) AS query_preview " +
+                "FROM pg_stat_activity " +
+                "WHERE state IS NOT NULL AND state <> 'idle' AND pid <> pg_backend_pid() " +
+                "ORDER BY query_start ASC NULLS LAST";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("session_id", rs.getObject("session_id"));
+                row.put("user", rs.getString("usename"));
+                row.put("host", rs.getString("client_host"));
+                row.put("db", rs.getString("datname"));
+                row.put("program", rs.getString("application_name"));
+                row.put("status", rs.getString("state"));
+                row.put("duration_seconds", rs.getObject("duration_seconds"));
+                row.put("wait_event", waitEvent(rs.getString("wait_event_type"), rs.getString("wait_event")));
+                row.put("query_preview", rs.getString("query_preview"));
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
+    @Override
+    public Map<String, Object> getSessionDetail(TargetDbConfig target, long sessionId) throws SQLException {
+        String sql = "SELECT pid, usename, COALESCE(HOST(client_addr), 'local') AS client_host, " +
+                "datname, application_name, state, wait_event_type, wait_event, " +
+                "ROUND(EXTRACT(EPOCH FROM (clock_timestamp() - query_start))::numeric, 2) AS elapsed_sec, " +
+                "ROUND(EXTRACT(EPOCH FROM (clock_timestamp() - xact_start))::numeric, 2) AS xact_sec, " +
+                "query AS sql_text " +
+                "FROM pg_stat_activity WHERE pid = ?";
+        Map<String, Object> result = new LinkedHashMap<>();
+        try (Connection conn = poolManager.getConnection(target);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            // pg 의 pid 는 int4 라 int 로 바인딩한다.
+            ps.setInt(1, (int) sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    result.put("found", false);
+                    return result;
+                }
+                List<Map<String, Object>> fields = new ArrayList<>();
+                fields.add(field("세션 ID (pid)", rs.getObject("pid")));
+                fields.add(field("계정", rs.getString("usename")));
+                fields.add(field("접속 IP", rs.getString("client_host")));
+                fields.add(field("현재 DB", rs.getString("datname")));
+                fields.add(field("프로그램명", rs.getString("application_name")));
+                fields.add(field("상태", rs.getString("state")));
+                fields.add(field("경과 시간(초)", rs.getObject("elapsed_sec")));
+                // 트랜잭션을 열어둔 채 방치되는 세션을 잡아내기 위한 값(문서 6.2) - 쿼리 경과보다
+                // 훨씬 길면 idle in transaction 으로 락/블로트를 만들고 있을 수 있다.
+                fields.add(field("트랜잭션 경과(초)", rs.getObject("xact_sec")));
+                fields.add(field("대기 이벤트", waitEvent(rs.getString("wait_event_type"), rs.getString("wait_event"))));
+                result.put("found", true);
+                result.put("session_id", rs.getObject("pid"));
+                result.put("fields", fields);
+                result.put("sql_text", rs.getString("sql_text"));
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public List<Map<String, Object>> getLockWaits(TargetDbConfig target) throws SQLException {
+        // 문서 3.3 그대로. pg_blocking_pids() 가 블로커 pid 배열을 주므로 UNNEST 로 펼쳐
+        // "대기 세션 1개 : 블로커 N개" 관계를 행으로 편다.
+        String sql = "SELECT blocked.pid AS waiter_pid, blocked.usename AS waiter_user, " +
+                "COALESCE(HOST(blocked.client_addr), 'local') AS waiter_host, " +
+                "ROUND(EXTRACT(EPOCH FROM (clock_timestamp() - blocked.state_change))::numeric, 2) AS wait_duration_sec, " +
+                "blocked.wait_event_type, blocked.wait_event, " +
+                "LEFT(blocked.query, 300) AS waiter_query, " +
+                "blocker.pid AS blocker_pid, blocker.usename AS blocker_user, " +
+                "COALESCE(HOST(blocker.client_addr), 'local') AS blocker_host, " +
+                "blocker.state AS blocker_state, LEFT(blocker.query, 300) AS blocker_query " +
+                "FROM pg_stat_activity blocked " +
+                "JOIN LATERAL UNNEST(pg_blocking_pids(blocked.pid)) AS blocker_pid(pid) ON true " +
+                "JOIN pg_stat_activity blocker ON blocker.pid = blocker_pid.pid " +
+                "ORDER BY wait_duration_sec DESC";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("waiter_session_id", rs.getObject("waiter_pid"));
+                row.put("waiter_user", rs.getString("waiter_user"));
+                row.put("waiter_host", rs.getString("waiter_host"));
+                row.put("wait_duration_sec", rs.getObject("wait_duration_sec"));
+                row.put("wait_type", waitEvent(rs.getString("wait_event_type"), rs.getString("wait_event")));
+                row.put("waiter_query", rs.getString("waiter_query"));
+                row.put("blocker_session_id", rs.getObject("blocker_pid"));
+                row.put("blocker_user", rs.getString("blocker_user"));
+                row.put("blocker_host", rs.getString("blocker_host"));
+                row.put("blocker_state", rs.getString("blocker_state"));
+                row.put("blocker_query", rs.getString("blocker_query"));
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
+    /** wait_event_type 과 wait_event 를 한 칸에 담는다(둘 다 없으면 null - 화면은 '-' 로 그린다). */
+    private String waitEvent(String type, String event) {
+        if (type == null && event == null) {
+            return null;
+        }
+        if (event == null) {
+            return type;
+        }
+        if (type == null) {
+            return event;
+        }
+        return type + " / " + event;
+    }
+
+    private Map<String, Object> field(String label, Object value) {
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("label", label);
+        f.put("value", value);
+        return f;
+    }
+
+    /**
+     * PostgreSQL 은 명령이 아니라 함수라 유일하게 바인드 파라미터를 쓸 수 있다.
+     * {@code pg_terminate_backend()} 는 대상이 이미 없으면 예외 대신 <b>false 를 돌려준다</b> -
+     * 그 경우를 성공으로 세면 "성공 1건" 인데 세션은 그대로 남아 있는 것처럼 보이므로 구분한다.
+     */
+    @Override
+    public Map<String, Object> killSession(TargetDbConfig target, long sessionId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("session_id", sessionId);
+        try (Connection conn = poolManager.getConnection(target);
+             PreparedStatement ps = conn.prepareStatement("SELECT pg_terminate_backend(?) AS terminated")) {
+            ps.setInt(1, (int) sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                boolean terminated = rs.next() && rs.getBoolean("terminated");
+                result.put("status", terminated ? "killed" : "error");
+                result.put("message", terminated ? null : "이미 종료된 세션입니다.");
+            }
+        } catch (SQLException e) {
+            result.put("status", "error");
+            result.put("message", e.getMessage());
+        }
+        return result;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 용량 조회 (EngineMonitorService 의 용량 섹션 주석 참고)
+    //
+    // PostgreSQL 에는 진짜 테이블스페이스(pg_tablespace)가 있지만, 기본 구성에서는 pg_default
+    // 하나뿐이라 그걸 1단으로 삼으면 행이 한 줄만 나온다. 그래서 접속한 데이터베이스의 스키마를
+    // 1단으로 잡는다 - 이 앱은 databases.json 에서 인스턴스마다 접속할 DB 를 지정하므로,
+    // "이 인스턴스가 보는 DB 안에서 어디가 무겁나" 가 실제로 필요한 정보다.
+    // ---------------------------------------------------------------------------------------------
+
+    @Override
+    public Map<String, Object> getCapacity(TargetDbConfig target) throws SQLException {
+        // pg_table_size 는 TOAST 를 포함하고 인덱스는 빼며, pg_total_relation_size 는 둘 다 포함한다.
+        // 그래서 data + index 가 total 과 대체로 맞아떨어진다.
+        // relkind 'r'(일반 테이블)과 'p'(파티션 부모)만 센다 - 인덱스/뷰는 따로 세면 이중 계산이 된다.
+        String sql = "SELECT n.nspname AS name, " +
+                "COUNT(c.oid) AS table_count, " +
+                "ROUND(COALESCE(SUM(pg_table_size(c.oid)), 0) / 1048576.0, 2) AS data_mb, " +
+                "ROUND(COALESCE(SUM(pg_indexes_size(c.oid)), 0) / 1048576.0, 2) AS index_mb, " +
+                "ROUND(COALESCE(SUM(pg_total_relation_size(c.oid)), 0) / 1048576.0, 2) AS used_mb " +
+                "FROM pg_namespace n " +
+                "LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relkind IN ('r','p') " +
+                "WHERE n.nspname NOT IN ('pg_catalog','information_schema') " +
+                "  AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%' " +
+                "GROUP BY n.nspname ORDER BY used_mb DESC";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        String currentDb = "";
+        try (Connection conn = poolManager.getConnection(target);
+             Statement st = conn.createStatement()) {
+            try (ResultSet rs = st.executeQuery("SELECT current_database() AS db")) {
+                if (rs.next()) {
+                    currentDb = rs.getString("db");
+                }
+            }
+            try (ResultSet rs = st.executeQuery(sql)) {
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("name", rs.getString("name"));
+                    row.put("table_count", rs.getObject("table_count"));
+                    row.put("data_mb", rs.getObject("data_mb"));
+                    row.put("index_mb", rs.getObject("index_mb"));
+                    row.put("used_mb", rs.getObject("used_mb"));
+                    // 미리 할당해 두는 개념도, 스키마 단위의 여유 공간이라는 개념도 없다.
+                    // (autovacuum 이 회수하지 못한 블로트는 여기 숫자로 드러나지 않는다)
+                    row.put("total_mb", null);
+                    row.put("free_mb", null);
+                    row.put("used_pct", null);
+                    rows.add(row);
+                }
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("unit", "스키마");
+        result.put("note", "접속한 데이터베이스(" + currentDb + ")의 스키마 기준입니다. " +
+                "PostgreSQL에도 테이블스페이스가 있지만 기본 구성에서는 pg_default 하나뿐이라 " +
+                "스키마 단위가 더 유용합니다. 미리 할당해 두는 개념이 없어 '할당'과 '사용률'은 " +
+                "표시하지 않으며, 죽은 튜플(블로트)은 이 숫자에 사용 중으로 잡힙니다.");
+        result.put("rows", rows);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> getCapacityDetail(TargetDbConfig target, String scope) throws SQLException {
+        // scope 는 사용자가 고른 스키마명이다 - 반드시 바인딩한다.
+        String sql = "SELECT c.relname AS name, c.reltuples::bigint AS row_count, " +
+                "ROUND(pg_table_size(c.oid) / 1048576.0, 2) AS data_mb, " +
+                "ROUND(pg_indexes_size(c.oid) / 1048576.0, 2) AS index_mb, " +
+                "ROUND(pg_total_relation_size(c.oid) / 1048576.0, 2) AS total_mb " +
+                "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
+                "WHERE c.relkind IN ('r','p') AND n.nspname = ? " +
+                "ORDER BY pg_total_relation_size(c.oid) DESC";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, scope);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("name", rs.getString("name"));
+                    row.put("row_count", rs.getObject("row_count"));
+                    row.put("data_mb", rs.getObject("data_mb"));
+                    row.put("index_mb", rs.getObject("index_mb"));
+                    row.put("total_mb", rs.getObject("total_mb"));
+                    row.put("free_mb", null);
+                    rows.add(row);
+                }
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("scope", scope);
+        // reltuples 는 ANALYZE 시점의 추정치라 -1(아직 분석 안 됨)이 나올 수 있다.
+        result.put("note", rows.isEmpty() ? "이 스키마에는 테이블이 없습니다."
+                : "행 수는 ANALYZE 시점의 추정치(reltuples)입니다. 한 번도 분석되지 않은 테이블은 -1로 나옵니다.");
+        result.put("rows", rows);
+        return result;
     }
 }

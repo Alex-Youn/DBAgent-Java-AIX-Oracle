@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MySQL Overview</title>
 <script src="lib/lucide.js"></script>
-<script src="dbagent-common.js?v=3"></script>
+<script src="dbagent-common.js?v=6"></script>
+<script src="rdb-session-views.js?v=5"></script>
 <style>
     :root {
         --bg-page: #111217;
@@ -468,6 +469,9 @@
         <main class="pmm-content">
             <div class="view-tabs">
                 <button type="button" class="view-tab active" id="tabDetailBtn" data-view="detail"><i data-lucide="layout-dashboard"></i>DASHBOARD</button>
+                <button type="button" class="view-tab" id="tabSessionsBtn" data-view="sessions"><i data-lucide="list"></i>세션 리스트</button>
+                <button type="button" class="view-tab" id="tabLocksBtn" data-view="locks"><i data-lucide="lock"></i>Lock Holder/Waiter</button>
+                <button type="button" class="view-tab" id="tabCapacityBtn" data-view="capacity"><i data-lucide="hard-drive"></i>용량 조회</button>
             </div>
 
             <div id="overviewView" style="display:none;">
@@ -527,6 +531,12 @@
                 </div>
                 <div id="detailRows"></div>
             </div>
+
+            <!-- 세션 리스트 / Lock 모니터링 탭의 본문. 표·모달·CSS 는 rdb-session-views.js 가 만들어 넣는다
+                 (세 대시보드에 같은 마크업을 복사하지 않기 위함 - 그 파일 머리말 참고). -->
+            <div id="sessionsView" style="display:none;"></div>
+            <div id="locksView" style="display:none;"></div>
+            <div id="capacityView" style="display:none;"></div>
         </main>
     </div>
 </div>
@@ -1117,15 +1127,23 @@
     }
     loadStatusOverview();
 
-    // Overview / Detail tab switching.
-    // Detail 탭 제거(사용자 요청, 2026-09-04). 전환 대상이 없어졌으므로 showView()와 클릭
-    // 핸들러를 걷어내고 표시 상태만 한 번 고정한다. tabOverviewBtn을 지운 채 기존 코드를 남기면
-    // getElementById가 null을 반환해 classList/addEventListener에서 스크립트가 통째로 죽는다.
+    // 탭 전환(DASHBOARD / 세션 리스트 / Lock 모니터링).
+    //
+    // 2026-09-04에 Detail 탭을 지우면서 탭이 하나만 남았고, 그때는 전환 로직을 걷어내고
+    // 표시 상태를 한 번 고정했었다. 2026-09-05에 세션 리스트/Lock 탭이 생겨 전환이 다시
+    // 필요해졌는데, 세 대시보드가 같은 코드를 세 번 복사하지 않도록 전환도 표도 모달도
+    // 전부 rdb-session-views.js 가 맡는다(그 파일 머리말 참고).
+    //
     // overviewView 마크업은 지우지 않고 남겨둔다 - 나중에 되살릴 여지를 두되 노출만 막는다.
     const overviewView = document.getElementById('overviewView');
-    const detailView = document.getElementById('detailView');
     if (overviewView) overviewView.style.display = 'none';
-    if (detailView) detailView.style.display = 'block';
+    if (window.dbagentInitRdbSessionViews) {
+        window.dbagentInitRdbSessionViews({ dbId: dbId, getToken: getToken });
+    } else {
+        // rdb-session-views.js 로드가 빠졌을 때의 안전망 - 최소한 DASHBOARD 는 보여야 한다.
+        const detailView = document.getElementById('detailView');
+        if (detailView) detailView.style.display = 'block';
+    }
 
     // ---- Real data: KPI row (uptime/QPS/buffer pool) via /api/rdb/mysql_overview ----
     // MySQL/MariaDB only (see MySqlMonitorService.getOverviewStats) - this page is only reached for
@@ -1323,6 +1341,8 @@
         if (typeof loadAll === 'function') loadAll();
         if (typeof loadStatusOverview === 'function') loadStatusOverview();
         if (typeof loadKpiStats === 'function') loadKpiStats();
+        // 세션 리스트/Lock 탭은 지금 보고 있는 탭만 다시 읽는다(rdb-session-views.js).
+        if (typeof window.dbagentRefreshRdbSessionViews === 'function') window.dbagentRefreshRdbSessionViews();
     }
 
     (function wireFilterBar() {

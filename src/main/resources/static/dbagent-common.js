@@ -31,9 +31,15 @@
     // RDB 대시보드의 DASHBOARD 탭은 id 가 'rdb_dashboard' 로 따로라 이 목록과 겹치지 않는다.
     var ALWAYS_VISIBLE = ['dashboard'];
 
-    // RDB 대시보드(mysql/postgres/mssql-overview-dashboard.html)의 탭 버튼 id.
-    // 지금은 탭이 DASHBOARD 하나뿐이라 RDB 그룹도 한 줄이지만, 탭이 늘면 여기에 추가하면 된다.
-    var RDB_DASHBOARD_MENU = 'rdb_dashboard';
+    // RDB 대시보드(mysql/postgres/mssql-overview-dashboard.html)의 탭.
+    // menu id → 탭 버튼의 DOM id. 탭을 추가하면 (1) 여기, (2) 아래 DBAGENT_MENU_GROUPS 의 rdb 그룹,
+    // (3) 세 대시보드 HTML 의 .view-tabs 마크업, (4) rdb-session-views.js 의 TABS 배열을 함께 고친다.
+    var RDB_TAB_BUTTONS = {
+        rdb_dashboard: 'tabDetailBtn',
+        rdb_sessions: 'tabSessionsBtn',
+        rdb_locks: 'tabLocksBtn',
+        rdb_capacity: 'tabCapacityBtn'
+    };
 
     /**
      * 메뉴 목록. 오라클 화면 메뉴와 RDB 대시보드 메뉴는 서로 다른 화면의 것이라 섞이면 헷갈리므로
@@ -61,7 +67,10 @@
             key: 'rdb',
             label: 'RDB 메뉴',
             items: [
-                { id: RDB_DASHBOARD_MENU, label: 'DASHBOARD' }
+                { id: 'rdb_dashboard', label: 'DASHBOARD' },
+                { id: 'rdb_sessions', label: '세션 리스트' },
+                { id: 'rdb_locks', label: 'Lock Holder/Waiter' },
+                { id: 'rdb_capacity', label: '용량 조회' }
             ]
         }
     ];
@@ -151,12 +160,22 @@
 
     /**
      * RDB 대시보드의 탭 버튼에 메뉴 표시 설정을 적용한다(오라클 화면의 applyMenuVisibility 대응).
-     * 지금은 탭이 DASHBOARD 하나뿐이고 본문은 탭과 무관하게 항상 보이므로, 숨기면 탭 버튼만 사라진다.
+     *
+     * 탭이 DASHBOARD 하나뿐이던 시절에는 버튼만 감추면 끝이었다(본문은 탭과 무관하게 늘 보였다).
+     * 세션 리스트/Lock 탭이 생기면서 "지금 보고 있는 탭이 숨겨지는" 경우가 실제로 생기므로,
+     * 버튼을 감춘 뒤 rdb-session-views.js 에 현재 탭을 다시 맞추라고 알린다 - 안 그러면 탭 버튼은
+     * 사라졌는데 그 본문만 남는다.
      */
     window.dbagentApplyRdbMenuVisibility = function () {
-        var btn = document.getElementById('tabDetailBtn');
-        if (!btn) return;
-        btn.style.display = window.dbagentHiddenMenus()[RDB_DASHBOARD_MENU] ? 'none' : '';
+        var hidden = window.dbagentHiddenMenus();
+        var found = false;
+        Object.keys(RDB_TAB_BUTTONS).forEach(function (menuId) {
+            var btn = document.getElementById(RDB_TAB_BUTTONS[menuId]);
+            if (!btn) return;
+            found = true;
+            btn.style.display = hidden[menuId] ? 'none' : '';
+        });
+        if (found && window.dbagentSyncRdbActiveTab) window.dbagentSyncRdbActiveTab();
     };
 
     /**
