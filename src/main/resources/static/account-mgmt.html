@@ -4,14 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>계정 관리</title>
-    <link rel="stylesheet" href="style.css?v=26">
+    <link rel="stylesheet" href="style.css?v=27">
     <script>
         (function () {
             const saved = localStorage.getItem('dbagent_theme') || 'dark';
             if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
         })();
     </script>
-    <script src="dbagent-common.js?v=2"></script>
+    <script src="dbagent-common.js?v=3"></script>
     <style>
         html, body { height: 100%; }
         body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); box-sizing: border-box; }
@@ -102,8 +102,15 @@
 
             function renderMenuCheckboxes(container, hiddenSet) {
                 const openerDoc = (window.opener && !window.opener.closed) ? window.opener.document : null;
-                const items = withUnknown(window.dbagentMenuItems(openerDoc), hiddenSet);
-                window.dbagentRenderCheckboxGrid(container, items, hiddenSet, 'data-menu-target');
+                // Oracle 메뉴와 RDB 대시보드 메뉴는 서로 다른 화면의 것이라 그룹으로 나눠 보여준다.
+                const groups = window.dbagentMenuGroups(openerDoc);
+                // 계정에 남아 있지만 어느 그룹에도 없는 id(메뉴가 없어진 경우)는 마지막 그룹 뒤에 따로 붙인다.
+                const known = new Set();
+                groups.forEach(g => g.items.forEach(m => known.add(m.id)));
+                const orphans = [];
+                hiddenSet.forEach(id => { if (!known.has(id)) orphans.push({ id, label: id, missing: true }); });
+                if (orphans.length) groups.push({ key: 'unknown', label: '등록되지 않은 메뉴', items: orphans });
+                window.dbagentRenderCheckboxList(container, groups, hiddenSet, 'data-menu-target');
             }
             function renderDbCheckboxes(container, hiddenSet) {
                 container._hiddenSet = hiddenSet; // /api/config 가 늦게 도착하면 이걸로 다시 그린다
@@ -116,11 +123,13 @@
                     container.appendChild(msg);
                     return;
                 }
-                window.dbagentRenderCheckboxGrid(container, withUnknown(dbInstances, hiddenSet), hiddenSet, 'data-db-target');
+                window.dbagentRenderCheckboxList(container,
+                    [{ label: null, items: withUnknown(dbInstances, hiddenSet) }], hiddenSet, 'data-db-target');
             }
+            // input[attr] 로만 고른다 - "전체 선택" 체크박스에는 attr 이 없어 값에 섞이지 않는다.
             function collectHidden(container, attr) {
                 const hidden = [];
-                container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                container.querySelectorAll('input[' + attr + ']').forEach(cb => {
                     if (!cb.checked) hidden.push(cb.getAttribute(attr));
                 });
                 return hidden;
@@ -150,11 +159,11 @@
                 <div class="access-field-row">
                     <div style="text-align: left;">
                         <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">표시할 메뉴</label>
-                        <div id="${prefix}-menu-list" class="menu-checkbox-grid"></div>
+                        <div id="${prefix}-menu-list" class="checkbox-list"></div>
                     </div>
                     <div style="text-align: left;">
                         <label style="display: block; margin-bottom: 8px; color: var(--text-muted); font-size: 0.9rem;">접속 대상 DB (Oracle / RDB 전체)</label>
-                        <div id="${prefix}-db-list" class="menu-checkbox-grid"></div>
+                        <div id="${prefix}-db-list" class="checkbox-list"></div>
                     </div>
                 </div>
             `;

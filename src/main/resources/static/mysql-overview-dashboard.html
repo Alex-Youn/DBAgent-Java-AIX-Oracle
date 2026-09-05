@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MySQL Overview</title>
 <script src="lib/lucide.js"></script>
-<script src="dbagent-common.js?v=2"></script>
+<script src="dbagent-common.js?v=3"></script>
 <style>
     :root {
         --bg-page: #111217;
@@ -1186,6 +1186,10 @@
         if (sessionStorage.getItem('dbagent_role') !== 'admin') {
             document.querySelectorAll('.admin-only').forEach(el => { el.style.display = 'none'; });
         }
+        // 메뉴 표시 설정(브라우저별 localStorage)과 계정 권한(관리자가 계정 관리에서 지정)에 따라
+        // 탭 버튼을 숨긴다 - index.html의 applyMenuVisibility()에 대응하는 RDB 화면 쪽 처리.
+        // 지금은 탭이 DASHBOARD 하나뿐이고 본문은 탭과 무관하게 항상 보이므로 버튼만 사라진다.
+        if (window.dbagentApplyRdbMenuVisibility) window.dbagentApplyRdbMenuVisibility();
         const canFleetOverview = sessionStorage.getItem('dbagent_role') === 'admin'
             || sessionStorage.getItem('dbagent_fleet_overview') === 'true';
         const foBtn = document.getElementById('pmmFoBtn');

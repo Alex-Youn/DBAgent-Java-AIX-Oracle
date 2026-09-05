@@ -21,24 +21,49 @@
  * 그래서 목록의 출처를 opener DOM 이 아니라 (메뉴는) 이 파일의 상수, (DB 는) /api/config 로 옮겼다.
  * 어느 화면에서 팝업을 열든 같은 목록이 나온다.
  *
- * !! index.html 의 .top-nav 에 메뉴를 추가하면 아래 DBAGENT_MENUS 에도 같이 추가할 것.
+ * !! index.html 의 .top-nav 에 메뉴를 추가하면 아래 DBAGENT_MENU_GROUPS 에도 같이 추가할 것.
  *    (누락돼도 opener 가 오라클 화면이면 자동으로 덧붙여지지만, RDB 화면에서 열면 빠진다)
  */
 (function () {
     'use strict';
 
-    // DASHBOARD 는 숨김 대상이 아니다(원래도 두 팝업 모두 건너뛰고 있었다).
+    // 오라클 화면의 DASHBOARD 는 숨김 대상이 아니다(원래도 두 팝업 모두 건너뛰고 있었다).
+    // RDB 대시보드의 DASHBOARD 탭은 id 가 'rdb_dashboard' 로 따로라 이 목록과 겹치지 않는다.
     var ALWAYS_VISIBLE = ['dashboard'];
 
-    window.DBAGENT_MENUS = [
-        { target: 'session', label: 'Current Session' },
-        { target: 'history', label: '성능 이력 조회' },
-        { target: 'tmlock', label: 'Lock Holder/Waiter Tree' },
-        { target: 'tablespace', label: '테이블 스페이스 조회' },
-        { target: 'relation', label: 'Table Parent/Child 관계' },
-        { target: 'sqlrunner', label: 'SQL 실행' },
-        { target: 'aidba', label: 'AI DBA' },
-        { target: 'sqltuning', label: 'SQL 정합성/튜닝' }
+    // RDB 대시보드(mysql/postgres/mssql-overview-dashboard.html)의 탭 버튼 id.
+    // 지금은 탭이 DASHBOARD 하나뿐이라 RDB 그룹도 한 줄이지만, 탭이 늘면 여기에 추가하면 된다.
+    var RDB_DASHBOARD_MENU = 'rdb_dashboard';
+
+    /**
+     * 메뉴 목록. 오라클 화면 메뉴와 RDB 대시보드 메뉴는 서로 다른 화면의 것이라 섞이면 헷갈리므로
+     * 그룹으로 나눠 보여준다(사용자 요청, 2026-09-05).
+     *
+     * !! index.html 의 .top-nav 에 메뉴를 추가하면 oracle 그룹에도 같이 추가할 것. opener 가 오라클
+     *    화면이면 자동 병합되지만 RDB 화면에서 팝업을 열면 빠진다.
+     */
+    window.DBAGENT_MENU_GROUPS = [
+        {
+            key: 'oracle',
+            label: 'Oracle 메뉴',
+            items: [
+                { id: 'session', label: 'Current Session' },
+                { id: 'history', label: '성능 이력 조회' },
+                { id: 'tmlock', label: 'Lock Holder/Waiter Tree' },
+                { id: 'tablespace', label: '테이블 스페이스 조회' },
+                { id: 'relation', label: 'Table Parent/Child 관계' },
+                { id: 'sqlrunner', label: 'SQL 실행' },
+                { id: 'aidba', label: 'AI DBA' },
+                { id: 'sqltuning', label: 'SQL 정합성/튜닝' }
+            ]
+        },
+        {
+            key: 'rdb',
+            label: 'RDB 메뉴',
+            items: [
+                { id: RDB_DASHBOARD_MENU, label: 'DASHBOARD' }
+            ]
+        }
     ];
 
     var ENGINE_LABEL = {
@@ -51,16 +76,24 @@
     };
 
     /**
-     * 메뉴 목록을 돌려준다. 기본은 위 상수이고, opener 가 오라클 메인 화면이면 실제 nav 를 읽어
-     * (a) 라벨이 바뀐 경우 따라가고 (b) 상수에 없는 새 메뉴를 뒤에 덧붙인다. 목록에서 빠지는 쪽이
-     * 항상 더 위험하므로(=권한이 조용히 풀림) 병합만 하고 제거는 하지 않는다.
+     * 메뉴 목록을 그룹(Oracle/RDB)으로 돌려준다. 기본은 위 상수이고, opener 가 오라클 메인 화면이면
+     * 실제 nav 를 읽어 (a) 라벨이 바뀐 경우 따라가고 (b) 상수에 없는 새 메뉴를 Oracle 그룹 뒤에
+     * 덧붙인다. 목록에서 빠지는 쪽이 항상 더 위험하므로(=권한이 조용히 풀림) 병합만 하고 제거는 하지
+     * 않는다.
      */
-    window.dbagentMenuItems = function (openerDoc) {
-        var items = window.DBAGENT_MENUS.map(function (m) {
-            return { id: m.target, label: m.label };
+    window.dbagentMenuGroups = function (openerDoc) {
+        var groups = window.DBAGENT_MENU_GROUPS.map(function (g) {
+            return {
+                key: g.key,
+                label: g.label,
+                items: g.items.map(function (m) { return { id: m.id, label: m.label }; })
+            };
         });
-        var byTarget = {};
-        items.forEach(function (m) { byTarget[m.id] = m; });
+        var oracleGroup = groups.filter(function (g) { return g.key === 'oracle'; })[0] || groups[0];
+        var byId = {};
+        groups.forEach(function (g) {
+            g.items.forEach(function (m) { byId[m.id] = m; });
+        });
 
         var navItems = [];
         try {
@@ -78,15 +111,52 @@
             if (!target || ALWAYS_VISIBLE.indexOf(target) >= 0) return;
             var span = el.querySelector('span');
             var label = span ? String(span.innerText || '').trim() : '';
-            if (byTarget[target]) {
-                if (label) byTarget[target].label = label;
+            if (byId[target]) {
+                if (label) byId[target].label = label;
             } else {
                 var added = { id: target, label: label || target };
-                items.push(added);
-                byTarget[target] = added;
+                oracleGroup.items.push(added);
+                byId[target] = added;
             }
         });
-        return items;
+        return groups;
+    };
+
+    /** 그룹 구조를 무시하고 전체 메뉴를 한 줄로 편다. */
+    window.dbagentMenuItems = function (openerDoc) {
+        var flat = [];
+        window.dbagentMenuGroups(openerDoc).forEach(function (g) {
+            g.items.forEach(function (m) { flat.push(m); });
+        });
+        return flat;
+    };
+
+    /**
+     * 지금 이 브라우저/계정에서 숨겨진 메뉴 id 집합.
+     * 브라우저별 설정(localStorage, 메뉴 표시 설정 팝업)과 계정별 설정(sessionStorage, 관리자가
+     * 계정 관리에서 지정)의 합집합이다 - app.js 의 applyMenuVisibility() 와 같은 규칙.
+     */
+    window.dbagentHiddenMenus = function () {
+        var out = {};
+        [['localStorage', 'dbagent_hidden_menus'], ['sessionStorage', 'dbagent_account_hidden_menus']]
+            .forEach(function (pair) {
+                try {
+                    JSON.parse(window[pair[0]].getItem(pair[1]) || '[]').forEach(function (id) {
+                        out[id] = true;
+                    });
+                } catch (e) { /* 깨진 값은 무시 - 숨김 없음으로 본다 */ }
+            });
+        return out;
+    };
+
+    /**
+     * RDB 대시보드의 탭 버튼에 메뉴 표시 설정을 적용한다(오라클 화면의 applyMenuVisibility 대응).
+     * 지금은 탭이 DASHBOARD 하나뿐이고 본문은 탭과 무관하게 항상 보이므로, 숨기면 탭 버튼만 사라진다.
+     */
+    window.dbagentApplyRdbMenuVisibility = function () {
+        var btn = document.getElementById('tabDetailBtn');
+        if (!btn) return;
+        btn.style.display = window.dbagentHiddenMenus()[RDB_DASHBOARD_MENU] ? 'none' : '';
     };
 
     /**
@@ -179,50 +249,98 @@
         return 'rdb-dashboard.html';
     };
 
-    /**
-     * 체크박스 그리드를 그린다. 체크됨 = 허용, 체크 해제 = 숨김(hidden_menus/hidden_dbs).
-     *
-     * 열 수를 항목 수에 맞춰 늘린다 - .menu-checkbox-grid 는 CSS 에서 2열 고정이라 DB/메뉴가
-     * 늘어나면 세로로만 길어졌다(사용자 지적, 2026-09-05).
-     *
-     * 라벨은 textContent 로 넣는다. 예전에는 innerHTML 템플릿에 DB 이름을 그대로 끼워 넣어서
-     * databases.json 의 이름에 마크업이 들어가면 그대로 실행됐다.
-     */
-    window.dbagentRenderCheckboxGrid = function (container, items, hiddenSet, attr) {
-        container.innerHTML = '';
-        items.forEach(function (item) {
-            var row = document.createElement('label');
-            if (item.missing) row.title = '등록된 인스턴스 목록에 없는 항목입니다(삭제되었을 수 있음).';
-            else if (item.group) row.title = item.group;
-
-            var cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.setAttribute(attr, item.id);
-            cb.checked = !hiddenSet.has(item.id);
-            row.appendChild(cb);
-
-            if (item.engineLabel) {
-                var badge = document.createElement('span');
-                badge.className = 'engine-badge engine-' + (item.engine || 'other');
-                badge.textContent = item.engineLabel;
-                row.appendChild(badge);
-            }
-
-            var text = document.createElement('span');
-            text.textContent = item.label + (item.missing ? ' (등록되지 않음)' : '');
-            row.appendChild(text);
-
-            container.appendChild(row);
-        });
-
-        var cols = Math.min(4, Math.max(2, Math.ceil(items.length / 8)));
-        container.style.gridTemplateColumns = 'repeat(' + cols + ', max-content)';
-    };
-
-    /** dbagentRenderCheckboxGrid 와 같은 열 수 계산 - 창 크기 예측에도 같은 값을 써야 맞는다. */
+    /** 항목 수에 맞춘 열 수. 창 크기 예측(dbagentAdminPopupFeatures)도 같은 값을 써야 맞는다. */
     function gridCols(count) {
         return Math.min(4, Math.max(2, Math.ceil(count / 8)));
     }
+
+    /** 체크박스 한 줄(label + input + 선택적 엔진 배지 + 텍스트). */
+    function checkboxRow(item, hiddenSet, attr) {
+        var row = document.createElement('label');
+        if (item.missing) row.title = '등록된 인스턴스 목록에 없는 항목입니다(삭제되었을 수 있음).';
+        else if (item.group) row.title = item.group;
+
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.setAttribute(attr, item.id);
+        cb.checked = !hiddenSet.has(item.id);
+        row.appendChild(cb);
+
+        if (item.engineLabel) {
+            var badge = document.createElement('span');
+            badge.className = 'engine-badge engine-' + (item.engine || 'other');
+            badge.textContent = item.engineLabel;
+            row.appendChild(badge);
+        }
+
+        // 라벨은 textContent 로 넣는다. 예전에는 innerHTML 템플릿에 DB 이름을 그대로 끼워 넣어서
+        // databases.json 의 이름에 마크업이 들어가면 그대로 실행됐다.
+        var text = document.createElement('span');
+        text.textContent = item.label + (item.missing ? ' (등록되지 않음)' : '');
+        row.appendChild(text);
+        return row;
+    }
+
+    /**
+     * 체크박스 목록을 그린다. 체크됨 = 허용, 체크 해제 = 숨김(hidden_menus/hidden_dbs).
+     *
+     * - 맨 위에 "전체 선택" 체크박스를 둔다. 기본값이 전부 체크라 일부만 남기려면 하나씩 눌러야 했다
+     *   (사용자 요청, 2026-09-05). 일부만 체크된 상태에서는 indeterminate 로 표시한다.
+     * - groups 에 label 이 있으면 그룹 머리글을 붙인다(Oracle 메뉴 / RDB 메뉴).
+     * - 열 수는 항목 수에 맞춰 2~4열로 늘린다. CSS 의 2열 고정이면 항목이 늘 때 세로로만 길어진다.
+     *
+     * 전체 선택 체크박스에는 attr 을 붙이지 않는다 - 호출부의 collectHidden 이 `input[attr]` 로만
+     * 수집하므로 목록 값에 섞이지 않는다.
+     */
+    window.dbagentRenderCheckboxList = function (container, groups, hiddenSet, attr) {
+        container.innerHTML = '';
+        container.classList.add('checkbox-list');
+
+        var masterLabel = document.createElement('label');
+        masterLabel.className = 'checkbox-list-all';
+        var master = document.createElement('input');
+        master.type = 'checkbox';
+        masterLabel.appendChild(master);
+        var masterText = document.createElement('span');
+        masterText.textContent = '전체 선택';
+        masterLabel.appendChild(masterText);
+        container.appendChild(masterLabel);
+
+        groups.forEach(function (group) {
+            if (!group.items.length) return;
+            if (group.label) {
+                var head = document.createElement('div');
+                head.className = 'checkbox-list-group';
+                head.textContent = group.label;
+                container.appendChild(head);
+            }
+            var grid = document.createElement('div');
+            grid.className = 'checkbox-list-grid';
+            grid.style.gridTemplateColumns = 'repeat(' + gridCols(group.items.length) + ', max-content)';
+            group.items.forEach(function (item) {
+                grid.appendChild(checkboxRow(item, hiddenSet, attr));
+            });
+            container.appendChild(grid);
+        });
+
+        var boxes = Array.prototype.slice.call(container.querySelectorAll('input[' + attr + ']'));
+        function syncMaster() {
+            var checked = boxes.filter(function (b) { return b.checked; }).length;
+            master.checked = checked === boxes.length && boxes.length > 0;
+            master.indeterminate = checked > 0 && checked < boxes.length;
+        }
+        master.addEventListener('change', function () {
+            boxes.forEach(function (b) { b.checked = master.checked; });
+            master.indeterminate = false;
+        });
+        boxes.forEach(function (b) { b.addEventListener('change', syncMaster); });
+        syncMaster();
+    };
+
+    /** 그룹 없이 한 덩어리로 그릴 때(예: 접속 대상 DB 목록). */
+    window.dbagentRenderCheckboxGrid = function (container, items, hiddenSet, attr) {
+        window.dbagentRenderCheckboxList(container, [{ label: null, items: items }], hiddenSet, attr);
+    };
 
     /**
      * 관리자 팝업을 "열 때" 넘길 window.open 피처 문자열을 항목 수로 계산한다.
@@ -233,24 +351,36 @@
      * 정확한 픽셀이 아니라 "항목이 늘면 창도 커진다"를 보장하는 게 목적이다.
      */
     window.dbagentAdminPopupFeatures = function (kind) {
-        var menus = window.DBAGENT_MENUS.length;
+        var groups = window.DBAGENT_MENU_GROUPS;
         var dbs = (cachedInstances && cachedInstances.length) || 12;
         var availW = (window.screen && window.screen.availWidth) || 1280;
         var availH = (window.screen && window.screen.availHeight) || 900;
 
-        var mCols = gridCols(menus), dCols = gridCols(dbs);
-        var mRows = Math.ceil(menus / mCols), dRows = Math.ceil(dbs / dCols);
+        // 메뉴는 그룹마다 별도 그리드라 열 수/줄 수를 그룹별로 계산해 합친다.
+        var mCols = 1, mRows = 0;
+        groups.forEach(function (g) {
+            var cols = gridCols(g.items.length);
+            if (cols > mCols) mCols = cols;
+            mRows += Math.ceil(g.items.length / cols);
+        });
+        var mHeadRows = groups.length;          // 그룹 머리글
+        var dCols = gridCols(dbs);
+        var dRows = Math.ceil(dbs / dCols);
+
         // 한 칸 폭: 메뉴는 라벨만, DB 는 엔진 배지가 붙어 더 넓다. 그리드 padding/border 포함.
         var mBlock = mCols * 180 + (mCols - 1) * 24 + 26;
         var dBlock = dCols * 215 + (dCols - 1) * 24 + 26;
+        // 전체 선택 1줄 + 그룹 머리글
+        var mExtra = 34 + mHeadRows * 34;   // 전체 선택 1줄 + 그룹 머리글(색 막대/여백 포함)
+        var dExtra = 34;
 
         var w, h;
         if (kind === 'menu') {
             w = mBlock + 80 + 40 + 40;                 // 카드 padding + body padding + 창 테두리
-            h = 240 + mRows * 30 + 90;
+            h = 240 + mRows * 30 + mExtra + 90;
         } else {                                        // 'account'
             w = mBlock + dBlock + 16 + 80 + 40 + 40;   // 두 목록이 나란히 + 사이 gap
-            h = 430 + Math.max(mRows, dRows) * 30 + 90;
+            h = 430 + Math.max(mRows * 30 + mExtra, dRows * 30 + dExtra) + 90;
         }
         w = Math.max(560, Math.min(w, availW - 80));
         h = Math.max(620, Math.min(h, availH - 100));
@@ -272,7 +402,19 @@
         opts = opts || {};
         // 스크립트로 연 팝업이 아니면 브라우저가 resizeTo 를 무시한다(일반 탭에서 URL 직접 연 경우).
         if (!window.opener) return;
+        // 창이 만들어지는 도중(load 전)의 resizeTo 도 무시된다 - 2026-09-05 실측: 초기 렌더에서 부른
+        // 것은 전혀 반영되지 않고 사용자 클릭 뒤에 부른 것만 반영됐다. 그래서 메뉴 표시 설정 팝업은
+        // 콘텐츠가 창보다 넓은 채로 남아 글씨가 팝업 밖으로 삐져나왔다. load 이후로 미뤄서 호출한다.
+        if (document.readyState !== 'complete') {
+            window.addEventListener('load', function () {
+                setTimeout(function () { autoSize(opts); }, 0);
+            });
+            return;
+        }
+        autoSize(opts);
+    };
 
+    function autoSize(opts) {
         var card = document.querySelector('.login-card') || document.body;
         var minW = opts.minWidth || 520;
         var minH = opts.minHeight || 360;
@@ -290,7 +432,12 @@
         var availH = window.screen.availHeight || 900;
         var maxInnerW = Math.max(minW, availW - 120);
         var maxInnerH = Math.max(minH, availH - 140);
-        var wantW = Math.min(Math.max(naturalW + bodyPad + 8, minW), maxInnerW);
+        // **줄이지는 않는다.** 브라우저는 창이 만들어질 때 한 번만 resizeTo 를 받아주고 그 뒤 호출은
+        // 조용히 무시한다(2026-09-05 실측: 로드 시 축소는 먹었는데 이후 확대는 opener/자기 자신 어느
+        // 쪽에서 불러도 무효). 계정 관리처럼 뷰마다 필요한 크기가 다른 팝업에서 처음에 작은 메인 뷰에
+        // 맞춰 줄여버리면, 목록이 있는 큰 뷰로 바꿀 때 다시 키우지 못해 콘텐츠가 잘린다. 그래서
+        // window.open 이 항목 수로 계산해 준 크기(dbagentAdminPopupFeatures)를 하한으로 삼는다.
+        var wantW = Math.min(Math.max(naturalW + bodyPad + 8, minW, window.innerWidth), maxInnerW);
 
         // resizeTo 는 창 바깥(테두리 포함) 크기를 받는데, 테두리 두께를 outerWidth-innerWidth 로
         // 구하면 안 된다 - 브라우저/상황에 따라 outerWidth 가 부모 창 값이나 옛 값을 돌려준다
@@ -304,7 +451,8 @@
             }
             requestAnimationFrame(function () {
                 try {
-                    var wantH = Math.min(Math.max(document.documentElement.scrollHeight + 8, minH), maxInnerH);
+                    var wantH = Math.min(
+                        Math.max(document.documentElement.scrollHeight + 8, minH, window.innerHeight), maxInnerH);
                     var dw = wantW - window.innerWidth;
                     var dh = wantH - window.innerHeight;
                     if (pass < 2 && (Math.abs(dw) > 2 || Math.abs(dh) > 2)) {
@@ -320,6 +468,7 @@
                 } catch (e) { /* 위와 같음 */ }
             });
         }
-        step(wantW, Math.min(Math.max(document.documentElement.scrollHeight + 8, minH), maxInnerH), 0);
-    };
+        step(wantW, Math.min(
+            Math.max(document.documentElement.scrollHeight + 8, minH, window.innerHeight), maxInnerH), 0);
+    }
 })();

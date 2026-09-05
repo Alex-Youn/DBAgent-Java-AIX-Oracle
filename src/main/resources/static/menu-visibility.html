@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>메뉴 표시 설정</title>
-    <link rel="stylesheet" href="style.css?v=26">
+    <link rel="stylesheet" href="style.css?v=27">
     <script>
         // Match the main app's saved theme choice (same as session-detail.html).
         (function () {
@@ -12,7 +12,7 @@
             if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
         })();
     </script>
-    <script src="dbagent-common.js?v=2"></script>
+    <script src="dbagent-common.js?v=3"></script>
     <style>
         body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); }
     </style>
@@ -47,13 +47,15 @@
             // 상수에 없는 새 메뉴를 병합해 준다 - 자세한 내용은 그 파일 상단 주석 참고.
             function renderMenuCheckboxes(container, hiddenSet) {
                 const openerDoc = (window.opener && !window.opener.closed) ? window.opener.document : null;
-                window.dbagentRenderCheckboxGrid(
-                    container, window.dbagentMenuItems(openerDoc), hiddenSet, 'data-menu-target');
+                // Oracle 메뉴와 RDB 대시보드 메뉴를 그룹으로 나눠 보여준다(사용자 요청, 2026-09-05).
+                window.dbagentRenderCheckboxList(
+                    container, window.dbagentMenuGroups(openerDoc), hiddenSet, 'data-menu-target');
             }
 
+            // data-menu-target 이 있는 것만 고른다 - "전체 선택" 체크박스는 이 속성이 없어 제외된다.
             function collectHidden(container) {
                 const hidden = [];
-                container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                container.querySelectorAll('input[data-menu-target]').forEach(cb => {
                     if (!cb.checked) hidden.push(cb.getAttribute('data-menu-target'));
                 });
                 return hidden;
@@ -62,7 +64,7 @@
             contentEl.innerHTML = `
                 <div class="login-card" style="max-width: 1000px; margin: 0;">
                     <h3 style="margin-bottom: 20px;">메뉴 표시 설정</h3>
-                    <div id="menu-visibility-list" class="menu-checkbox-grid" style="margin-bottom: 20px;"></div>
+                    <div id="menu-visibility-list" class="checkbox-list" style="margin-bottom: 20px;"></div>
                     <div style="display: flex; gap: 10px;">
                         <button type="button" class="login-btn" id="menu-visibility-save-btn" style="margin-top: 0;">저장</button>
                         <button type="button" class="login-btn" id="menu-visibility-close-btn" style="margin-top: 0; background: #3a3a37;">닫기</button>
