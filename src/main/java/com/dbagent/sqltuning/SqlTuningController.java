@@ -68,8 +68,13 @@ public class SqlTuningController {
         if (query == null || Strings.isBlank(query)) {
             return ResponseEntity.ok(Maps.of("success", false, "message", "쿼리를 입력해주세요."));
         }
+        // resolve()는 등록되지 않은 db_id에 null을 준다. 이 체크가 없으면 explain(null, ...)로 흘러가
+        // 엉뚱한 DB에 붙거나 NPE가 난다 (quick_check/bind_capture에는 이미 있던 체크).
+        TargetDbConfig target = configService.resolve(req.dbId(), req.account());
+        if (target == null) {
+            return ResponseEntity.ok(Maps.of("success", false, "message", "등록되지 않은 DB입니다."));
+        }
         try {
-            TargetDbConfig target = configService.resolve(req.dbId(), req.account());
             String plan = executionPlanService.explain(target, query);
             return analyzeWithPlan(query, plan);
         } catch (Exception e) {
@@ -90,8 +95,11 @@ public class SqlTuningController {
         if (query == null || Strings.isBlank(query)) {
             return ResponseEntity.ok(Maps.of("success", false, "message", "쿼리를 입력해주세요."));
         }
+        TargetDbConfig target = configService.resolve(req.dbId(), req.account());
+        if (target == null) {
+            return ResponseEntity.ok(Maps.of("success", false, "message", "등록되지 않은 DB입니다."));
+        }
         try {
-            TargetDbConfig target = configService.resolve(req.dbId(), req.account());
             String plan = executionPlanService.explainActual(target, query, req.binds());
             return analyzeWithPlan(query, plan);
         } catch (Exception e) {
