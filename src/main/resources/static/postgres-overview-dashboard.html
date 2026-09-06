@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PostgreSQL Overview</title>
 <script src="lib/lucide.js"></script>
-<script src="dbagent-common.js?v=6"></script>
-<script src="rdb-session-views.js?v=5"></script>
+<script src="dbagent-common.js?v=7"></script>
+<script src="rdb-session-views.js?v=6"></script>
 <style>
     :root {
         --bg-page: #111217;
@@ -571,6 +571,7 @@
         if (dbType === 'mysql' || dbType === 'mariadb') return 'mysql-overview-dashboard.html';
         if (dbType === 'postgres') return 'postgres-overview-dashboard.html';
         if (dbType === 'mssql') return 'mssql-overview-dashboard.html';
+        if (dbType === 'cubrid') return 'cubrid-overview-dashboard.html';
         return 'rdb-dashboard.html';
     }
     (function buildDbTree() {

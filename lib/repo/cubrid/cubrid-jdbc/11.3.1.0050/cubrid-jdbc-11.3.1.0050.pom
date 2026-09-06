@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>cubrid</groupId>
+  <artifactId>cubrid-jdbc</artifactId>
+  <version>11.3.1.0050</version>
+  <packaging>jar</packaging>
+  <name>CUBRID JDBC Driver</name>
+  <description>
+    Official CUBRID JDBC driver, taken from a CUBRID 11.4.5 server install
+    ($CUBRID/jdbc/JDBC-11.3.1.0050-cubrid.jar). CUBRID publishes no official artifact to
+    Maven Central (only third-party republishes exist, none for 11.x), so it is vendored
+    here instead - that also keeps the closed-network build working with no extra step.
+    Compiled for Java 6 (class file major version 50), so the same jar serves both this
+    project (Java 17) and DBAgent-Java-AIX (Java 8).
+  </description>
+</project>

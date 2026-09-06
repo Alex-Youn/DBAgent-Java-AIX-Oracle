@@ -411,6 +411,7 @@ function getToken() {
             if (dbType === 'mysql' || dbType === 'mariadb') return 'mysql-overview-dashboard.html';
             if (dbType === 'postgres') return 'postgres-overview-dashboard.html';
             if (dbType === 'mssql') return 'mssql-overview-dashboard.html';
+            if (dbType === 'cubrid') return 'cubrid-overview-dashboard.html';
             return 'rdb-dashboard.html';
         }
 

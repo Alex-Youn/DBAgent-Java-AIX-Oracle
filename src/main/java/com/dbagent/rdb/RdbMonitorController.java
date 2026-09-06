@@ -29,15 +29,17 @@ public class RdbMonitorController {
     private final MySqlMonitorService mySqlMonitorService;
     private final PostgresMonitorService postgresMonitorService;
     private final MsSqlMonitorService msSqlMonitorService;
+    private final CubridMonitorService cubridMonitorService;
 
     public RdbMonitorController(AuthService authService, DatabaseConfigService configService,
             MySqlMonitorService mySqlMonitorService, PostgresMonitorService postgresMonitorService,
-            MsSqlMonitorService msSqlMonitorService) {
+            MsSqlMonitorService msSqlMonitorService, CubridMonitorService cubridMonitorService) {
         this.authService = authService;
         this.configService = configService;
         this.mySqlMonitorService = mySqlMonitorService;
         this.postgresMonitorService = postgresMonitorService;
         this.msSqlMonitorService = msSqlMonitorService;
+        this.cubridMonitorService = cubridMonitorService;
     }
 
     @GetMapping("/sessions")
@@ -358,12 +360,53 @@ public class RdbMonitorController {
         return ResponseEntity.ok(msSqlMonitorService.getStatusOverview(target));
     }
 
+    // CUBRID-only KPI stats (active sessions/lock waits/worker thread usage/volume usage) for
+    // cubrid-overview-dashboard.html. Unlike the other engines these are point-in-time server state
+    // rather than cumulative counters - see CubridMonitorService.getOverviewStats() for why
+    // (CUBRID's cumulative statistics are all zero unless separately enabled).
+    @GetMapping("/cubrid_overview")
+    public ResponseEntity<Object> cubridOverview(@RequestParam(required = false) String db_id,
+                                                  @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null) {
+            return dbNotFound();
+        }
+        if (!"cubrid".equals(target.dbType())) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "CUBRID 전용 API입니다."));
+        }
+        return ResponseEntity.ok(cubridMonitorService.getOverviewStats(target));
+    }
+
+    // CUBRID-only detail counters (thread pool composition, transaction states, log header, volume
+    // list, recent access) - see CubridMonitorService.getStatusOverview().
+    @GetMapping("/cubrid_status")
+    public ResponseEntity<Object> cubridStatus(@RequestParam(required = false) String db_id,
+                                                @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null) {
+            return dbNotFound();
+        }
+        if (!"cubrid".equals(target.dbType())) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "CUBRID 전용 API입니다."));
+        }
+        return ResponseEntity.ok(cubridMonitorService.getStatusOverview(target));
+    }
+
     private EngineMonitorService engineFor(TargetDbConfig target) {
         if ("postgres".equals(target.dbType())) {
             return postgresMonitorService;
         }
         if ("mssql".equals(target.dbType())) {
             return msSqlMonitorService;
+        }
+        if ("cubrid".equals(target.dbType())) {
+            return cubridMonitorService;
         }
         // mysql/mariadb (and any unrecognized non-oracle type falls back here rather than 500ing).
         return mySqlMonitorService;

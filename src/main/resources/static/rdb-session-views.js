@@ -1,5 +1,5 @@
 /*
- * rdb-session-views.js - RDB 대시보드(mysql/postgres/mssql-overview-dashboard.html)의
+ * rdb-session-views.js - RDB 대시보드(mysql/postgres/mssql/cubrid-overview-dashboard.html)의
  * "세션 리스트 / 세션 상세 / Lock Holder-Waiter 트리 / 용량 조회" 화면과 세션 Kill.
  *
  * 근거 문서: "세션리스트 및 세션 정보 조회 쿼리.md" (2026-09-05 구현)
@@ -17,12 +17,12 @@
  *
  * 왜 별도 파일인가
  * ----------------
- * 이 화면은 세 대시보드에 똑같이 들어간다. HTML 세 곳에 같은 표 렌더링 코드를 복사하면 두 저장소
- * (DBAgent-Java / DBAgent-Java-AIX)까지 합쳐 여섯 벌이 되고, 그 중 하나만 고치는 사고가 난다.
+ * 이 화면은 네 대시보드에 똑같이 들어간다. HTML 네 곳에 같은 표 렌더링 코드를 복사하면 두 저장소
+ * (DBAgent-Java / DBAgent-Java-AIX)까지 합쳐 여덟 벌이 되고, 그 중 하나만 고치는 사고가 난다.
  * dbagent-common.js 에 넣지 않은 이유는 그 파일이 index.html 과 관리자 팝업에도 로드되기 때문 -
  * 그쪽 화면에는 필요 없는 코드다.
  *
- * 그래서 HTML 쪽에는 탭 버튼과 빈 컨테이너만 두고(세 파일에서 같은 id), 표·트리·모달·CSS 는
+ * 그래서 HTML 쪽에는 탭 버튼과 빈 컨테이너만 두고(네 파일에서 같은 id), 표·트리·모달·CSS 는
  * 전부 이 파일이 만든다.
  *
  * !! 엔진별 쿼리 차이는 전부 백엔드에서 흡수된다. 서버가 EngineMonitorService 주석의 공통 키로
@@ -178,7 +178,10 @@
         '.rsv-copy-btn:hover { border-color:var(--teal); color:var(--teal); }',
         '.rsv-sql { margin:0; padding:12px; background:#17181c; border:1px solid var(--border); border-radius:4px;',
         '  color:var(--text); font-family:Consolas,Menlo,monospace; font-size:12px; line-height:1.6;',
-        '  white-space:pre-wrap; word-break:break-word; max-height:38vh; overflow:auto; }'
+        '  white-space:pre-wrap; word-break:break-word; max-height:38vh; overflow:auto; }',
+        // SQL 자리에 원문 대신 "이 엔진은 제공하지 않는다" 는 안내가 들어갔을 때. 코드가 아니라
+        // 설명문이므로 고정폭 글꼴을 벗기고 톤을 낮춰, 쿼리로 잘못 읽히지 않게 한다.
+        '.rsv-sql.rsv-sql-note { font-family:inherit; color:var(--text-muted); font-style:italic; }'
     ].join('\n');
 
     function injectCss() {
@@ -329,13 +332,22 @@
         var sessionsView = document.getElementById('sessionsView');
         var locksView = document.getElementById('locksView');
         var capacityView = document.getElementById('capacityView');
-        if (!sessionsView || !locksView || !capacityView) return;   // 이 화면에는 탭이 없다 - 조용히 물러난다.
+        // 세션 리스트가 없으면 이 화면에는 세션 탭 자체가 없다는 뜻 - 조용히 물러난다.
+        //
+        // Lock/용량은 있는 화면만 만든다. 예전에는 셋을 모두 요구했는데, 그러면 <b>탭 구성이 다른
+        // 엔진에서 세 탭이 통째로 죽는다</b> - CUBRID 대시보드에는 Lock 탭이 없어(대기 세션을 막고
+        // 있는 holder 를 JDBC 로 알 수 없다, CubridMonitorService 주석) locksView 를 두지 않는데,
+        // 그 때문에 세션 리스트와 용량 탭까지 초기화되지 않던 것을 2026-09-06 에 고쳤다.
+        if (!sessionsView) return;
 
         injectCss();
         var admin = isAdmin();
 
-        // ---- 화면 뼈대 (HTML 세 곳에 복사하지 않으려고 여기서 만든다) ----
+        // ---- 화면 뼈대 (HTML 네 곳에 복사하지 않으려고 여기서 만든다) ----
         function buildPane(view, noteText, withKill) {
+            // 이 화면에 그 탭이 없으면(엔진마다 탭 구성이 다르다) pane 도 만들지 않는다.
+            // 부르는 쪽은 null 을 만나면 그 탭 관련 처리를 통째로 건너뛴다.
+            if (!view) return null;
             var note = el('p', 'rsv-note', noteText);
             view.appendChild(note);
             var bar = el('div', 'rsv-toolbar');
@@ -470,7 +482,14 @@
                     body.appendChild(sqlHead);
 
                     var sqlText = data.sql_text || '';
-                    var pre = el('pre', 'rsv-sql', sqlText || '(실행 중인 SQL이 없습니다)');
+                    // SQL 이 비어 있는 이유는 두 가지고, 둘을 구별해야 한다.
+                    //   (1) 정말로 지금 실행 중인 SQL 이 없다 - 기본 문구
+                    //   (2) 그 엔진이 SQL 원문을 제공하지 않는다 - 서버가 sql_text_note 로 사유를 준다
+                    //       (CUBRID 가 이 경우다. 기본 문구를 그대로 쓰면 "쿼리가 없다" 로 잘못 읽힌다.)
+                    // 엔진 이름으로 분기하지 않고 서버가 준 사유를 그대로 띄운다.
+                    var pre = el('pre', 'rsv-sql',
+                        sqlText || data.sql_text_note || '(실행 중인 SQL이 없습니다)');
+                    if (!sqlText && data.sql_text_note) pre.classList.add('rsv-sql-note');
                     body.appendChild(pre);
 
                     function selectPre() {
@@ -573,6 +592,7 @@
         }
 
         function wireKillButton(pane, checkedSet, reload) {
+            if (!pane || !pane.killBtn) return;   // 없는 탭이거나 Kill 이 없는 탭(용량 조회)
             pane.killBtn.addEventListener('click', function () {
                 var ids = Array.from(checkedSet);
                 if (ids.length === 0) return;
@@ -930,6 +950,7 @@
 
         // ---- 데이터 적재 ----
         function guardNoDbId(pane) {
+            if (!pane) return true;   // 이 화면에 없는 탭 - 적재할 것이 없다
             if (dbId) return false;
             pane.count.textContent = '';
             renderError(pane.body, 'db_id 없음 - 좌측 트리나 Host 목록에서 인스턴스를 선택해주세요.');
@@ -1017,6 +1038,7 @@
          * 유일한 갱신 수단이다.
          */
         function wireReloadButton(pane, loadFn) {
+            if (!pane || !pane.reloadBtn) return;   // 이 화면에 없는 탭 (buildPane 주석 참고)
             pane.reloadBtn.addEventListener('click', function () {
                 if (pane.reloadBtn.disabled) return;
                 pane.reloadBtn.disabled = true;

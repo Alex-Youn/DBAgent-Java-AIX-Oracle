@@ -130,6 +130,22 @@ public class RdbConnectionPoolManager {
                 return "jdbc:sqlserver://" + target.host() + ":" + target.port()
                         + ";databaseName=" + database + ";encrypt=false;trustServerCertificate=true"
                         + ";socketTimeout=" + readTimeoutMs;
+            case "cubrid":
+                // CUBRID's URL packs db/user/password into the path itself
+                // (jdbc:CUBRID:host:port:db:user:password:?props) - the user/password segments are left
+                // empty here on purpose so Hikari supplies them from setUsername/setPassword like every
+                // other engine, instead of this string carrying the password.
+                //
+                // The port is the BROKER port (default 33000), not the server port (1523): clients never
+                // talk to cub_server directly, they go through a CAS process behind the broker. A common
+                // misconfiguration is registering 1523 here, which just times out.
+                //
+                // charset=utf-8 keeps Korean data readable; without it the driver falls back to the JVM
+                // default and mangles multibyte text. There is no socket-timeout property in CUBRID's URL
+                // syntax, so the read-timeout bound the other engines get from their driver comes from
+                // Hikari's connection/validation timeouts alone here.
+                return "jdbc:CUBRID:" + target.host() + ":" + target.port() + ":" + database
+                        + ":::?charset=utf-8";
             default:
                 throw new IllegalArgumentException("Unsupported db_type for RdbConnectionPoolManager: " + target.dbType());
         }

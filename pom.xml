@@ -70,6 +70,15 @@
             <version>12.8.1.jre8</version>
         </dependency>
 
+        <!-- CUBRID JDBC driver - resolved from the in-repo lib/repo (see <repositories> below),
+             because CUBRID publishes no official artifact to Maven Central. The jar is compiled for
+             Java 6, so this same one also serves the Java 17 original project - no jre8 variant needed. -->
+        <dependency>
+            <groupId>cubrid</groupId>
+            <artifactId>cubrid-jdbc</artifactId>
+            <version>11.3.1.0050</version>
+        </dependency>
+
         <!-- Password hashing (replaces werkzeug.security) -->
         <dependency>
             <groupId>org.springframework.security</groupId>
@@ -92,6 +101,26 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <!--
+      Project-local Maven repository, checked into git alongside the source.
+
+      Only the CUBRID JDBC driver lives here: CUBRID does not publish to Maven Central (the only
+      artifacts there are third-party republishes that stop at 10.1.x), and this app targets
+      CUBRID 11.x. A <scope>system</scope> dependency would NOT work as a substitute - Spring
+      Boot's repackage goal leaves system-scoped jars out of the fat jar, so the driver would be
+      missing at runtime. Vendoring it this way also means `mvn clean package` still works on the
+      closed-network machines with no manual `mvn install:install-file` step first.
+    -->
+    <repositories>
+        <repository>
+            <id>project-local</id>
+            <name>In-repo vendored artifacts</name>
+            <url>file://${project.basedir}/lib/repo</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+    </repositories>
 
     <build>
         <plugins>

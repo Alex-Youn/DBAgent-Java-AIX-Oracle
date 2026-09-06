@@ -11,7 +11,7 @@
             if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
         })();
     </script>
-    <script src="dbagent-common.js?v=6"></script>
+    <script src="dbagent-common.js?v=7"></script>
     <style>
         html, body { height: 100%; }
         body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); box-sizing: border-box; }
@@ -37,6 +37,8 @@
         .engine-mariadb { color: #c99a6e; }
         .engine-postgres, .engine-postgresql { color: #7f9fd4; }
         .engine-mssql { color: #8fbf7f; }
+
+        .engine-cubrid { color: #b08fd0; }
         .engine-other { color: var(--text-muted); }
         .access-load-error { color: var(--danger); font-size: 0.85rem; }
         .login-form-group select {

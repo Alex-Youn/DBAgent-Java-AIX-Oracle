@@ -31,9 +31,15 @@
     // RDB 대시보드의 DASHBOARD 탭은 id 가 'rdb_dashboard' 로 따로라 이 목록과 겹치지 않는다.
     var ALWAYS_VISIBLE = ['dashboard'];
 
-    // RDB 대시보드(mysql/postgres/mssql-overview-dashboard.html)의 탭.
+    // RDB 대시보드(mysql/postgres/mssql/cubrid-overview-dashboard.html)의 탭.
     // menu id → 탭 버튼의 DOM id. 탭을 추가하면 (1) 여기, (2) 아래 DBAGENT_MENU_GROUPS 의 rdb 그룹,
-    // (3) 세 대시보드 HTML 의 .view-tabs 마크업, (4) rdb-session-views.js 의 TABS 배열을 함께 고친다.
+    // (3) 네 대시보드 HTML 의 .view-tabs 마크업, (4) rdb-session-views.js 의 TABS 배열을 함께 고친다.
+    //
+    // 모든 탭이 모든 엔진에 있는 것은 아니다. CUBRID 대시보드에는 Lock Holder/Waiter 탭이 없다 -
+    // CUBRID 는 대기 세션을 막고 있는 holder 를 JDBC 로 알아낼 방법이 없어 트리가 성립하지 않는다
+    // (CubridMonitorService.getLockWaits 주석). 그 페이지의 마크업에 tabLocksBtn 을 아예 두지 않는
+    // 방식으로 처리하므로, 여기나 rdb-session-views.js 에 엔진 분기를 넣을 필요는 없다 -
+    // 두 곳 모두 없는 버튼은 그냥 건너뛴다(visibleTabs / showView 참고).
     var RDB_TAB_BUTTONS = {
         rdb_dashboard: 'tabDetailBtn',
         rdb_sessions: 'tabSessionsBtn',
@@ -81,7 +87,8 @@
         mariadb: 'MariaDB',
         postgres: 'PostgreSQL',
         postgresql: 'PostgreSQL',
-        mssql: 'MS SQL'
+        mssql: 'MS SQL',
+        cubrid: 'CUBRID'
     };
 
     /**
@@ -265,6 +272,7 @@
         if (dbType === 'mysql' || dbType === 'mariadb') return 'mysql-overview-dashboard.html';
         if (dbType === 'postgres' || dbType === 'postgresql') return 'postgres-overview-dashboard.html';
         if (dbType === 'mssql') return 'mssql-overview-dashboard.html';
+        if (dbType === 'cubrid') return 'cubrid-overview-dashboard.html';
         return 'rdb-dashboard.html';
     };
 

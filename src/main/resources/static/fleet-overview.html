@@ -674,7 +674,7 @@
             // 표기, 접속 성공 후에만 채워짐)을 우선 쓰고, 못 뽑았으면 raw 버전 문자열(d.version)로
             // 대체한다. withType=true(Top 5 패널)면 버전을 아직 모를 때도 "[Oracle]"만 표시 - 카드
             // 쪽은 engine-icon이 이미 종류를 시각적으로 나타내므로 생략.
-            const ENGINE_LABEL = { oracle: 'Oracle', mysql: 'MySQL', mariadb: 'MariaDB', postgres: 'PostgreSQL', mssql: 'MS SQL Server' };
+            const ENGINE_LABEL = { oracle: 'Oracle', mysql: 'MySQL', mariadb: 'MariaDB', postgres: 'PostgreSQL', mssql: 'MS SQL Server', cubrid: 'CUBRID' };
             function metaText(d, withType) {
                 if (!d.sid) return '';
                 const engine = ENGINE_LABEL[d.db_type] || 'Oracle';
@@ -947,6 +947,7 @@
                     if (dbType === 'mysql' || dbType === 'mariadb') page = 'mysql-overview-dashboard.html';
                     else if (dbType === 'postgres') page = 'postgres-overview-dashboard.html';
                     else if (dbType === 'mssql') page = 'mssql-overview-dashboard.html';
+                    else if (dbType === 'cubrid') page = 'cubrid-overview-dashboard.html';
                     window.location.href = `${page}?db_id=${encodeURIComponent(id)}&db_type=${encodeURIComponent(dbType)}&name=${encodeURIComponent((d && d.name) || id)}`;
                     return;
                 }
