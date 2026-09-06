@@ -1044,6 +1044,12 @@ body {
     padding: 12px 12px;
     margin-bottom: -1px;
     white-space: nowrap;
+    /* 2026-09-06: RDB 대시보드의 탭(.view-tab)과 글자 굵기를 맞춘다. 그쪽은 600 인데 여기는 400
+       이라 나란히 놓으면 확연히 가늘어 보였다.
+       크기(16px)는 손대지 않았다 - 이 화면은 zoom:90% 라 화면상 14.4px 로 RDB(16px)보다 작지만,
+       역산해서 17.8px 로 키우면 메뉴 9개의 가로 폭이 늘어 1920px 에서도 가로 스크롤이 생길 수
+       있다. 굵기만으로 시각적 차이의 대부분이 해소되므로 여기까지만 맞춘다(작업정리 문서 참고). */
+    font-weight: 600;
 }
 .top-nav .nav-item.active {
     border-left-color: transparent;

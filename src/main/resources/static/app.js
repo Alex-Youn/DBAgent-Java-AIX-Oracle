@@ -424,6 +424,10 @@ function getToken() {
         }
         const foAutoToggleWrap = document.getElementById('fo-auto-toggle-wrap');
         const foAutoToggleInput = document.getElementById('fo-auto-toggle-input');
+        // 좌측 상단 로고도 FO 로 가는 통로다 - 버튼만 숨기고 로고를 열어 두면, 권한 없는 계정이
+        // 로고를 눌러 건너간 뒤 "접근 권한이 없습니다" 만 보게 된다(2026-09-06 실측).
+        if (window.dbagentGateBrandLink) window.dbagentGateBrandLink('.sidebar-brand-link');
+
         if (!canFleetOverview()) {
             const foBtn = document.getElementById('fleet-overview-btn');
             if (foBtn) foBtn.style.display = 'none';

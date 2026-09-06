@@ -231,6 +231,34 @@
         return sessionStorage.getItem('dbagent_role') === 'admin';
     };
 
+    /**
+     * Fleet Overview 접근 권한(admin 이거나 계정 관리에서 "Fleet Overview 접근 허용" 을 받은 계정).
+     * app.js 의 canFleetOverview() 와 같은 판정이다.
+     */
+    window.dbagentCanFleetOverview = function () {
+        return window.dbagentIsAdmin()
+            || sessionStorage.getItem('dbagent_fleet_overview') === 'true';
+    };
+
+    /**
+     * 좌측 상단 "DB InsightFlow" 로고의 Fleet Overview 링크를 권한에 맞춰 잠근다(2026-09-06).
+     *
+     * FO 버튼(#fleet-overview-btn / #pmmFoBtn)은 권한이 없으면 숨기는데 <b>이 로고 링크에는 게이팅이
+     * 전혀 없어서</b>, 버튼은 안 보이는 계정이 로고를 눌러 FO 로 건너간 뒤 "접근 권한이 없습니다"
+     * 안내만 보는 상태였다(실측 확인). 데이터가 새는 건 아니지만(그 페이지 자체 방어 + 백엔드 403)
+     * 같은 목적지로 가는 통로 둘 중 하나만 막혀 있어 일관성이 깨져 있었다.
+     *
+     * 로고 자체를 숨기면 사이드바가 허전해지므로 <b>링크만 죽인다</b> - href 를 떼고 안내 문구를 바꾼다.
+     */
+    window.dbagentGateBrandLink = function (selector) {
+        var el = document.querySelector(selector);
+        if (!el || window.dbagentCanFleetOverview()) return;
+        el.removeAttribute('href');
+        el.style.cursor = 'default';
+        el.title = 'Fleet Overview 접근 권한이 없습니다';
+        el.addEventListener('click', function (e) { e.preventDefault(); });
+    };
+
     // 계정에 설정된 접근 불가 DB. 로그인 응답이 sessionStorage 에 넣어 둔다(app.js 의
     // getAccountHiddenDbs 와 같은 값). 실제 차단은 백엔드 canAccessDb() 가 하고, 여기서는
     // 못 쓰는 진입점을 감추는 용도다.

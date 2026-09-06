@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MS SQL Server Overview</title>
 <script src="lib/lucide.js"></script>
-<script src="dbagent-common.js?v=9"></script>
+<script src="dbagent-common.js?v=10"></script>
 <script src="rdb-session-views.js?v=10"></script>
 <style>
     :root {
@@ -1099,6 +1099,9 @@
         const foBtn = document.getElementById('pmmFoBtn');
         const foAutoWrap = document.getElementById('pmmFoAutoWrap');
         const foAutoInput = document.getElementById('pmmFoAutoInput');
+        // 좌측 상단 로고도 FO 로 가는 통로다 - 버튼만 숨기면 권한 없는 계정이 로고를 눌러 건너간 뒤
+        // "접근 권한이 없습니다" 만 보게 된다(2026-09-06 실측).
+        if (window.dbagentGateBrandLink) window.dbagentGateBrandLink('.pmm-brand');
         if (!canFleetOverview) {
             if (foBtn) foBtn.style.display = 'none';
             if (foAutoWrap) foAutoWrap.style.display = 'none';
