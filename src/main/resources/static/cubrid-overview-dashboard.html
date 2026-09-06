@@ -6,7 +6,7 @@
 <title>CUBRID Overview</title>
 <script src="lib/lucide.js"></script>
 <script src="dbagent-common.js?v=8"></script>
-<script src="rdb-session-views.js?v=7"></script>
+<script src="rdb-session-views.js?v=8"></script>
 <style>
     :root {
         --bg-page: #111217;
@@ -835,11 +835,24 @@
             '접속 이력이 없습니다.');
     }
 
-    // 탭 전환(DASHBOARD / 세션 리스트 / 용량 조회). Lock 탭은 이 화면에 없다(위 마크업 주석 참고).
-    // 전환도 표도 모달도 전부 rdb-session-views.js 가 맡는다 - 네 대시보드가 같은 코드를 네 번
-    // 복사하지 않기 위함(그 파일 머리말 참고).
+    // 탭 전환(DASHBOARD / 세션 리스트 / Lock 대기 세션 / 용량 조회). 전환도 표도 모달도 전부
+    // rdb-session-views.js 가 맡는다 - 네 대시보드가 같은 코드를 네 번 복사하지 않기 위함(그 파일
+    // 머리말 참고).
+    //
+    // locksNote 를 넘기는 이유: 공통 문구는 "Holder 를 위에, Waiter 를 아래에 붙여 트리로 보여준다 /
+    // 맨 위 Holder 를 처리하면 아래가 한꺼번에 풀린다" 인데, CUBRID 는 대기자를 막고 있는 holder 를
+    // JDBC 로 알 수 없어(CubridMonitorService 주석) 트리도 다단계 체인도 만들 수 없다. 그 문구를
+    // 그대로 두면 화면(평평한 대기 목록)과 어긋나고, 서버가 주는 blocker_note("holder 를 알려주지
+    // 않습니다")와도 정면으로 모순된다.
     if (window.dbagentInitRdbSessionViews) {
-        window.dbagentInitRdbSessionViews({ dbId: dbId, getToken: getToken });
+        window.dbagentInitRdbSessionViews({
+            dbId: dbId,
+            getToken: getToken,
+            locksNote: '지금 락을 기다리고 있는 세션을 보여줍니다. ' +
+                'CUBRID는 대기자를 막고 있는 세션(Holder)을 JDBC로 알려주지 않아 트리가 아니라 ' +
+                '대기자 목록으로 표시하며, 표 위에 홀더 후보를 따로 안내합니다. ' +
+                '행을 클릭하면 세션 상세를 볼 수 있습니다.'
+        });
     } else {
         // rdb-session-views.js 로드가 빠졌을 때의 안전망 - 최소한 DASHBOARD 는 보여야 한다.
         const detailView = document.getElementById('detailView');
