@@ -119,6 +119,33 @@ function getToken() {
         }
 
         // Attach auth event listeners
+        /**
+         * 로그인 직후 착지할 페이지를 정한다(2026-09-06 추가).
+         *
+         * index.html 은 오라클 전용 화면이라, 오라클 DB가 하나도 허용되지 않은 계정이 여기 남으면
+         * 빈 화면만 보게 된다. 계정에 열려 있는 DB가 RDB 쪽뿐이면 그 대시보드로 보낸다.
+         *
+         * null 을 돌려주면 호출부가 기존대로 이 페이지를 reload 한다 - 오라클이 열려 있거나(정상),
+         * 목록을 못 읽었거나(판단 근거 없음), 양쪽 다 없는 경우다. 특히 <b>실패 시 이동시키지 않는
+         * 것</b>이 중요하다: 잘못 보내면 사용자가 원인을 알 수 없는 곳에 떨어진다.
+         */
+        async function resolveLandingPage() {
+            try {
+                const list = await window.dbagentLoadDbInstances();
+                const acc = window.dbagentAccessibleInstances(list);
+                if (acc.oracle.length > 0) return null;      // 오라클이 있으면 이 화면이 맞다
+                if (acc.rdb.length === 0) return null;       // 양쪽 다 없으면 보낼 곳이 없다
+                const first = acc.rdb[0];
+                return window.dbagentRdbPageFor(first.engine)
+                    + '?db_id=' + encodeURIComponent(first.id)
+                    + '&db_type=' + encodeURIComponent(first.engine)
+                    + '&name=' + encodeURIComponent(first.label);
+            } catch (err) {
+                console.error('[login] 착지 화면 판정 실패 - 기본 화면으로 남습니다:', err);
+                return null;
+            }
+        }
+
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const username = document.getElementById('login-username').value;
@@ -157,7 +184,14 @@ function getToken() {
                     if (canFleetOverview() && wantsFleetOverviewAutoRedirect()) {
                         window.location.href = 'fleet-overview.html';
                     } else {
-                        location.reload();
+                        // 이 화면(index.html)은 <b>오라클 전용</b>이다. 계정에 허용된 DB가 RDB 뿐이면
+                        // 여기서 reload 해 봐야 좌측 트리도 상단 드롭다운도 0건이고, RDB 버튼마저
+                        // "양쪽 모두 접근 가능한 계정에만 노출"(2026-09-05) 규칙에 걸려 숨겨져서 -
+                        // <b>허용받은 DB로 갈 수단이 화면에 하나도 없는 상태</b>가 된다(2026-09-06 재현).
+                        // 계정에 실제로 열려 있는 쪽으로 보낸다.
+                        const landing = await resolveLandingPage();
+                        if (landing) window.location.href = landing;
+                        else location.reload();
                     }
                 } else {
                     errDiv.textContent = data.message || '로그인 실패';
@@ -185,6 +219,15 @@ function getToken() {
             rdbBtn.style.display = 'none'; // 판정 전에는 감춰 둔다 - 잠깐 떴다 사라지지 않도록
             window.dbagentLoadDbInstances().then(list => {
                 const acc = window.dbagentCrossNavAccess(list);
+                // RDB 가 <b>아예 등록되어 있지 않으면</b> 버튼을 보여주고 눌렀을 때 그 사실을 알린다
+                // (2026-09-06 사용자 요청). 권한 때문에 0건인 경우는 기존대로 감춘 채 둔다 -
+                // 그때 "등록된 RDB가 없습니다" 라고 하면 사실과 다른 안내가 된다(dbagent-common.js 주석).
+                if (acc.emptyRdb) {
+                    rdbBtn.title = '등록된 RDB가 없습니다';
+                    rdbBtn.addEventListener('click', () => { alert('등록된 RDB가 없습니다.'); });
+                    rdbBtn.style.display = '';
+                    return;
+                }
                 if (!acc.allowed) return;
                 const first = acc.rdb[0];
                 const href = window.dbagentRdbPageFor(first.engine)
@@ -415,6 +458,73 @@ function getToken() {
             return 'rdb-dashboard.html';
         }
 
+        // ---- 상단 DB 선택 드롭다운 (2026-09-06, RDB 대시보드 헤더와 같은 chevron 방식) ----
+        //
+        // 좌측 트리를 펼치지 않고도 DB를 바꿀 수 있게 한다. 여기서는 DB를 직접 바꾸지 않고 트리의
+        // 해당 인스턴스 링크를 click() 한다 - 전환 로직(위젯 초기화, 세션 모니터 리셋, 보고 있던
+        // 탭 유지)이 트리 쪽에만 있어야 두 경로가 어긋나지 않고, 트리의 선택 표시도 같이 따라온다.
+        function syncTopTitle(inst) {
+            const titleEl = document.getElementById('ora-title');
+            if (titleEl) titleEl.textContent = (inst && (inst.name || inst.id)) || 'Oracle Overview';
+            const dd = document.getElementById('ora-title-dropdown');
+            if (!dd) return;
+            Array.prototype.forEach.call(dd.querySelectorAll('.td-item'), function (el) {
+                const mine = inst && el.getAttribute('data-db-id') === inst.id;
+                el.classList.toggle('active', !!mine);
+            });
+        }
+
+        function buildTopDbDropdown(entries, linksById) {
+            const wrap = document.getElementById('ora-title-wrap');
+            const dd = document.getElementById('ora-title-dropdown');
+            if (!wrap || !dd) return;
+
+            if (!entries.length) {
+                dd.innerHTML = '<div class="td-group">표시할 Oracle DB가 없습니다</div>';
+            } else {
+                let html = '';
+                let lastGroup = null;
+                entries.forEach(function (e) {
+                    if (e.group !== lastGroup) {
+                        html += '<div class="td-group">' + e.group + '</div>';
+                        lastGroup = e.group;
+                    }
+                    // 오라클 인스턴스는 host 가 비어 있고 sid(TNS 별칭)만 있는 경우가 흔하다.
+                    // 그대로 이으면 "· ORCL" 처럼 앞에 점만 덩그러니 남는다.
+                    const hostText = [e.inst.host, e.inst.sid].filter(function (v) { return v; }).join(' · ');
+                    html += '<div class="td-item" data-db-id="' + e.inst.id + '">'
+                        + '<span>' + (e.inst.name || e.inst.id) + '</span>'
+                        + '<span class="td-host">' + hostText + '</span></div>';
+                });
+                dd.innerHTML = html;
+            }
+
+            Array.prototype.forEach.call(dd.querySelectorAll('.td-item[data-db-id]'), function (el) {
+                el.addEventListener('click', function (ev) {
+                    ev.stopPropagation();
+                    dd.classList.remove('open');
+                    wrap.classList.remove('open');
+                    // 이미 보고 있는 DB면 아무것도 하지 않는다(불필요한 위젯 초기화 방지).
+                    const id = el.getAttribute('data-db-id');
+                    if (id === window.currentDbId) return;
+                    const link = linksById[id];
+                    if (link) link.click();
+                });
+            });
+
+            wrap.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                const open = dd.classList.toggle('open');
+                wrap.classList.toggle('open', open);
+            });
+            // 드롭다운 안을 클릭해도 위 토글까지 올라가 바로 닫히지 않도록 막는다.
+            dd.addEventListener('click', function (ev) { ev.stopPropagation(); });
+            document.addEventListener('click', function () {
+                dd.classList.remove('open');
+                wrap.classList.remove('open');
+            });
+        }
+
         // Load config and build tree
         fetch(`/api/config`)
             .then(res => res.json())
@@ -423,6 +533,12 @@ function getToken() {
                 if(!container) return;
 
                 let isFirstInstance = true;
+                // 상단 DB 선택 드롭다운(RDB 대시보드의 헤더 chevron과 같은 것, 2026-09-06 추가)이
+                // 쓸 링크 목록. 드롭다운은 자기가 DB를 바꾸지 않고 여기 담아 둔 트리 링크를 click()
+                // 한다 - 전환 로직(위젯 초기화/세션 모니터 리셋/현재 탭 유지)이 트리 쪽에만 있고,
+                // 그래야 좌측 트리의 선택 표시도 저절로 같이 따라온다.
+                const treeLinksById = {};
+                const ddGroups = [];
                 // ?db_id=... jumps straight to that instance instead of the usual "first
                 // non-restricted instance" default - used by the Fleet Overview page's card-click
                 // navigation (fleet-overview.html opens index.html?db_id=<id>).
@@ -492,6 +608,12 @@ function getToken() {
                         instLink.className = 'instance-item';
                         instLink.setAttribute('data-db-id', inst.id);
                         const isRestricted = restrictedDbs.has(inst.id);
+                        // 상단 드롭다운은 이 링크를 눌러 DB를 바꾼다. 계정에 제한된 인스턴스는
+                        // 트리에서 숨기는 것과 같이 드롭다운에도 올리지 않는다.
+                        if (!isRestricted) {
+                            treeLinksById[inst.id] = instLink;
+                            ddGroups.push({ group: group.group_name, inst: inst });
+                        }
                         instLink.style.display = isRestricted ? 'none' : 'flex';
                         instLink.style.alignItems = 'center';
                         instLink.style.gap = '8px';
@@ -530,6 +652,9 @@ function getToken() {
                             
                             if (typeof saveSessionHistorySnapshot === 'function') saveSessionHistorySnapshot(window.currentDbId);
                             window.currentDbId = inst.id;
+                            // 상단 타이틀/드롭다운 표시를 지금 고른 DB로 맞춘다. 트리에서 골랐든
+                            // 드롭다운에서 골랐든 여기 한 곳을 지나므로 둘이 어긋나지 않는다.
+                            if (typeof syncTopTitle === 'function') syncTopTitle(inst);
                             // 인스턴스별 세션 임계치 오버라이드 (databases.json의 "session_thresholds": [t1..t5]),
                             // 없으면 undefined -> getSessColor()가 자동으로 기본값(DEFAULT_SESSION_THRESHOLDS) 사용.
                             window.currentSessionThresholds = Array.isArray(inst.session_thresholds) ? inst.session_thresholds : null;
@@ -577,6 +702,39 @@ function getToken() {
                 groupDiv.appendChild(instancesDiv);
                 container.appendChild(groupDiv);
             });
+
+            // 트리가 비면(이 계정에 열린 오라클 DB가 없음) 빈 사이드바만 남아 원인을 알 수 없다.
+            // 로그인 직후에는 resolveLandingPage() 가 RDB 화면으로 보내지만, 이미 로그인한 채
+            // 이 주소로 직접 들어오면(북마크·새로고침) 여기로 온다 - 이유를 밝히고, 갈 곳이 있으면
+            // 그 링크를 준다(2026-09-06).
+            if (!container.children.length) {
+                const note = document.createElement('div');
+                note.className = 'db-tree-error';
+                note.style.color = 'var(--text-muted)';
+                const anyOracle = (data.groups || []).some(g =>
+                    (g.instances || []).some(i => !i.db_type || i.db_type === 'oracle'));
+                note.textContent = anyOracle
+                    ? '이 계정에 허용된 오라클DB가 없습니다.'
+                    : '등록된 오라클DB가 없습니다.';
+                container.appendChild(note);
+
+                if (window.dbagentAccessibleInstances) {
+                    const acc = window.dbagentAccessibleInstances(window.dbagentInstancesFromConfig(data));
+                    if (acc.rdb.length > 0) {
+                        const first = acc.rdb[0];
+                        const link = document.createElement('a');
+                        link.href = window.dbagentRdbPageFor(first.engine)
+                            + '?db_id=' + encodeURIComponent(first.id)
+                            + '&db_type=' + encodeURIComponent(first.engine)
+                            + '&name=' + encodeURIComponent(first.label);
+                        link.textContent = 'RDB 대시보드로 이동 (' + first.label + ')';
+                        link.style.cssText = 'display:block; padding:8px; color:var(--primary); text-decoration:none;';
+                        container.appendChild(link);
+                    }
+                }
+            }
+
+            buildTopDbDropdown(ddGroups, treeLinksById);
             
             if (typeof lucide !== 'undefined') lucide.createIcons();
             
@@ -1175,6 +1333,7 @@ let layoutHTML = "";
                         </td>
                     </tr>
                 `;
+                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
                 if (icon) icon.classList.remove('spinning');
                 return;
             }
@@ -1190,54 +1349,95 @@ let layoutHTML = "";
                 return `${h}시간 ${rm}분 ${s}초`;
             };
 
-            let tableHtml = '';
-            
+            // ---- Holder/Waiter 트리 만들기 (RDB 대시보드의 buildLockTree 와 같은 방식) ----
+            //
+            // /api/tmlock 은 "막고 있는 세션(block=1)" 마다 그 세션을 기다리는 waiters 를 붙여 주는
+            // <b>2단 구조</b>다. A가 B를, B가 C를 막는 체인이면 A(waiters=[B]) 와 B(waiters=[C]) 가
+            // 각각 최상위로 나와, 예전 화면에서는 B가 두 번(홀더로 한 번, A의 대기자로 한 번) 보이고
+            // 체인이라는 사실이 드러나지 않았다. waiter -> holder 간선을 이어 실제 트리로 세우면
+            // A └─ B └─ C 로 이어지고, 중간의 B는 역할이 둘 다이므로 BOTH 로 표시된다.
+            const nodes = {};
+            function ensureNode(row, isHolder) {
+                const key = String(row.sid);
+                if (!nodes[key]) nodes[key] = { data: row, isHolder: false, isWaiter: false, children: [] };
+                const n = nodes[key];
+                // 홀더 행에는 보유 모드가, 대기 행에는 요청 모드/대기 시간이 담긴다. 대기 쪽 정보가
+                // "무엇을 얼마나 기다리는가" 를 말해 주므로 그쪽을 우선해 남긴다.
+                if (!isHolder || !n.isWaiter) n.data = row;
+                if (isHolder) n.isHolder = true; else n.isWaiter = true;
+                return n;
+            }
             data.forEach(holder => {
-                // Add Holder
+                const h = ensureNode(holder, true);
+                (holder.waiters || []).forEach(waiter => {
+                    const w = ensureNode(waiter, false);
+                    if (h.children.indexOf(w) < 0) h.children.push(w);
+                });
+            });
+            const allNodes = Object.keys(nodes).map(k => nodes[k]);
+            const hasParent = {};
+            allNodes.forEach(n => n.children.forEach(c => { hasParent[String(c.data.sid)] = true; }));
+            let roots = allNodes.filter(n => !hasParent[String(n.data.sid)]);
+            // 루트가 하나도 없으면 서로가 서로를 기다리는 순환(교착)이다. 그대로 두면 아무것도
+            // 안 그려지므로 아무 노드나 하나를 시작점으로 세운다(RDB 쪽과 같은 처리).
+            let cyclic = false;
+            if (!roots.length && allNodes.length) { cyclic = true; roots = [allNodes[0]]; }
+
+            // 트리를 화면 순서대로 펴면서 가지 문자열(prefix)을 만든다.
+            const flat = [];
+            (function flatten(list, depth, prefix, path) {
+                list.forEach((node, i) => {
+                    const sid = String(node.data.sid);
+                    const repeated = path.indexOf(sid) >= 0;
+                    const isLast = i === list.length - 1;
+                    flat.push({ node: node, depth: depth, isLast: isLast, prefix: prefix, repeated: repeated });
+                    if (repeated) return;   // 순환 - 여기서 끊지 않으면 무한 재귀다
+                    flatten(node.children, depth + 1,
+                            depth === 0 ? '' : prefix + (isLast ? '   ' : '│  '),
+                            path.concat([sid]));
+                });
+            })(roots, 0, '', []);
+
+            let tableHtml = '';
+            flat.forEach(item => {
+                const n = item.node;
+                const d = n.data;
+                const role = (n.isHolder && n.isWaiter) ? 'both' : (n.isHolder ? 'holder' : 'waiter');
+                const roleLabel = role === 'both' ? 'BOTH' : (role === 'holder' ? 'HOLDER' : 'WAITER');
+                const roleTitle = role === 'both'
+                    ? '다른 세션을 막고 있으면서 자신도 다른 세션을 기다리는 중입니다(체인 중간).'
+                    : (role === 'holder' ? '락을 쥐고 있는 세션입니다.' : '락을 기다리는 세션입니다.');
+                const branch = item.depth > 0
+                    ? `<span class="lock-branch">${item.prefix}${item.isLast ? '└─ ' : '├─ '}</span>`
+                    : '';
+                const cycle = item.repeated ? '<span class="lock-cycle">↻ 순환</span>' : '';
                 tableHtml += `
-                    <tr class="tmlock-row clickable-session-row" data-sid="${holder.sid}" style="background-color: rgba(208, 59, 59, 0.15); color: var(--text-main); cursor: pointer;">
-                        <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${holder.sid}" data-serial="${holder.serial}" onclick="event.stopPropagation();"></td>
-                        <td><strong><i data-lucide="lock" style="width: 16px; height: 16px; margin-right: 4px; vertical-align: middle;"></i>${holder.sid}</strong></td>
-                        <td>${holder.inst_id}</td>
-                        <td>${holder.serial}</td>
-                        <td>${holder.spid || ''}</td>
-                        <td>${holder.username}</td>
-                        <td>${holder.lock_type}</td>
-                        <td>${holder.mode}</td>
-                        <td>${holder.object_waiting || ''}</td>
-                        <td>${formatDuration(holder.time)}</td>
-                        <td>${holder.login || ''}</td>
-                        <td>${holder.status || ''}</td>
-                        <td>${holder.program || ''}</td>
-                        <td>${holder.machine || ''}</td>
+                    <tr class="tmlock-row clickable-session-row" data-sid="${d.sid}">
+                        <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${d.sid}" data-serial="${d.serial}" onclick="event.stopPropagation();"></td>
+                        <td>${branch}<span class="lock-badge ${role}" title="${roleTitle}">${roleLabel}</span><span class="lock-sid">${d.sid}</span>${cycle}</td>
+                        <td>${d.serial}</td>
+                        <td>${d.spid || ''}</td>
+                        <td>${d.username}</td>
+                        <td>${d.lock_type}</td>
+                        <td>${d.mode}</td>
+                        <td>${d.object_waiting || ''}</td>
+                        <td>${formatDuration(d.time)}</td>
+                        <td>${d.login || ''}</td>
+                        <td>${d.status || ''}</td>
+                        <td>${d.program || ''}</td>
+                        <td>${d.machine || ''}</td>
+                        <td>${d.osuser || ''}</td>
                     </tr>
                 `;
-
-                if (holder.waiters && holder.waiters.length > 0) {
-                    holder.waiters.forEach(waiter => {
-                        // Add Waiter
-                        tableHtml += `
-                            <tr class="tmlock-row clickable-session-row" data-sid="${waiter.sid}" style="background-color: rgba(250, 178, 25, 0.15); color: var(--text-main); cursor: pointer;">
-                                <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${waiter.sid}" data-serial="${waiter.serial}" onclick="event.stopPropagation();"></td>
-                                <td style="padding-left: 20px;"><i data-lucide="corner-down-right" style="width: 16px; height: 16px; margin-right: 4px; vertical-align: middle;"></i>${waiter.sid}</td>
-                                <td>${waiter.inst_id}</td>
-                                <td>${waiter.serial}</td>
-                                <td>${waiter.spid || ''}</td>
-                                <td>${waiter.username}</td>
-                                <td>${waiter.lock_type}</td>
-                                <td>${waiter.mode}</td>
-                                <td>${waiter.object_waiting || ''}</td>
-                                <td>${formatDuration(waiter.time)}</td>
-                                <td>${waiter.login || ''}</td>
-                                <td>${waiter.status || ''}</td>
-                                <td>${waiter.program || ''}</td>
-                                <td>${waiter.machine || ''}</td>
-                            </tr>
-                        `;
-                    });
-                }
             });
-            
+            if (cyclic) {
+                tableHtml += `
+                    <tr><td colspan="14" style="padding: 10px 12px; color: var(--warning); font-size: 0.9rem;">
+                        ⚠ 서로가 서로를 기다리는 순환 구조입니다(교착 가능성). 시작점을 특정할 수 없어 한 세션을 맨 위에 두었습니다.
+                    </td></tr>
+                `;
+            }
+
             const checkedTmlockSids = Array.from(document.querySelectorAll('.tmlock-checkbox:checked')).map(cb => cb.getAttribute('data-sid'));
             tmlockTbody.innerHTML = tableHtml;
             document.querySelectorAll('.tmlock-checkbox').forEach(cb => {
@@ -1245,6 +1445,9 @@ let layoutHTML = "";
                     cb.checked = true;
                 }
             });
+            // 표를 다시 그리면 체크 상태가 복원되므로 버튼 상태도 다시 맞춘다(위임 리스너는
+            // 사용자의 change 만 받기 때문에 여기서 한 번 더 호출해야 한다).
+            if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
 
             // Re-attach select all event listener if it exists
             const selectAllCb = document.getElementById('tmlock-select-all');
@@ -1845,6 +2048,9 @@ let layoutHTML = "";
             // Update Table (Only Active Sessions)
             if (activeSessions.length === 0) {
                 sessionTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">현재 ACTIVE 상태인 세션이 없습니다.</td></tr>';
+                // 표가 비면 고를 것이 없다 - 선택이 남아 있던 상태에서 세션이 사라져도 버튼이
+                // 활성인 채로 남지 않도록 여기서도 맞춘다.
+                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
             } else {
                 const maxDuration = activeSessions.reduce((max, s) => Math.max(max, Number(s.duration_time) || 0), 1);
                 let html = '';
@@ -1890,6 +2096,7 @@ let layoutHTML = "";
                         cb.checked = true;
                     }
                 });
+                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
             }
 
             renderActiveTransactionsTab(extra.active_transactions);
@@ -2535,6 +2742,7 @@ let layoutHTML = "";
                         if (tbody) {
                             if (activeSess.length === 0) {
                                 tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">ACTIVE 상태인 세션이 없습니다.</td></tr>';
+                                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
                             } else {
                                 const maxDuration = activeSess.reduce((max, s) => Math.max(max, Number(s.duration_time) || 0), 1);
                                 let html = '';
@@ -2577,6 +2785,7 @@ let layoutHTML = "";
                                         cb.checked = true;
                                     }
                                 });
+                                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
                             }
                         }
                     }
@@ -2847,6 +3056,47 @@ let layoutHTML = "";
     
     document.getElementById('session-select-all')?.addEventListener('change', (e) => {
         document.querySelectorAll('.session-checkbox').forEach(cb => cb.checked = e.target.checked);
+    });
+
+    // ---- 선택 세션 Kill 버튼 활성/비활성 (2026-09-06 사용자 요청) --------------------------------
+    //
+    // 예전에는 버튼이 항상 눌렸고, 아무것도 안 고른 채 누르면 "Kill할 세션을 선택해주세요" 경고만
+    // 떴다 - 누를 수 있다는 것 자체가 잘못된 신호였다. 고른 게 있을 때만 활성화하고, 몇 건이
+    // 지워지는지 옆에 표시한다(RDB 화면의 Lock/세션 탭과 같은 동작).
+    //
+    // <b>표는 자동 갱신마다 tbody 를 통째로 다시 그린다</b> - 그리는 시점에 개별 체크박스에
+    // 리스너를 달면 갱신될 때마다 사라지고, 새 행에는 안 붙는다. 그래서 document 레벨 위임으로
+    // 한 번만 걸고, 갱신 직후에도 다시 계산되도록 아래에서 폴링 없이 change 이벤트를 받는다.
+    // 이 화면의 Kill 버튼은 셋이다 - DASHBOARD 탭의 Active Session 목록, Current Session 메뉴,
+    // Lock Holder/Waiter Tree. 셋 다 같은 규칙으로 동작해야 한다(2026-09-06 사용자 지적으로 대시보드
+    // 것이 빠져 있던 것을 보완).
+    const KILL_PANES = [
+        { box: 'dash-sess-checkbox', btn: 'dash-kill-btn',    count: 'dash-selected-count',    all: 'dash-select-all-sess' },
+        { box: 'session-checkbox',   btn: 'session-kill-btn', count: 'session-selected-count', all: 'session-select-all'   },
+        { box: 'tmlock-checkbox',    btn: 'tmlock-kill-btn',  count: 'tmlock-selected-count',  all: 'tmlock-select-all'    }
+    ];
+    function syncKillButtons() {
+        KILL_PANES.forEach(p => {
+            const btn = document.getElementById(p.btn);
+            if (!btn) return;
+            const n = document.querySelectorAll('.' + p.box + ':checked').length;
+            btn.disabled = (n === 0);
+            const label = document.getElementById(p.count);
+            if (label) label.innerHTML = n > 0 ? '선택 <b>' + n + '</b>건' : '';
+            // 전체 선택 체크박스도 실제 상태에 맞춘다(개별 해제 시 풀리도록).
+            const all = document.getElementById(p.all);
+            if (all) {
+                const total = document.querySelectorAll('.' + p.box).length;
+                all.checked = total > 0 && n === total;
+            }
+        });
+    }
+    window.dbagentSyncKillButtons = syncKillButtons;   // 표를 다시 그린 쪽에서 호출한다
+    document.addEventListener('change', (e) => {
+        if (!e.target || !e.target.classList) return;
+        const hit = KILL_PANES.some(p =>
+            e.target.classList.contains(p.box) || e.target.id === p.all);
+        if (hit) syncKillButtons();
     });
 
     // Modal Global Listeners

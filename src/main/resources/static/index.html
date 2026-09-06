@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=27">
+    <link rel="stylesheet" href="style.css?v=32">
     <script src="lib/lucide.js"></script>
-    <script src="dbagent-common.js?v=8"></script>
+    <script src="dbagent-common.js?v=9"></script>
     <script src="lib/mermaid.min.js"></script>
     <script src="lib/chart.js"></script>
     <script src="lib/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -161,7 +161,16 @@
         <!-- Main Content -->
         <main class="main-content">
             <header class="top-header" style="flex-direction: column; align-items: stretch; gap: 0; padding-bottom: 0;">
-                <div style="display: flex; justify-content: flex-end; align-items: center; padding-bottom: 15px;">
+                <!-- 상단 줄. 높이(54px)와 좌측 타이틀+chevron 드롭다운 구성은 RDB 대시보드의
+                     .pmm-header 와 맞췄다(2026-09-06 사용자 요청) - 두 화면을 오가며 쓰는데
+                     최상단 모양이 서로 달라 이질감이 있었다. 드롭다운은 좌측 트리를 열지 않고도
+                     DB를 바꿀 수 있게 해 준다. -->
+                <div class="top-header-row">
+                    <div class="top-title" id="ora-title-wrap" title="다른 DB 인스턴스로 전환">
+                        <span id="ora-title">Oracle Overview</span>
+                        <i data-lucide="chevron-down" class="caret"></i>
+                        <div id="ora-title-dropdown" class="title-dropdown"></div>
+                    </div>
                     <h1 id="page-title" style="display: none;">대시보드</h1>
                     <div class="header-actions">
                         <button class="icon-btn rdb-btn" id="rdb-dashboard-btn" style="display: none;" title="RDB 대시보드 (MySQL/MariaDB/PostgreSQL/MS SQL)"><i data-lucide="database"></i>RDB</button>
@@ -327,7 +336,8 @@
                             <div id="dash-active-sess" class="dash-tab-content" style="display: block;">
                                 <div class="table-container" style="max-height: 400px; overflow-y: auto;">
                                     <div style="margin-bottom: 10px; text-align: right;">
-                                        <button id="dash-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;">선택 세션 Kill</button>
+                                        <span class="kill-selected-count admin-only" id="dash-selected-count"></span>
+                                        <button id="dash-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;" disabled>선택 세션 Kill</button>
                                     </div>
                                     <table class="data-table">
                                         <thead>
@@ -633,7 +643,8 @@
                         <div class="panel-header">
                             <h2>Lock Holder/Waiter Tree 실시간 모니터링</h2>
                             <div style="display: flex; gap: 20px;">
-                                <button id="tmlock-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;">선택 세션 Kill</button>
+                                <span class="kill-selected-count admin-only" id="tmlock-selected-count"></span>
+                                <button id="tmlock-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;" disabled>선택 세션 Kill</button>
                                 <div class="refresh-controls" style="display: flex; align-items: center; gap: 10px;">
                                     <label for="tmlock-refresh-interval" style="font-size: 0.9rem; color: var(--text-secondary);">리프레쉬 주기(초):</label>
                                     <input type="number" id="tmlock-refresh-interval" value="5" min="1" max="60" style="width: 60px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-primary);">
@@ -647,9 +658,11 @@
                                 <table class="data-table" style="width: 100%; text-align: left;">
                                     <thead style="position: sticky; top: 0; background: var(--bg-card); z-index: 1;">
                                         <tr>
+                                            <!-- INST_ID 는 2026-09-06 에 뺐다: RAC 환경이라도 gv$ 를 쓰지 않기로
+                                                 확정해(실 RAC 에서 Lock/세션 조회 성능 저하) 단일 인스턴스 값만
+                                                 나오는 칸이었다. 대신 맨 끝에 OS User 를 넣는다. -->
                                             <th style="width: 40px; text-align: center;"><input type="checkbox" id="tmlock-select-all"></th>
                                             <th>SID</th>
-                                            <th>INST_ID</th>
                                             <th>Serial#</th>
                                             <th>SPID</th>
                                             <th>userName</th>
@@ -661,6 +674,7 @@
                                             <th>Status</th>
                                             <th>Program</th>
                                             <th>machine</th>
+                                            <th>OS User</th>
                                         </tr>
                                     </thead>
                                     <tbody id="tmlock-tbody">
@@ -714,7 +728,8 @@
                             <!-- Tab: Active Session -->
                             <div id="sesslist-active-session" class="sesslist-tab-content" style="display: block;">
                                 <div style="display: flex; justify-content: flex-end; align-items: center; margin-bottom: 10px;">
-                                    <button id="session-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;">선택 세션 Kill</button>
+                                    <span class="kill-selected-count admin-only" id="session-selected-count"></span>
+                                    <button id="session-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;" disabled>선택 세션 Kill</button>
                                 </div>
                                 <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
                                     <table class="data-table" style="border: none;">
@@ -943,6 +958,6 @@
     </div>
 
 
-    <script src="app.js?v=87"></script>
+    <script src="app.js?v=94"></script>
 </body>
 </html>

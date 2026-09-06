@@ -54,8 +54,13 @@ public class MySqlMonitorService implements EngineMonitorService {
 
     @Override
     public List<Map<String, Object>> getStorage(TargetDbConfig target) throws SQLException {
-        // No allocated-vs-used concept like Oracle datafiles - total_mb==used_mb, free_mb=0, so the
-        // Oracle tablespace-summary UI (전체 할당량/사용량/사용률) can render this unchanged.
+        // MySQL/MariaDB 에는 Oracle 데이터파일 같은 "미리 할당해 둔 크기" 개념이 없다. 예전에는
+        // Oracle 테이블스페이스 요약 UI(전체 할당량/사용량/사용률)를 그대로 쓰려고 total_mb=used_mb,
+        // free_mb=0, used_pct=100 을 채워 넣었는데, 그러면 화면의 사용률이 <b>항상 100%</b> 로 나와
+        // "곧 꽉 찬다" 는 거짓 경보가 된다(2026-09-05 발견, 09-05 문서 15-2절). 모르는 값은 채우지 말고
+        // null 로 두고 화면이 '-' 로 그리게 한다 - 용량 조회 탭(getCapacity)이 이미 쓰는 방식이고,
+        // 이 앱이 계속 피해 온 "항상 100%" 류 잡음을 막는 원칙이다.
+        //
         // Starts from information_schema.schemata (every database), LEFT JOINed to tables - a database
         // with zero tables still needs to show up as its own 0 MB row. Starting from
         // information_schema.tables instead (as an earlier version of this query did) silently drops
@@ -76,10 +81,10 @@ public class MySqlMonitorService implements EngineMonitorService {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("tablespace_name", rs.getString("name"));
                 row.put("status", "ONLINE");
-                row.put("total_mb", usedMb);
+                row.put("total_mb", null);
                 row.put("used_mb", usedMb);
-                row.put("free_mb", 0);
-                row.put("used_pct", 100);
+                row.put("free_mb", null);
+                row.put("used_pct", null);
                 rows.add(row);
             }
         }

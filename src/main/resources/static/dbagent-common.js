@@ -261,11 +261,25 @@
      * 계정에게 건너가는 버튼을 보여줘 봐야 도착해서 "해당 DB에 대한 접근 권한이 없습니다" 만
      * 보게 된다. 로그인 전에는 판단 근거(hidden_dbs)가 없으므로 감춘다 - FO 버튼과 같은 방식.
      *
+     * <b>다만 "버튼이 안 보이는 이유" 는 두 가지다</b>(2026-09-06 에 구분하기로 함).
+     *   emptyOracle/emptyRdb : 그 계열 DB가 <b>아예 등록되어 있지 않다</b>(databases.json 에 없음).
+     *                          이 경우는 버튼을 보여주고 눌렀을 때 "등록된 ...가 없습니다" 를 알린다 -
+     *                          권한 문제가 아니라 설정이 비어 있는 것이므로 사용자가 알아야 한다.
+     *   그 외(권한으로 걸러져 0건)  : 기존대로 버튼 자체를 감춘다(2026-09-05 지시 유지).
+     * 둘을 뭉뚱그리면 권한 때문에 못 보는 계정에게 "등록된 DB가 없다" 는 <b>사실과 다른 안내</b>를 하게 된다.
+     *
      * 실제 접근 차단은 백엔드(MonitorController/RdbMonitorController 의 canAccessDb)가 한다.
      */
     window.dbagentCrossNavAccess = function (instances) {
         var acc = window.dbagentAccessibleInstances(instances);
         var token = sessionStorage.getItem('dbagent_token') || '';
+        // 권한 필터를 거치기 <b>전</b> 개수 - 등록 자체가 없는지 판단하는 근거다.
+        var totalOracle = 0, totalRdb = 0;
+        (instances || []).forEach(function (inst) {
+            if (inst.engine === 'oracle') totalOracle += 1; else totalRdb += 1;
+        });
+        acc.emptyOracle = totalOracle === 0;
+        acc.emptyRdb = totalRdb === 0;
         acc.allowed = !!token && acc.oracle.length > 0 && acc.rdb.length > 0;
         return acc;
     };

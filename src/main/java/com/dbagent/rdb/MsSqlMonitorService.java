@@ -69,23 +69,28 @@ public class MsSqlMonitorService implements EngineMonitorService {
     public List<Map<String, Object>> getStorage(TargetDbConfig target) throws SQLException {
         // database_id > 4 excludes the four fixed system databases (master/tempdb/model/msdb), which
         // always occupy ids 1-4 on every instance. size is in 8KB pages, so *8/1024 converts to MB.
+        //
+        // <b>sys.master_files.size 는 파일에 "할당된" 크기지 그 안에 채워진 크기가 아니다.</b> 예전에는
+        // 이 값을 used_mb 로도 담고 total_mb 로도 담은 뒤 used_pct=100 을 박아서, 화면 사용률이 항상
+        // 100% 로 나왔다(09-05 문서 15-2절). 값의 실제 의미대로 total_mb 에만 담고, 이 쿼리로는 알 수
+        // 없는 사용량/여유/사용률은 null 로 둔다 - 화면은 '-' 로 그린다. 진짜 사용량이 필요하면 용량
+        // 조회 탭(getCapacity)이 FILEPROPERTY/dm_db_file_space_usage 로 제대로 구해 준다.
         String sql = "SELECT DB_NAME(database_id) AS name, " +
-                "ROUND(SUM(CAST(size AS BIGINT)) * 8.0 / 1024, 2) AS used_mb " +
+                "ROUND(SUM(CAST(size AS BIGINT)) * 8.0 / 1024, 2) AS total_mb " +
                 "FROM sys.master_files WHERE database_id > 4 " +
-                "GROUP BY database_id ORDER BY used_mb DESC";
+                "GROUP BY database_id ORDER BY total_mb DESC";
         List<Map<String, Object>> rows = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
              Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(sql)) {
             while (rs.next()) {
-                double usedMb = rs.getDouble("used_mb");
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("tablespace_name", rs.getString("name"));
                 row.put("status", "ONLINE");
-                row.put("total_mb", usedMb);
-                row.put("used_mb", usedMb);
-                row.put("free_mb", 0);
-                row.put("used_pct", 100);
+                row.put("total_mb", rs.getDouble("total_mb"));
+                row.put("used_mb", null);
+                row.put("free_mb", null);
+                row.put("used_pct", null);
                 rows.add(row);
             }
         }
@@ -562,6 +567,11 @@ public class MsSqlMonitorService implements EngineMonitorService {
                 row.put("total_mb", rs.getObject("total_mb"));
                 row.put("free_mb", rs.getObject("free_mb"));
                 row.put("used_pct", rs.getObject("used_pct"));
+                // 트랜잭션 로그 파일 크기. 위 표의 할당/사용률은 데이터 파일(ROWS)만 센다 - 로그는
+                // 성격이 달라 같이 더하면 사용률이 왜곡되기 때문이다. 쿼리는 예전부터 log_mb 를
+                // 뽑아 놓고 응답에 담지 않아 죽은 컬럼이었다(09-05 문서 15-2절). 별도 칸으로 내려
+                // 보낸다 - 문서 6.5(임시 공간/로그 용량)가 요구하는 값이 바로 이것이다.
+                row.put("log_mb", rs.getObject("log_mb"));
                 rows.add(row);
             }
         }

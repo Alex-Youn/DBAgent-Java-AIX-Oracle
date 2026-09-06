@@ -49,8 +49,11 @@ public class PostgresMonitorService implements EngineMonitorService {
 
     @Override
     public List<Map<String, Object>> getStorage(TargetDbConfig target) throws SQLException {
-        // Same shape as Oracle's tablespace endpoint (see EngineMonitorService) - Postgres has no
-        // allocated-vs-used distinction either, so total_mb==used_mb, free_mb=0.
+        // Same shape as Oracle's tablespace endpoint (see EngineMonitorService). Postgres 에도 Oracle
+        // 데이터파일 같은 "미리 할당해 둔 크기" 개념이 없다 - pg_database_size 는 실제로 쓰고 있는
+        // 크기다. 예전에는 total_mb=used_mb, free_mb=0, used_pct=100 을 채워 넣어 화면 사용률이
+        // <b>항상 100%</b> 로 나왔다(09-05 문서 15-2절). 모르는 값은 null 로 두고 화면이 '-' 로
+        // 그리게 한다(getCapacity 와 같은 방식).
         String sql = "SELECT datname AS name, pg_database_size(datname) AS bytes " +
                 "FROM pg_database WHERE datistemplate = false ORDER BY bytes DESC";
         List<Map<String, Object>> rows = new ArrayList<>();
@@ -62,10 +65,10 @@ public class PostgresMonitorService implements EngineMonitorService {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("tablespace_name", rs.getString("name"));
                 row.put("status", "ONLINE");
-                row.put("total_mb", Math.round(usedMb * 100.0) / 100.0);
+                row.put("total_mb", null);
                 row.put("used_mb", Math.round(usedMb * 100.0) / 100.0);
-                row.put("free_mb", 0);
-                row.put("used_pct", 100);
+                row.put("free_mb", null);
+                row.put("used_pct", null);
                 rows.add(row);
             }
         }

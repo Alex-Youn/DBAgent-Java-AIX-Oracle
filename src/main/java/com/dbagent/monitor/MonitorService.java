@@ -38,20 +38,25 @@ public class MonitorService {
     // ---------------------------------------------------------------- tmlock
     public List<Map<String, Object>> getTmLocks(TargetDbConfig target) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
-            int instId = queryHelper.getInstId(conn, target);
+            // inst_id 는 더 이상 내려보내지 않는다(2026-09-06 사용자 지시). RAC 환경이라도 gv$ 를
+            // 쓰지 않기로 확정했기 때문이다 - 실제 RAC 에서 gv$ 기반 Lock/세션 조회는 인스턴스 간
+            // 조정 비용 때문에 성능 저하가 발생한다. 이 쿼리는 원래도 v$ 만 쓰고 inst_id 는 별도
+            // 조회(getInstId)로 채워 넣던 값이라, 빼도 조회 방식은 달라지지 않는다.
+            // 대신 화면 맨 끝에 OS User(v$session.osuser)를 넣는다 - 어느 OS 계정이 건 세션인지가
+            // 실제 조치할 때 훨씬 쓸모 있다.
             String query = "SELECT " +
-                    "hl.sid AS holder_sid, " + instId + " AS holder_inst_id, hs.serial# AS holder_serial, " +
+                    "hl.sid AS holder_sid, hs.serial# AS holder_serial, " +
                     "hp.spid AS holder_spid, NVL(hs.username, 'UNKNOWN') AS holder_username, hl.type AS holder_lock_type, " +
                     "DECODE(hl.lmode, 0, 'None', 1, 'Null', 2, 'Row-S', 3, 'Row-X', 4, 'Share', 5, 'S/Row-X', 6, 'Exclusive', TO_CHAR(hl.lmode)) AS holder_mode, " +
                     "o.object_name AS holder_object_waiting, TO_CHAR(hl.ctime) AS holder_time, " +
                     "TO_CHAR(hs.logon_time, 'YYYY-MM-DD HH24:MI:SS') AS holder_login, hs.status AS holder_status, " +
-                    "hs.program AS holder_program, hs.machine AS holder_machine, " +
-                    "wl.sid AS waiter_sid, " + instId + " AS waiter_inst_id, ws.serial# AS waiter_serial, " +
+                    "hs.program AS holder_program, hs.machine AS holder_machine, hs.osuser AS holder_osuser, " +
+                    "wl.sid AS waiter_sid, ws.serial# AS waiter_serial, " +
                     "wp.spid AS waiter_spid, NVL(ws.username, 'UNKNOWN') AS waiter_username, wl.type AS waiter_lock_type, " +
                     "DECODE(wl.request, 0, 'None', 1, 'Null', 2, 'Row-S', 3, 'Row-X', 4, 'Share', 5, 'S/Row-X', 6, 'Exclusive', TO_CHAR(wl.request)) AS waiter_mode, " +
                     "o.object_name AS waiter_object_waiting, TO_CHAR(wl.ctime) AS waiter_time, " +
                     "TO_CHAR(ws.logon_time, 'YYYY-MM-DD HH24:MI:SS') AS waiter_login, ws.status AS waiter_status, " +
-                    "ws.program AS waiter_program, ws.machine AS waiter_machine " +
+                    "ws.program AS waiter_program, ws.machine AS waiter_machine, ws.osuser AS waiter_osuser " +
                     "FROM v$lock hl " +
                     "JOIN v$session hs ON hl.sid = hs.sid " +
                     "LEFT JOIN v$process hp ON hs.paddr = hp.addr " +
@@ -69,7 +74,6 @@ public class MonitorService {
                         Map<String, Object> h = new LinkedHashMap<>();
                         try {
                             h.put("sid", hSid);
-                            h.put("inst_id", rs.getObject("holder_inst_id"));
                             h.put("serial", rs.getObject("holder_serial"));
                             h.put("spid", rs.getString("holder_spid"));
                             h.put("username", rs.getString("holder_username"));
@@ -81,6 +85,7 @@ public class MonitorService {
                             h.put("status", rs.getString("holder_status"));
                             h.put("program", rs.getString("holder_program"));
                             h.put("machine", rs.getString("holder_machine"));
+                            h.put("osuser", rs.getString("holder_osuser"));
                             h.put("is_holder", true);
                             h.put("waiters", new ArrayList<Map<String, Object>>());
                         } catch (SQLException e) {
@@ -93,7 +98,6 @@ public class MonitorService {
                     if (waiterSid != null) {
                         Map<String, Object> waiter = new LinkedHashMap<>();
                         waiter.put("sid", waiterSid);
-                        waiter.put("inst_id", rs.getObject("waiter_inst_id"));
                         waiter.put("serial", rs.getObject("waiter_serial"));
                         waiter.put("spid", rs.getString("waiter_spid"));
                         waiter.put("username", rs.getString("waiter_username"));
@@ -105,6 +109,7 @@ public class MonitorService {
                         waiter.put("status", rs.getString("waiter_status"));
                         waiter.put("program", rs.getString("waiter_program"));
                         waiter.put("machine", rs.getString("waiter_machine"));
+                        waiter.put("osuser", rs.getString("waiter_osuser"));
                         waiter.put("is_holder", false);
                         @SuppressWarnings("unchecked")
                         List<Map<String, Object>> waiters = (List<Map<String, Object>>) holder.get("waiters");
