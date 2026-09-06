@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=32">
+    <link rel="stylesheet" href="style.css?v=33">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=9"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -654,6 +654,15 @@
                             </div>
                         </div>
                         <div class="panel-body">
+                            <!-- 2026-09-06: 이 표가 RDB 대시보드와 같은 배지+트리 방식으로 바뀌면서 BOTH 가
+                                 등장하는데, 무슨 뜻인지와 어떻게 처리해야 하는지가 화면 어디에도 없었다.
+                                 RDB Lock 탭과 같은 내용을 둔다(rdb-session-views.js 의 기본 문구). -->
+                            <p class="lock-help">
+                                락을 쥔 세션(Holder)을 위에, 그 락을 기다리는 세션(Waiter)을 아래에 붙여 트리로 보여줍니다.
+                                A가 B를, B가 C를 막는 다단계 체인도 그대로 이어지며, 가운데 세션은 <b>BOTH</b>로 표시됩니다.
+                                맨 위 Holder만 종료하면 바로 아래 한 단계만 풀리고 그 아래는 계속 기다립니다 —
+                                체인을 한 번에 정리하려면 <b>Holder와 BOTH를 함께 선택해 종료</b>하세요.
+                            </p>
                             <div class="table-container" style="max-height: 500px; overflow-y: auto; margin-top: 10px;">
                                 <table class="data-table" style="width: 100%; text-align: left;">
                                     <thead style="position: sticky; top: 0; background: var(--bg-card); z-index: 1;">

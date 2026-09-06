@@ -6,7 +6,7 @@
 <title>CUBRID Overview</title>
 <script src="lib/lucide.js"></script>
 <script src="dbagent-common.js?v=9"></script>
-<script src="rdb-session-views.js?v=9"></script>
+<script src="rdb-session-views.js?v=10"></script>
 <style>
     :root {
         --bg-page: #111217;
@@ -531,10 +531,14 @@
                 <button type="button" class="view-tab" id="tabCapacityBtn" data-view="capacity"><i data-lucide="hard-drive"></i>용량 조회</button>
             </div>
 
-            <!-- 다른 세 대시보드와 달리 KPI 카드를 한 벌만 둔다. 그쪽은 display:none 으로 죽어 있는
-                 overviewView 안에 kpiUptime/kpiUptime2 처럼 id 만 다른 중복 카드가 남아 있는데
-                 (2026-09-04 Detail 탭 제거의 잔재), 새로 만드는 이 화면까지 그 부채를 물려받을
-                 이유가 없다. -->
+            <!-- KPI 카드는 한 벌만 둔다. 이 화면을 만들 때(2026-09-05) 다른 세 대시보드에는
+                 display:none 으로 죽은 overviewView 안에 id 만 다른 중복 카드가 남아 있었는데
+                 (2026-09-04 Detail 탭 제거의 잔재) 그 부채를 물려받지 않았다. 그쪽 세 화면도
+                 2026-09-06 에 정리되어 지금은 넷 다 카드가 한 벌이다.
+
+                 CUBRID 는 다른 셋과 달리 아코디언(metricRows)이 없다 - 누적 통계를 주지 않아
+                 시계열로 쌓을 값이 없기 때문이다. DASHBOARD 본문은 detailRows 에 현재 상태 표를
+                 그리는 구조이고, 이건 그쪽에서 걷어낸 "죽은 detailRows" 와는 다른 것이다. -->
             <div id="detailView">
                 <div class="kpi-row" id="kpiRowDetail">
                     <div class="kpi-card">
