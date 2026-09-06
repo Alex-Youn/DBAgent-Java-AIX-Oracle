@@ -35,11 +35,14 @@
     // menu id → 탭 버튼의 DOM id. 탭을 추가하면 (1) 여기, (2) 아래 DBAGENT_MENU_GROUPS 의 rdb 그룹,
     // (3) 네 대시보드 HTML 의 .view-tabs 마크업, (4) rdb-session-views.js 의 TABS 배열을 함께 고친다.
     //
-    // 모든 탭이 모든 엔진에 있는 것은 아니다. CUBRID 대시보드에는 Lock Holder/Waiter 탭이 없다 -
-    // CUBRID 는 대기 세션을 막고 있는 holder 를 JDBC 로 알아낼 방법이 없어 트리가 성립하지 않는다
-    // (CubridMonitorService.getLockWaits 주석). 그 페이지의 마크업에 tabLocksBtn 을 아예 두지 않는
-    // 방식으로 처리하므로, 여기나 rdb-session-views.js 에 엔진 분기를 넣을 필요는 없다 -
-    // 두 곳 모두 없는 버튼은 그냥 건너뛴다(visibleTabs / showView 참고).
+    // 탭 구성이 엔진마다 다를 수 있다. 그 처리는 <b>해당 페이지 마크업에 버튼/컨테이너를 두지
+    // 않는 것만으로</b> 끝난다 - 여기나 rdb-session-views.js 에 엔진 분기를 넣지 말 것
+    // (없는 버튼은 visibleTabs/showView 가, 없는 컨테이너는 buildPane 이 알아서 건너뛴다).
+    //
+    // 지금은 네 대시보드가 같은 탭 4개를 쓰지만 Lock 탭의 성격이 하나 다르다. CUBRID 는 락을 쥔
+    // holder 를 JDBC 로 알 수 없어(CubridMonitorService.getLockWaits 주석) 트리 대신 대기 세션
+    // 목록으로 그려지고, 그 페이지의 탭 이름도 "Lock 대기 세션" 이다. 화면 코드는 그대로다 -
+    // blocker 가 null 인 행을 buildLockTree 가 단독 루트로 세운다.
     var RDB_TAB_BUTTONS = {
         rdb_dashboard: 'tabDetailBtn',
         rdb_sessions: 'tabSessionsBtn',

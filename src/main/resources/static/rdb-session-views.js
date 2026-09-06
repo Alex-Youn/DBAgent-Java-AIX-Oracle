@@ -181,7 +181,10 @@
         '  white-space:pre-wrap; word-break:break-word; max-height:38vh; overflow:auto; }',
         // SQL 자리에 원문 대신 "이 엔진은 제공하지 않는다" 는 안내가 들어갔을 때. 코드가 아니라
         // 설명문이므로 고정폭 글꼴을 벗기고 톤을 낮춰, 쿼리로 잘못 읽히지 않게 한다.
-        '.rsv-sql.rsv-sql-note { font-family:inherit; color:var(--text-muted); font-style:italic; }'
+        '.rsv-sql.rsv-sql-note { font-family:inherit; color:var(--text-muted); font-style:italic; }',
+        // holder 를 특정할 수 없는 엔진에서 그 사유를 표 위에 띄우는 줄.
+        '.rsv-lock-note { margin:0 0 8px; padding:8px 10px; border-radius:4px; font-size:11.5px; line-height:1.6;',
+        '  background:rgba(224,180,0,.08); border:1px solid rgba(224,180,0,.28); color:var(--text-muted); }'
     ].join('\n');
 
     function injectCss() {
@@ -268,9 +271,7 @@
 
         rows.forEach(function (r) {
             if (r.waiter_session_id === null || r.waiter_session_id === undefined) return;
-            if (r.blocker_session_id === null || r.blocker_session_id === undefined) return;
             var w = ensure(r.waiter_session_id);
-            var b = ensure(r.blocker_session_id);
 
             // 대기 쪽 정보는 대기 행에만 있다(대기 유형/대기 시간).
             w.isWaiter = true;
@@ -279,6 +280,16 @@
             w.query = r.waiter_query;
             w.waitType = r.wait_type;
             w.waitSec = r.wait_duration_sec;
+
+            // blocker 를 특정할 수 없는 엔진이 있다(CUBRID - holder 를 JDBC 로 얻을 방법이 없다,
+            // CubridMonitorService.getLockWaits 주석). 예전에는 그런 행을 통째로 버렸는데, 그러면
+            // "락 때문에 막혀 있는 세션이 있는가" 라는 가장 기본적인 정보까지 사라진다. 이제는
+            // 대기자를 단독 루트로 세워 평평한 목록으로 보여준다(트리만 못 그릴 뿐이다).
+            if (r.blocker_session_id === null || r.blocker_session_id === undefined) {
+                if (r.blocker_note) w.blockerNote = r.blocker_note;
+                return;
+            }
+            var b = ensure(r.blocker_session_id);
 
             b.isBlocker = true;
             // 이 세션이 다른 행에서 대기자로도 나오면 그쪽 정보가 더 풍부하므로 덮어쓰지 않는다.
@@ -291,8 +302,18 @@
         });
 
         var all = Object.keys(nodes).map(function (k) { return nodes[k]; });
-        // 루트 = 아무도 안 기다리는 세션 = 진짜 Holder.
-        var roots = all.filter(function (n) { return !n.isWaiter; });
+        // 루트 = 부모가 없는 세션. 대부분은 "아무도 안 기다리는 진짜 Holder" 지만, blocker 를
+        // 특정할 수 없는 엔진(CUBRID)에서는 <b>대기자도 부모가 없어 루트가 된다</b> - 그때는 트리가
+        // 아니라 평평한 대기 목록으로 그려진다.
+        //
+        // 예전에는 !n.isWaiter 로 판정했는데, 그러면 부모 없는 대기자가 루트에서도 빠져 화면에서
+        // 통째로 사라졌다. 부모 유무로 보는 지금 기준은 기존 엔진에서는 결과가 같다(그쪽은 대기자면
+        // 반드시 blocker 가 있어 항상 누군가의 자식이다).
+        var hasParent = {};
+        all.forEach(function (n) {
+            n.children.forEach(function (c) { hasParent[c.id] = true; });
+        });
+        var roots = all.filter(function (n) { return !hasParent[n.id]; });
         // 루트가 하나도 없으면 전부가 서로를 기다리는 순환(교착 직전)이다. 그대로 두면 화면이
         // 통째로 비어 "락이 없다" 로 읽히므로, 가장 오래 기다린 세션을 임시 루트로 세워 보여준다.
         var cyclic = false;
@@ -698,6 +719,12 @@
             container.textContent = '';
             var tree = buildLockTree(rows);
             var flat = flattenTree(tree.roots);
+
+            // blocker 를 특정할 수 없는 엔진이 사유를 함께 내려보내면 표 위에 띄운다. 안 띄우면
+            // 홀더 칸이 비어 있는 이유를 알 수 없어 조회 실패로 오해한다.
+            var note = null;
+            flat.forEach(function (item) { if (!note && item.node.blockerNote) note = item.node.blockerNote; });
+            if (note) container.appendChild(el('div', 'rsv-lock-note', note));
 
             var wrap = el('div', 'rsv-table-wrap');
             var table = el('table', 'rsv-table');

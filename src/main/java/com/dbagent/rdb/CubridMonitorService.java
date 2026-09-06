@@ -415,19 +415,111 @@ public class CubridMonitorService implements EngineMonitorService {
     /**
      * {@inheritDoc}
      *
-     * <p><b>CUBRID 에서는 항상 빈 목록이다.</b> 대기자(waiter)는 SHOW THREADS 로 알 수 있지만
-     * 그 세션을 <b>막고 있는 holder 를 알아낼 방법이 JDBC 에 없다</b>(클래스 주석). holder 없이
-     * 그리는 Holder/Waiter 트리는 트리가 아니고, 빈 blocker 칸만 늘어선 표는 "락은 있는데 원인은
-     * 모른다" 는 인상만 준다. 그래서 이 엔진에서는 <b>Lock 탭 자체를 화면에서 숨기고</b>
-     * (dbagent-common.js 의 RDB_TAB_BUTTONS), 대기 정보는 세션 리스트의 '대기 이벤트' 칸으로
-     * 옮겼다 - "누가 얼마나 기다리는 중" 까지는 거기서 그대로 보인다.
+     * <p><b>CUBRID 는 대기자(waiter)만 채우고 blocker 는 null 이다.</b> 락을 기다리는 세션이 무엇을
+     * 얼마나 기다리는지는 SHOW THREADS 로 정확히 알 수 있지만, <b>그 세션을 막고 있는 holder 를
+     * 알아낼 방법이 JDBC 에 없다</b>(클래스 주석). 실측으로 확인한 내용:
      *
-     * <p>빈 목록을 돌려주는 쪽을 택한 이유: 이 메서드가 대기자만 담아 돌려주면 화면의 트리 계산이
-     * blocker 가 null 인 행을 루트로 잘못 세워, 실제와 다른 구조를 그린다.
+     * <pre>
+     * 대기자에게 있는 것   Lockwait_blocked_mode(X_LOCK), Lockwait_start_time, Lockwait_state,
+     *                      Waiting_for_res(0x35bdc540 같은 자원 포인터)
+     * 홀더로 이어지는 것   없다. Next_wait_thread_index / Next_tran_wait_thread_index 는 실제
+     *                      블로킹 중에도 전부 null 이고, Waiting_for_res 에 대응하는 필드가
+     *                      홀더 쪽에 없다. killtran -q CLI 의 "Wait for lock holder" 가 유일한 경로다.
+     * </pre>
+     *
+     * <p>그래서 이 엔진의 Lock 화면은 <b>트리가 아니라 대기 세션 목록</b>이다. 트리를 못 그린다고
+     * 기능을 통째로 빼면 "지금 락 때문에 막혀 있는 세션이 있는가" 라는 가장 기본적인 질문에도
+     * 답할 수 없게 된다 - 그건 못 주는 정보(holder) 하나 때문에 줄 수 있는 정보까지 버리는 것이다.
+     *
+     * <p><b>홀더 후보</b>는 함께 계산해 {@code blocker_note} 로 내려준다. 미커밋 쓰기 트랜잭션만
+     * Head_lsa 를 갖는다는 점을 이용한다 - 실측에서 홀더 하나만 정확히 걸러졌다. 확정이 아니라
+     * 후보이므로 화면도 "후보" 로 표시한다(추정을 사실처럼 보여주지 않는다).
      */
     @Override
     public List<Map<String, Object>> getLockWaits(TargetDbConfig target) throws SQLException {
-        return new ArrayList<>();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             Statement st = conn.createStatement()) {
+            Timestamp serverNow = serverNow(st);
+
+            // 대기 중인 스레드: Tran_index -> [락 모드, 대기 시작]
+            Map<Integer, String[]> waiters = new LinkedHashMap<>();
+            try (ResultSet rs = st.executeQuery("SHOW THREADS WHERE Lockwait_msecs IS NOT NULL")) {
+                while (rs.next()) {
+                    Object tranIndex = rs.getObject("Tran_index");
+                    if (!(tranIndex instanceof Integer)) {
+                        continue;
+                    }
+                    Double waited = elapsedSeconds(serverNow, asTimestamp(rs.getObject("Lockwait_start_time")));
+                    waiters.put((Integer) tranIndex, new String[] {
+                            rs.getString("Lockwait_blocked_mode"),
+                            rs.getString("Lockwait_state"),
+                            waited == null ? null : String.valueOf(waited)
+                    });
+                }
+            }
+            if (waiters.isEmpty()) {
+                return rows;
+            }
+
+            // 세션 속성 + 홀더 후보(미커밋 변경을 가졌고 자신은 대기 중이 아닌 세션)를 한 번에 훑는다.
+            Map<Integer, String[]> sessions = new LinkedHashMap<>();
+            List<String> holderCandidates = new ArrayList<>();
+            try (ResultSet rs = st.executeQuery(
+                    "SHOW TRANSACTION TABLES WHERE Client_type <> 'SYSTEM_INTERNAL'")) {
+                while (rs.next()) {
+                    Object tranIndexObj = rs.getObject("Tran_index");
+                    if (!(tranIndexObj instanceof Integer)) {
+                        continue;
+                    }
+                    Integer tranIndex = (Integer) tranIndexObj;
+                    sessions.put(tranIndex, new String[] {
+                            rs.getString("Client_db_user"),
+                            rs.getString("Client_host"),
+                            rs.getString("Client_program"),
+                            rs.getString("State")
+                    });
+                    // Head_lsa 가 있으면 이 트랜잭션이 아직 커밋되지 않은 변경을 갖고 있다는 뜻이다.
+                    // 대기 중인 세션 자신은 제외한다(아직 자기 변경을 적용하지 못한 상태).
+                    if (hasUncommittedChanges(rs.getString("Head_lsa")) && !waiters.containsKey(tranIndex)) {
+                        holderCandidates.add(String.valueOf(tranIndex));
+                    }
+                }
+            }
+
+            String blockerNote = holderCandidates.isEmpty()
+                    ? "CUBRID는 락을 쥔 세션(holder)을 JDBC로 알려주지 않습니다. "
+                            + "DB 서버에서 `cubrid killtran -q <db>`로 확인할 수 있습니다."
+                    : "CUBRID는 holder를 JDBC로 알려주지 않습니다. 미커밋 변경을 가진 세션 "
+                            + String.join(", ", holderCandidates) + " 번이 홀더 후보입니다(확정 아님). "
+                            + "정확한 holder는 DB 서버에서 `cubrid killtran -q <db>`로 확인하세요.";
+
+            for (Map.Entry<Integer, String[]> e : waiters.entrySet()) {
+                String[] w = e.getValue();
+                String[] s = sessions.get(e.getKey());
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("waiter_session_id", e.getKey());
+                row.put("waiter_user", s == null ? null : s[0]);
+                row.put("waiter_host", s == null ? null : s[1]);
+                row.put("waiter_query", null);   // SQL 원문 없음 (클래스 주석)
+                row.put("wait_duration_sec", w[2] == null ? null : Double.valueOf(w[2]));
+                row.put("wait_type", (w[0] == null ? "락" : w[0]) + (w[1] == null ? "" : " (" + w[1] + ")"));
+                // holder 를 특정할 수 없다 - 화면은 이 행을 트리 자식이 아니라 단독 대기 행으로 그린다.
+                row.put("blocker_session_id", null);
+                row.put("blocker_user", null);
+                row.put("blocker_host", null);
+                row.put("blocker_state", null);
+                row.put("blocker_query", null);
+                row.put("blocker_note", blockerNote);
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
+    /** Head_lsa 가 (-1|-1) 이 아니면 이 트랜잭션이 커밋되지 않은 변경을 갖고 있다는 뜻이다. */
+    private boolean hasUncommittedChanges(String headLsa) {
+        return headLsa != null && !headLsa.trim().isEmpty() && !"(-1|-1)".equals(headLsa.trim());
     }
 
     /**

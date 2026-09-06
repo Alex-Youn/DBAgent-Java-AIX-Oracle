@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CUBRID Overview</title>
 <script src="lib/lucide.js"></script>
-<script src="dbagent-common.js?v=7"></script>
-<script src="rdb-session-views.js?v=6"></script>
+<script src="dbagent-common.js?v=8"></script>
+<script src="rdb-session-views.js?v=7"></script>
 <style>
     :root {
         --bg-page: #111217;
@@ -508,14 +508,15 @@
         </div>
 
         <main class="pmm-content">
-            <!-- Lock Holder/Waiter 탭이 없다. CUBRID 는 대기 세션을 막고 있는 holder 를 JDBC 로
-                 알아낼 방법이 없어(CubridMonitorService 클래스 주석) 트리가 성립하지 않는다.
-                 버튼을 두지 않으면 rdb-session-views.js 의 visibleTabs()/showView() 가 알아서
-                 건너뛰므로, 그 파일에 엔진 분기를 넣을 필요가 없다. 대기 정보는 세션 리스트의
-                 '대기 이벤트' 칸에 그대로 나온다. -->
+            <!-- Lock 탭 이름이 다른 세 대시보드와 다르다. 그쪽은 "Lock Holder/Waiter" 트리지만,
+                 CUBRID 는 락을 쥔 holder 를 JDBC 로 알아낼 방법이 없어(CubridMonitorService
+                 .getLockWaits 주석) 트리를 그릴 수 없다. 대신 <b>대기 세션 목록</b>은 정확히
+                 얻어지므로 그대로 보여준다 - holder 하나 때문에 "지금 락으로 막힌 세션이 있는가"
+                 라는 가장 기본적인 정보까지 버릴 이유는 없다. 이름도 내용에 맞춘다. -->
             <div class="view-tabs">
                 <button type="button" class="view-tab active" id="tabDetailBtn" data-view="detail"><i data-lucide="layout-dashboard"></i>DASHBOARD</button>
                 <button type="button" class="view-tab" id="tabSessionsBtn" data-view="sessions"><i data-lucide="list"></i>세션 리스트</button>
+                <button type="button" class="view-tab" id="tabLocksBtn" data-view="locks"><i data-lucide="lock"></i>Lock 대기 세션</button>
                 <button type="button" class="view-tab" id="tabCapacityBtn" data-view="capacity"><i data-lucide="hard-drive"></i>용량 조회</button>
             </div>
 
@@ -556,9 +557,10 @@
                 <div id="detailRows"></div>
             </div>
 
-            <!-- 세션 리스트 / 용량 조회 탭의 본문. 표·모달·CSS 는 rdb-session-views.js 가 만들어 넣는다
-                 (네 대시보드에 같은 마크업을 복사하지 않기 위함 - 그 파일 머리말 참고). -->
+            <!-- 세션 리스트 / Lock / 용량 조회 탭의 본문. 표·모달·CSS 는 rdb-session-views.js 가
+                 만들어 넣는다 (네 대시보드에 같은 마크업을 복사하지 않기 위함 - 그 파일 머리말 참고). -->
             <div id="sessionsView" style="display:none;"></div>
+            <div id="locksView" style="display:none;"></div>
             <div id="capacityView" style="display:none;"></div>
         </main>
     </div>
@@ -672,10 +674,11 @@
 
     const NOTE_HTML =
         '<b>CUBRID는 다른 엔진과 제공 범위가 다릅니다.</b> ' +
-        '실행 중인 <b>SQL 원문</b>과 락을 <b>막고 있는 세션(holder)</b>은 CUBRID가 JDBC로 제공하지 않아 ' +
-        '이 화면에 표시할 수 없습니다(DB 서버에서 <code>cubrid killtran -q &lt;db&gt;</code> 로만 확인 가능). ' +
-        '그래서 Lock Holder/Waiter 탭이 없고, 세션 리스트의 SQL 칸은 항상 &quot;-&quot; 입니다 — ' +
-        '조회 실패가 아닙니다. 대기 중인 세션은 세션 리스트의 <b>대기 이벤트</b> 칸에 표시됩니다. ' +
+        '실행 중인 <b>SQL 원문</b>과 락을 <b>쥐고 있는 세션(holder)</b>은 CUBRID가 JDBC로 제공하지 않습니다' +
+        '(DB 서버에서 <code>cubrid killtran -q &lt;db&gt;</code> 로만 확인 가능). ' +
+        '그래서 세션 리스트의 SQL 칸은 항상 &quot;-&quot; 이고 — 조회 실패가 아닙니다 — ' +
+        '<b>Lock 탭은 트리가 아니라 대기 세션 목록</b>입니다. ' +
+        '무엇을 얼마나 기다리는지는 정확히 나오고, 홀더는 미커밋 변경을 가진 세션을 후보로 함께 보여줍니다. ' +
         '가동 시간·QPS·버퍼 적중률도 CUBRID가 SQL로 노출하지 않아 제공하지 않습니다. ' +
         '접속 호스트/프로그램이 <code>broker1_cub_cas_*</code> 로 보이는 것은 정상입니다 — ' +
         '클라이언트가 브로커(CAS)를 거쳐 접속하므로 서버는 CAS 프로세스를 클라이언트로 인식합니다.';
