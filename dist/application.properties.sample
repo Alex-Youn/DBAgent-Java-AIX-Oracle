@@ -1,0 +1,106 @@
+# ============================================================================
+#  DBAgent-Java 외부 설정 샘플  (DBAgent-Java-AIX \ dist  — 개발기(Windows) 로컬 실행용)
+# ============================================================================
+#
+#  [사용법]
+#    이 파일을 같은 폴더에 application.properties 라는 이름으로 복사한 뒤,
+#    필요한 줄만 앞의 '#' 을 지워서 사용한다.
+#      cp application.properties.sample application.properties
+#
+#    .sample 확장자인 동안에는 Spring Boot 가 읽지 않으므로 그냥 둬도 무해하다.
+#    (Spring Boot 가 찾는 파일명은 application.properties / application.yml 뿐)
+#
+#  [중요 - 전부 적을 필요 없다]
+#    jar 옆의 이 파일은 jar 안에 번들된 설정을 '대체'하지 않고 '덮어쓰기'만 한다.
+#    여기 없는 키는 jar 안 BOOT-INF/classes/application.properties 값이 그대로 쓰인다.
+#    따라서 이 환경에서 값이 달라야 하는 것만 골라 적으면 되고, 일부만 적어도
+#    앱이 기동하지 못하는 일은 없다.
+#
+#  [반영 방법]
+#    이 파일은 jar 밖에 있으므로 재빌드가 필요 없다. 값을 고친 뒤 앱만 재기동하면 된다.
+#
+#  아래 값은 전부 '현재 기본값'이다. 그대로 두면 지금과 동일하게 동작한다.
+# ============================================================================
+
+
+# ── 서버 ─────────────────────────────────────────────────────────────────
+# HTTP 포트.
+#server.port=8007
+
+# ── 계정 DB / 로그인 세션 ────────────────────────────────────────────────
+# H2 파일 DB(순수 Java - sqlite-jdbc 의 플랫폼별 네이티브 라이브러리가 필요 없어 AIX 에서 동작).
+# 실제 파일명은 users.mv.db 가 된다.
+#spring.datasource.url=jdbc:h2:file:./users
+#spring.datasource.driver-class-name=org.h2.Driver
+#spring.datasource.username=sa
+#spring.datasource.password=
+# 이 앱의 쓰기 양이 적어 1 로 두고 있다(H2 자체는 동시 쓰기 제약이 없다).
+#spring.datasource.hikari.maximum-pool-size=1
+# 로그인 세션 만료 기간(일). 로그아웃을 안 눌러도 이 기간이 지나면 토큰이 자동 만료되고,
+# 매일 새벽 3시 정리 작업이 해당 행을 실제로 삭제한다.
+#dbagent.auth.session-ttl-days=30
+
+# ── Oracle 대상 설정 ─────────────────────────────────────────────────────
+# 앱 작업 디렉터리 기준 상대 경로.
+#dbagent.databases-config=databases.json
+#dbagent.oracle-env-path=oracle.env
+# tnsnames.ora 가 있는 디렉터리. 인스턴스의 host 가 비어 있을 때(SID/별칭 조회, RAC 포함) 쓴다.
+# 비워두면 oracle.env 의 ORACLE_HOME 에서 {ORACLE_HOME}/network/admin 을 유도한다.
+# ORACLE_HOME 이 가리키지 않는 곳에 tnsnames.ora 가 있을 때만 명시한다.
+#dbagent.oracle.tns-admin=C:/Oracle/docker/network/Admin
+# 새 Oracle 커넥션을 수립하는 최대 시간(ms). 망 지연이 크면 올린다(작으면 정상 DB를 down 으로 오판).
+#dbagent.oracle.connect-timeout-ms=3000
+# 이미 연결된 커넥션에서 쿼리 응답을 기다리는 최대 시간(ms, oracle.net.READ_TIMEOUT).
+# 위 connect-timeout 과 목적이 다르다. 짧게 잡으면 AWR/ASH 조회나 SQL 튜닝처럼 원래 오래 걸리는
+# 쿼리가 "DB 접속 불가"로 오인되어 죽는다.
+#dbagent.oracle.read-timeout-ms=60000
+# HikariCP 풀 크기 기본값. databases.json 인스턴스가 pool_min_idle/pool_max_size 를 지정하면 그쪽이 우선.
+#dbagent.oracle.pool.min-idle=2
+#dbagent.oracle.pool.max-size=10
+# Fleet Overview 의 인스턴스별 상태 점검 상한(초). connect-timeout 이 못 잡는 경우(DNS 지연 등)까지
+# 포함해, 느린 인스턴스 하나가 화면 전체를 붙잡지 못하게 한다.
+#dbagent.fleet-status.timeout-seconds=5
+
+# ── RDB(MySQL / MariaDB / PostgreSQL / MS SQL Server / CUBRID) 커넥션 풀 ──
+# Oracle 풀과 완전히 분리된 별도 설정이라 위 dbagent.oracle.* 의 영향을 받지 않는다.
+#dbagent.rdb.connect-timeout-ms=2000
+# 응답 없는 서버 하나가 커넥션을 영구 점유하는 것을 막는다. 풀 크기 기본값이 5라,
+# 이런 hang 이 5번 나면 DB 가 복구돼도 그 인스턴스의 풀이 영구 고갈된다.
+#dbagent.rdb.read-timeout-ms=60000
+#dbagent.rdb.pool.min-idle=1
+#dbagent.rdb.pool.max-size=5
+
+# ── 화면 자동 갱신 주기 ──────────────────────────────────────────────────
+# 대시보드 갱신 주기(ms). 1000 은 너무 촘촘해서 풀이 고갈되고 정상 DB 가 down 으로 보였다. 2000~5000 권장.
+#dbagent.ui.polling-interval-ms=2000
+# Fleet Overview 갱신 주기(ms). 탭이 실제로 보일 때만 동작한다(Page Visibility API).
+#dbagent.fleet-overview.polling-interval-ms=3000
+
+# ── AI DBA (에러 검색 + Ollama 생성) ─────────────────────────────────────
+# 에러 사전 H2 DB 의 파일 base 경로(확장자 없이 적는다 - 실제 파일은 data/oracle_errors.mv.db).
+#aidba.errors-db-path=data/oracle_errors
+# Ollama 서버 주소. 순수 HTTP 호출이라 Ollama 가 어디서 돌든 무관하다.
+# 원격 GPU 서버를 쓰려면 그 서버에서 OLLAMA_HOST=0.0.0.0:11434 로 기동하고 방화벽 11434 를 열어야 한다.
+#aidba.ollama.url=http://localhost:11434
+# 사용할 모델 이름. 이 이름은 위 url 이 가리키는 호스트의 Ollama 가 자기 모델 저장소에서 찾는다.
+# 그 호스트에 미리 pull 되어 있어야 한다(없으면 "/api/generate returned HTTP 404" 로 뜬다).
+# 주의: '-cloud' 접미사 태그(예: gemma4:31b-cloud)는 Ollama 클라우드로 중계하는 것이라
+#       프롬프트가 외부로 전송되고, 폐쇄망에서는 동작하지 않는다. 자체 GPU 서버에 올렸다면
+#       접미사 없는 이름(예: gemma4:31b)을 쓴다.
+#aidba.ollama.model=qwen2.5:3b
+# 생성 응답 대기 한도(ms). 모델 크기와 실행 위치(로컬 vs 원격 GPU)에 따라 적정값이 크게 다르다.
+#aidba.ollama.timeout-ms=30000
+
+# ── SQL 정합성/튜닝 모델 서버 ────────────────────────────────────────────
+# 튜닝 모델을 서빙하는 FastAPI 서버 주소. 순수 HTTP(JSON) 호출이라 위치는 무관하다.
+# 기본값이 localhost 라, 이 호스트에 서버가 없으면 설정을 빠뜨렸을 때 조용히 실패한다.
+#sqltuning.api.url=http://localhost:8010
+# 응답 대기 한도(ms). 프롬프트 길이와 GPU 성능에 따라 편차가 크다.
+#sqltuning.api.timeout-ms=180000
+
+# ── SQL Runner (AI DBA 탭의 "SQL 실행") 상한 ─────────────────────────────
+# max-rows 는 사용자가 건수를 지정하지 않았을 때의 기본값,
+# max-rows-limit 은 사용자가 지정하더라도 넘을 수 없는 절대 상한선이다.
+#dbagent.sql-runner.max-rows=500
+#dbagent.sql-runner.max-rows-limit=5000
+#dbagent.sql-runner.timeout-seconds=30
