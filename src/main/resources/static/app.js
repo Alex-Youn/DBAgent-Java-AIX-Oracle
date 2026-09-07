@@ -4218,9 +4218,22 @@ let historySortAsc = true;
     }
 
     // AI Chatbot (Ollama)
-    const chatInput = document.getElementById('chat-input');
-    const chatSendBtn = document.getElementById('chat-send-btn');
-    const chatLog = document.getElementById('chat-log');
+    // AIX 이관본 주의사항 두 가지.
+    //
+    // 1) 여기서 잡는 id 는 index.html 의 실제 id 와 맞춰야 한다. 이관 과정에서 chat-input /
+    //    chat-send-btn / chat-log 를 찾고 있었는데 index.html 에는 그런 id 가 없어서
+    //    (aidba-chat-* 로 되어 있다) 아래 블록 전체가 실행되지 않았고, 결과적으로 전송 버튼이
+    //    아무 반응도 하지 않는 상태였다. 2026-09-07 에 실제 id 로 교정.
+    //
+    // 2) AIX 서버에는 Ollama(GPU 런타임 필요)를 직접 올릴 수 없어 사내망 GPU 서버를 붙여야
+    //    동작한다. 아직 연결 전이므로 AIDBA_GPU_PENDING 으로 모델 호출을 막고 안내만 띄운다.
+    //    GPU 서버가 준비되면 (a) application.properties 에 aidba.ollama.url / model 을 지정하고
+    //    (dist-aix/application.properties.sample 참고) (b) 아래 상수를 false 로 바꾸면 된다.
+    //    실제 호출 코드는 지우지 않고 그대로 두었으므로 한 줄 수정으로 되살아난다.
+    const AIDBA_GPU_PENDING = true;
+    const chatInput = document.getElementById('aidba-chat-input');
+    const chatSendBtn = document.getElementById('aidba-chat-send-btn');
+    const chatLog = document.getElementById('aidba-chat-history');
 
     if (chatInput && chatSendBtn && chatLog) {
         const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({
@@ -4251,8 +4264,15 @@ let historySortAsc = true;
             if (!message) return;
 
             chatInput.value = '';
-            chatSendBtn.disabled = true;
             appendChatMessage('user', message);
+
+            if (AIDBA_GPU_PENDING) {
+                appendChatMessage('assistant', 'GPU 서버 연동후 사용 가능합니다.');
+                chatInput.focus();
+                return;
+            }
+
+            chatSendBtn.disabled = true;
             const pending = appendChatMessage('assistant', '생각 중...');
 
             try {
