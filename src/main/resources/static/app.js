@@ -3891,10 +3891,8 @@ let historySortAsc = true;
         });
     }
 
-    // 실행계획/실제 실행 통계 자동 조회 (관리자 전용)
+    // 바인드 변수 자동 조회 (관리자 전용, 1차 성능점검에서 사용)
     const sqlTuningAccountSelect = document.getElementById('sqltuning-account-select');
-    const sqlTuningAutoBtn = document.getElementById('sqltuning-auto-btn');
-    const sqlTuningAutoActualBtn = document.getElementById('sqltuning-auto-actual-btn');
     const sqlTuningBindPanel = document.getElementById('sqltuning-bind-panel');
     const sqlTuningBindFields = document.getElementById('sqltuning-bind-fields');
     const sqlTuningBindToggleBtn = document.getElementById('sqltuning-bind-toggle-btn');
@@ -4025,65 +4023,7 @@ let historySortAsc = true;
         }
     };
 
-    function runSqlTuningAutoMode(btn, endpoint, loadingMsg, planLabel) {
-        const query = sqlTuningInput.value.trim();
-        if (!query || btn.disabled) return;
-
-        btn.disabled = true;
-        sqlTuningResult.innerHTML = `<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary);"><i data-lucide="loader-2" class="spinning"></i> ${loadingMsg}</div>`;
-        if (typeof lucide !== 'undefined') lucide.createIcons({root: sqlTuningResult});
-
-        fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                db_id: window.currentDbId || '',
-                account: sqlTuningAccountSelect ? sqlTuningAccountSelect.value : '',
-                token: getToken(),
-                query: query,
-                binds: sqlTuningBindValues
-            })
-        })
-        .then(res => res.json())
-        .then(data => {
-            btn.disabled = false;
-            if (data.success === false) {
-                sqlTuningResult.innerHTML = `<div style="color: #d03b3b;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
-                return;
-            }
-            const formatted = formatSqlTuningAnswer(data.answer);
-            const planHtml = data.plan
-                ? `<div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.8rem; color: var(--text-muted); cursor: pointer;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">[+] ${planLabel}</div><div style="display: none; font-size: 0.8rem; color: var(--text-muted); background: var(--bg-card); padding: 10px; border-radius: 4px; margin-top: 5px; white-space: pre-wrap; font-family: 'Consolas', 'D2Coding', monospace;">${data.plan}</div>`
-                : '';
-            sqlTuningResult.innerHTML = `<div style="line-height: 1.6;">${formatted}</div>${planHtml}`;
-        })
-        .catch(() => {
-            btn.disabled = false;
-            sqlTuningResult.innerHTML = '<div style="color: #d03b3b;">서버 통신 오류가 발생했습니다.</div>';
-        });
-    }
-
-    if (sqlTuningAutoBtn && sqlTuningInput && sqlTuningResult) {
-        sqlTuningAutoBtn.addEventListener('click', () => runSqlTuningAutoMode(
-            sqlTuningAutoBtn, '/api/sqltuning/analyze_from_query',
-            '실행계획 조회 중... (이어서 모델 분석까지 최대 1분 정도 소요될 수 있습니다)',
-            '조회된 실행계획 원문 보기 (EXPLAIN PLAN, 추정치)'
-        ));
-    }
-
-    if (sqlTuningAutoActualBtn && sqlTuningInput && sqlTuningResult) {
-        sqlTuningAutoActualBtn.addEventListener('click', () => {
-            const query = sqlTuningInput.value.trim();
-            if (!query) return;
-            runSqlTuningAutoMode(
-                sqlTuningAutoActualBtn, '/api/sqltuning/analyze_from_query_actual',
-                '쿼리를 실제로 실행 중... (이어서 모델 분석까지 최대 1분 정도 소요될 수 있습니다)',
-                '조회된 실행계획 원문 보기 (DISPLAY_CURSOR, 실측치)'
-            );
-        });
-    }
-
-    // 1차 성능점검 - "실제 실행 통계로 분석"과 같은 실행계획/실측 통계를 얻지만 sLLM(FastAPI) 호출 없이
+    // 1차 성능점검 - 실행계획/실측 통계를 얻지만 sLLM(FastAPI) 호출 없이
     // 그대로 바로 보여줌 (AI 분석 전에 DBA가 눈으로 먼저 훑어보는 용도, 훨씬 빠름).
     const sqlTuningQuickCheckBtn = document.getElementById('sqltuning-quickcheck-btn');
     if (sqlTuningQuickCheckBtn && sqlTuningInput && sqlTuningResult) {

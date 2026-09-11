@@ -505,16 +505,12 @@
                                 <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">관리자 전용</span>
                                 <label for="sqltuning-account-select" style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">접속 계정</label>
                                 <select id="sqltuning-account-select" class="form-input" style="padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-main); color: var(--text-main);"></select>
-                                <button id="sqltuning-auto-btn" class="primary-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem; white-space: nowrap;"><i data-lucide="database"></i> 실행계획 조회 후 분석</button>
-                                <span style="font-size: 0.8rem; color: var(--text-muted);">(EXPLAIN PLAN - 쿼리 미실행, 추정치)</span>
-                                <button id="sqltuning-auto-actual-btn" class="danger-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem; white-space: nowrap;"><i data-lucide="play"></i> 실제 실행 통계로 분석</button>
-                                <span style="font-size: 0.8rem; color: var(--text-muted);">(DISPLAY_CURSOR - <strong>쿼리를 실제로 실행함</strong>, 실측치, SELECT/WITH만 가능)</span>
                                 <button id="sqltuning-quickcheck-btn" class="danger-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem; white-space: nowrap;"><i data-lucide="list-checks"></i> 1차 성능점검</button>
                                 <span style="font-size: 0.8rem; color: var(--text-muted);">(위와 동일하게 <strong>쿼리를 실제로 실행</strong>하지만, AI 분석 없이 실행계획/실측 통계만 바로 보여줌 - 더 빠름)</span>
                             </div>
                             <div id="sqltuning-bind-panel" class="admin-only" style="display: none; flex-direction: column; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
                                 <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
-                                    <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">바인드 변수 값 (:1, :SID 등 - "실제 실행 통계로 분석"에만 사용):</span>
+                                    <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">바인드 변수 값 (:1, :SID 등 - "1차 성능점검"에만 사용):</span>
                                     <button type="button" id="sqltuning-bind-toggle-btn" style="display: none; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-secondary); cursor: pointer;"></button>
                                 </div>
                                 <div id="sqltuning-bind-fields" style="display: flex; flex-wrap: wrap; gap: 8px;"></div>
@@ -995,6 +991,6 @@
     </div>
 
 
-    <script src="app.js?v=100"></script>
+    <script src="app.js?v=101"></script>
 </body>
 </html>
