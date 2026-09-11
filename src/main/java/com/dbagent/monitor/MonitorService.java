@@ -592,33 +592,53 @@ public class MonitorService {
     }
 
     // --------------------------------------------------------- session_query
-    public Map<String, Object> getSessionQuery(TargetDbConfig target, String sidVal, String sqlIdVal) throws SQLException {
+    public Map<String, Object> getSessionQuery(TargetDbConfig target, String sidVal, String serialVal, String sqlIdVal) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
             Object sSid = sidVal;
-            Object sSerial = null;
+            Object sSerial = serialVal;
             String sSqlId = sqlIdVal;
             Integer sChildNumber = null;
 
+            // A caller that already knows the sql_id (a drag-selected snapshot from the Trace graph,
+            // History tab or Lock tree - see session-list.html / the clickable-session-row rows) is
+            // trusted as-is. v$session below only fills in gaps, never overrides a sql_id the caller
+            // already captured - re-deriving it from v$session by sid alone would show whatever that SID
+            // happens to be running *right now*, which drifts away from the snapshot within seconds and
+            // breaks entirely once Oracle recycles the SID for an unrelated session.
+            boolean haveClientSqlId = sqlIdVal != null && !Strings.isBlank(sqlIdVal);
+            boolean haveSerial = serialVal != null && !Strings.isBlank(serialVal);
+
             if (sidVal != null && !Strings.isBlank(sidVal)) {
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "SELECT sid, serial#, NVL(sql_id, prev_sql_id) as sql_id, NVL(sql_child_number, prev_child_number) as child_number " +
-                                "FROM v$session WHERE sid = ?")) {
+                // Match serial# too when the caller has one, so a SID that's since been recycled by a
+                // different session isn't mistaken for the one that was actually selected.
+                String sessionSql = "SELECT sid, serial#, NVL(sql_id, prev_sql_id) as sql_id, NVL(sql_child_number, prev_child_number) as child_number " +
+                        "FROM v$session WHERE sid = ?" + (haveSerial ? " AND serial# = ?" : "");
+                try (PreparedStatement ps = conn.prepareStatement(sessionSql)) {
                     ps.setString(1, sidVal);
+                    if (haveSerial) ps.setString(2, serialVal);
                     try (ResultSet rs = ps.executeQuery()) {
                         if (rs.next()) {
                             sSid = rs.getObject(1);
                             sSerial = rs.getObject(2);
-                            String rowSqlId = rs.getString(3);
-                            sSqlId = (rowSqlId != null && !Strings.isBlank(rowSqlId)) ? rowSqlId : sSqlId;
-                            Object childNum = rs.getObject(4);
-                            sChildNumber = childNum == null ? null : ((Number) childNum).intValue();
-                        } else if (sSqlId == null || Strings.isBlank(sSqlId)) {
-                            try (PreparedStatement ashPs = conn.prepareStatement(
-                                    "SELECT sql_id, sql_child_number FROM (" +
-                                            "SELECT sql_id, sql_child_number FROM v$active_session_history " +
-                                            "WHERE session_id = ? AND sql_id IS NOT NULL ORDER BY sample_time DESC" +
-                                            ") WHERE ROWNUM = 1")) {
+                            if (!haveClientSqlId) {
+                                String rowSqlId = rs.getString(3);
+                                if (rowSqlId != null && !Strings.isBlank(rowSqlId)) {
+                                    sSqlId = rowSqlId;
+                                    Object childNum = rs.getObject(4);
+                                    sChildNumber = childNum == null ? null : ((Number) childNum).intValue();
+                                }
+                            }
+                        } else if (!haveClientSqlId) {
+                            // Session already ended, or (when a serial# was given) a different session has
+                            // since reused the same SID - fall back to ASH's last known sql_id, matched on
+                            // the same sid/serial# pair when available.
+                            String ashSql = "SELECT sql_id, sql_child_number FROM (" +
+                                    "SELECT sql_id, sql_child_number FROM v$active_session_history " +
+                                    "WHERE session_id = ?" + (haveSerial ? " AND session_serial# = ?" : "") +
+                                    " AND sql_id IS NOT NULL ORDER BY sample_time DESC) WHERE ROWNUM = 1";
+                            try (PreparedStatement ashPs = conn.prepareStatement(ashSql)) {
                                 ashPs.setString(1, sidVal);
+                                if (haveSerial) ashPs.setString(2, serialVal);
                                 try (ResultSet ashRs = ashPs.executeQuery()) {
                                     if (ashRs.next()) {
                                         sSqlId = ashRs.getString(1);
@@ -642,7 +662,7 @@ public class MonitorService {
             List<Map<String, Object>> binds = new ArrayList<>();
 
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT sql_fulltext, hash_value FROM v$sql WHERE sql_id = ? AND ROWNUM = 1")) {
+                    "SELECT sql_fulltext, hash_value, child_number FROM v$sql WHERE sql_id = ? AND ROWNUM = 1")) {
                 ps.setString(1, sSqlId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
@@ -654,6 +674,13 @@ public class MonitorService {
                             sqlText = rs.getString(1);
                         }
                         hashValue = rs.getObject(2);
+                        // Trusting the client's sql_id (above) means we skip v$session/ASH's child_number
+                        // lookup, so recover a child cursor here too - otherwise DISPLAY_CURSOR below falls
+                        // back to dumping every child plan for the sql_id concatenated together.
+                        if (sChildNumber == null) {
+                            Object childNum = rs.getObject(3);
+                            sChildNumber = childNum == null ? null : ((Number) childNum).intValue();
+                        }
                     }
                 }
             }

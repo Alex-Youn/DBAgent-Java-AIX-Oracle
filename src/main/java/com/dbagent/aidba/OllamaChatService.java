@@ -9,36 +9,42 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Ollama 호출 서비스. 원래는 java.net.http.HttpClient(Java 11+ 전용)로 구현되어 있었으나
- * 이 프로젝트가 Java 8로 고정되면서 RestTemplate(spring-boot-starter-web에 이미 포함, Java 8 호환)으로 재작성.
- * aidba.ollama.url은 로컬뿐 아니라 원격 GPU 서버를 가리켜도 됨 - 이 서비스는 순수 HTTP(JSON) 호출만 하므로
- * Ollama가 실제로 어느 머신에서 도는지와는 무관함 (AIX가 아닌 별도 GPU 서버에 Ollama를 두고 네트워크로 호출하는 구성 가능).
+ * SQL Tune Advisor GPU 서버의 sqlrestapi를 호출하는 서비스 - Ollama(11434)에는 더 이상 직접 붙지
+ * 않는다. GPU 서버 방화벽이 REST API 포트(9300, sqlrestapi) 하나만 열어주는 구성으로 확정되면서
+ * (2026-09-11) Ollama 포트는 AIX에서 도달 불가능해졌다 - sqlrestapi(non-AIX DBAgent-Java의
+ * RAGController)가 그 앞단의 프록시 역할을 대신한다.
+ *
+ * 시스템 프롬프트는 이제 이 서비스가 문자열로 들고 있지 않는다 - sqlrestapi 쪽에 promptId별 파일
+ * (prompts/chatbot.md)로 옮겨서 SQL Tune Advisor(promptId=tuning)와 구조를 통일했다(2026-09-11).
+ *
+ * 하이브리드 검색: buildContext()가 ORA 코드 정확 일치로 컨텍스트를 찾으면 검색 없는 /api/chat으로
+ * 바로 답변을 받고, 못 찾으면(코드가 없거나 사전에 없는 코드) sqlrestapi의 OpenSearch 시맨틱 검색
+ * (error_dictionary 인덱스)으로 폴백한다.
  */
 @Service
 public class OllamaChatService {
 
     private static final Pattern ORA_CODE_PATTERN = Pattern.compile("ORA-\\d{4,5}", Pattern.CASE_INSENSITIVE);
+    private static final String PROMPT_ID = "chatbot";
+    private static final String ERROR_INDEX = "error_dictionary";
 
     private final ErrorSearchService errorSearchService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${aidba.ollama.url}")
     private String ollamaUrl;
-
-    @Value("${aidba.ollama.model}")
-    private String ollamaModel;
 
     @Value("${aidba.ollama.timeout-ms:30000}")
     private int timeoutMs;
@@ -52,23 +58,19 @@ public class OllamaChatService {
             return Maps.of("error", "메시지가 비어 있습니다.");
         }
 
-        String context = buildContext(userMessage);
-        String prompt = (context == null)
-                ? userMessage
-                : context + "\n\n위 정보를 참고해서 다음 질문에 답해줘: " + userMessage;
-
         try {
-            String answer = callChatApi(prompt);
-            if (answer == null) {
-                // 구버전 Ollama(/api/chat 없음) 대비 /api/generate 폴백
-                answer = callGenerateApi(prompt);
+            String context = buildContext(userMessage);
+            if (context != null) {
+                String prompt = context + "\n\n위 정보를 참고해서 다음 질문에 답해줘: " + userMessage;
+                String answer = callChatApi(prompt);
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("answer", answer);
+                result.put("context_used", true);
+                return result;
             }
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("answer", answer);
-            result.put("context_used", context != null);
-            return result;
+            return callQueryApi(userMessage);
         } catch (ResourceAccessException e) {
-            return Maps.of("error", "Ollama 서버(" + ollamaUrl + ")에 연결할 수 없습니다: " + e.getMessage());
+            return Maps.of("error", "sqlrestapi(" + ollamaUrl + ")에 연결할 수 없습니다: " + e.getMessage());
         } catch (Exception e) {
             return Maps.of("error", "AI DBA 챗봇 호출 중 오류 발생: " + e.getMessage());
         }
@@ -91,33 +93,50 @@ public class OllamaChatService {
     }
 
     private String callChatApi(String prompt) {
-        Map<String, Object> message = new LinkedHashMap<>();
-        message.put("role", "user");
-        message.put("content", prompt);
-
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", ollamaModel);
-        body.put("messages", Collections.singletonList(message));
-        body.put("stream", false);
+        body.put("promptId", PROMPT_ID);
+        body.put("prompt", prompt);
 
-        try {
-            JsonNode root = postForJson(ollamaUrl + "/api/chat", body);
-            JsonNode content = root.path("message").path("content");
-            return content.isMissingNode() ? null : content.asText();
-        } catch (HttpClientErrorException.NotFound e) {
-            return null;
-        }
+        JsonNode root = postForJson(ollamaUrl + "/api/chat", body);
+        JsonNode answer = root.path("answer");
+        return answer.isMissingNode() ? "" : answer.asText();
     }
 
-    private String callGenerateApi(String prompt) {
+    /**
+     * ORA 코드를 못 찾았을 때의 폴백 - sqlrestapi가 bge-m3로 질문을 임베딩해 error_dictionary
+     * 인덱스에서 의미상 가까운 사례를 찾고, 그걸 컨텍스트로 붙여 직접 답변까지 생성해 돌려준다.
+     */
+    private Map<String, Object> callQueryApi(String userMessage) {
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", ollamaModel);
-        body.put("prompt", prompt);
-        body.put("stream", false);
+        body.put("promptId", PROMPT_ID);
+        body.put("index", ERROR_INDEX);
+        body.put("query", userMessage);
+        body.put("n_results", 3);
 
-        JsonNode root = postForJson(ollamaUrl + "/api/generate", body);
-        JsonNode response = root.path("response");
-        return response.isMissingNode() ? "" : response.asText();
+        JsonNode root = postForJson(ollamaUrl + "/api/query", body);
+        String answer = root.path("answer").asText("");
+
+        List<Map<String, String>> references = new ArrayList<>();
+        for (JsonNode ref : root.path("references")) {
+            Map<String, String> r = new LinkedHashMap<>();
+            r.put("source", ref.path("source").asText(""));
+            r.put("content", ref.path("content").asText(""));
+            references.add(r);
+        }
+
+        String contextUsed = null;
+        if (!references.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            for (Map<String, String> r : references) {
+                sb.append("[").append(r.get("source")).append("]\n").append(r.get("content")).append("\n\n");
+            }
+            contextUsed = sb.toString();
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("answer", answer.isEmpty() ? "답변을 생성하지 못했습니다." : answer);
+        result.put("context_used", contextUsed);
+        return result;
     }
 
     private JsonNode postForJson(String url, Object body) {
@@ -134,7 +153,7 @@ public class OllamaChatService {
         try {
             return objectMapper.readTree(raw);
         } catch (Exception e) {
-            throw new IllegalStateException("Ollama 응답 파싱 실패: " + e.getMessage(), e);
+            throw new IllegalStateException("sqlrestapi 응답 파싱 실패: " + e.getMessage(), e);
         }
     }
 }

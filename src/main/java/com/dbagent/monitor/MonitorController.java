@@ -369,6 +369,7 @@ public class MonitorController {
             @RequestParam(required = false) String db_id,
             @RequestParam(required = false) String token,
             @RequestParam(required = false) String sid,
+            @RequestParam(required = false) String serial,
             @RequestParam(name = "sql_id", required = false) String sqlId) {
         if (!authService.canAccessDb(token, db_id)) {
             return dbAccessDenied();
@@ -381,7 +382,7 @@ public class MonitorController {
             return dbNotFound();
         }
         try {
-            return ResponseEntity.ok(monitorService.getSessionQuery(target, sid, sqlId));
+            return ResponseEntity.ok(monitorService.getSessionQuery(target, sid, serial, sqlId));
         } catch (SQLException e) {
             return dbError(e);
         }

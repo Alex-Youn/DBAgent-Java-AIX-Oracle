@@ -7,7 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
     <link rel="stylesheet" href="style.css?v=34">
     <script src="lib/lucide.js"></script>
-    <script src="dbagent-common.js?v=10"></script>
+    <script src="dbagent-common.js?v=11"></script>
     <script src="lib/mermaid.min.js"></script>
     <script src="lib/chart.js"></script>
     <script src="lib/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -229,6 +229,10 @@
                     <a href="#aidba" class="nav-item" data-target="aidba">
                         <i data-lucide="bot"></i>
                         <span>AI DBA</span>
+                    </a>
+                    <a href="#sqltuneadvisor" class="nav-item" data-target="sqltuneadvisor">
+                        <i data-lucide="search-code"></i>
+                        <span>SQL Tune Advisor</span>
                     </a>
                     <a href="#sqltuning" class="nav-item" data-target="sqltuning">
                         <i data-lucide="wrench"></i>
@@ -459,6 +463,30 @@
                                     <div style="color: var(--text-secondary); text-align: center; margin-top: 50px;">
                                         에러 코드를 검색하시면 원인과 조치 방안이 여기에 표시됩니다.
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- SQL Tune Advisor Section (사내 튜닝 사례 RAG 검색 + LLM 분석, 폐쇄망 GPU 서버 연동) -->
+                <section id="sqltuneadvisor" class="content-section">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h2>SQL Tune Advisor</h2>
+                            <p style="color: var(--text-secondary); margin-top: 5px; font-size: 0.9rem;">사내 튜닝 사례를 검색(RAG)해 참고하면서 SQL을 분석하는 어드바이저입니다. 튜닝이 필요한 쿼리나 증상을 입력하면 문제점 분석 → 최적화된 SQL → 개선 포인트 → 권장 인덱스 순으로 답변합니다. (사내 폐쇄망 GPU 서버 연동, 응답까지 다소 시간이 걸릴 수 있습니다)</p>
+                        </div>
+                        <div class="panel-body">
+                            <div class="input-group">
+                                <textarea id="sqltuneadvisor-input" rows="8" placeholder="예: 아래 쿼리가 풀스캔이 발생하며 느립니다. 튜닝 방안을 제시해주세요.&#10;SELECT ... (Ctrl+Enter: 분석 실행)" style="width: 100%; font-family: 'Consolas', 'D2Coding', monospace; font-size: 0.9rem; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main); resize: vertical;"></textarea>
+                                <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 10px;">
+                                    <button id="sqltuneadvisor-clear-btn" type="button" style="padding: 0 20px; border-radius: 6px; height: 40px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); cursor: pointer;"><i data-lucide="eraser"></i> 화면 클리어</button>
+                                    <button id="sqltuneadvisor-run-btn" class="primary-btn"><i data-lucide="search"></i> 분석 실행 (Ctrl+Enter)</button>
+                                </div>
+                            </div>
+                            <div id="sqltuneadvisor-result" style="margin-top: 20px; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main); min-height: 150px;">
+                                <div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">
+                                    쿼리나 튜닝하고 싶은 상황을 입력하고 분석을 실행해주세요.
                                 </div>
                             </div>
                         </div>
@@ -967,6 +995,6 @@
     </div>
 
 
-    <script src="app.js?v=96"></script>
+    <script src="app.js?v=100"></script>
 </body>
 </html>

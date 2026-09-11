@@ -26,6 +26,7 @@
 
             const dbId = qs('db_id');
             const sid = qs('sid');
+            const serial = qs('serial');
             const sqlId = qs('sql_id');
             const contentEl = document.getElementById('content');
 
@@ -34,7 +35,7 @@
                 return;
             }
 
-            fetch(`/api/session_query?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(sid)}&sql_id=${encodeURIComponent(sqlId)}&token=${encodeURIComponent(getToken())}`)
+            fetch(`/api/session_query?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(sid)}&serial=${encodeURIComponent(serial)}&sql_id=${encodeURIComponent(sqlId)}&token=${encodeURIComponent(getToken())}`)
                 .then(res => res.json())
                 .then(result => {
                     if (result.error) {

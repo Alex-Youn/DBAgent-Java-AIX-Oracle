@@ -1416,7 +1416,7 @@ let layoutHTML = "";
                     : '';
                 const cycle = item.repeated ? '<span class="lock-cycle">↻ 순환</span>' : '';
                 tableHtml += `
-                    <tr class="tmlock-row clickable-session-row" data-sid="${d.sid}">
+                    <tr class="tmlock-row clickable-session-row" data-sid="${d.sid}" data-serial="${d.serial || ''}">
                         <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${d.sid}" data-serial="${d.serial}" onclick="event.stopPropagation();"></td>
                         <td>${branch}<span class="lock-badge ${role}" title="${roleTitle}">${roleLabel}</span><span class="lock-sid">${d.sid}</span>${cycle}</td>
                         <td>${d.serial}</td>
@@ -2036,7 +2036,16 @@ let layoutHTML = "";
                     });
                     buildChartLegend('scatter-chart-legend', SCATTER_CATEGORIES, () => sessionScatterChart);
                     applyLegendVisibility('scatter-chart-legend', sessionScatterChart);
-                } else {
+                } else if (!window.scatterDragActive) {
+                    // Skip the visual refresh while a brush-selection drag is in progress (see
+                    // initScatterBrush below) - the x-axis window slides forward on every poll tick,
+                    // so a chart.update() mid-drag shifts every dot left out from under the selection
+                    // box the user is still drawing. mouseup's pixel->value conversion reads this same
+                    // chart's live scale, so if it moved mid-drag the selected sessions no longer match
+                    // what was visually boxed. Freezing the render here (data keeps accumulating in
+                    // scatterDataPoints/window.globalScatterDataPoints regardless) keeps what's on
+                    // screen consistent with what mouseup will compute; the next poll after mouseup
+                    // catches the chart up in one jump.
                     SCATTER_CATEGORIES.forEach((cat, i) => {
                         sessionScatterChart.data.datasets[i].data = scatterDataPoints.filter(p => p.category === cat.key);
                     });
@@ -2064,7 +2073,7 @@ let layoutHTML = "";
                     const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
                     const durationHtml = session.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
                     html += `
-                        <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${session.sid}" data-sql_id="${session.sql_id || ''}">
+                        <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${session.sid}" data-serial="${session.serial || ''}" data-sql_id="${session.sql_id || ''}">
                             <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="session-checkbox" data-sid="${session.sid}" data-serial="${session.serial}"></td>
                             <td>${session.db_name || '-'}</td>
                             <td><span class="status-badge ${statusClass}">${session.status}</span></td>
@@ -2168,7 +2177,7 @@ let layoutHTML = "";
             // always painting the healthy "online" green.
             const statusClass = (r.status || '').toUpperCase() === 'ACTIVE' ? 'online' : 'offline';
             return `
-            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${r.sid}" data-sql_id="${r.sql_id || ''}">
+            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${r.sid}" data-serial="${r.serial || ''}" data-sql_id="${r.sql_id || ''}">
                 <td>${r.db_name || '-'}</td>
                 <td><span class="status-badge ${statusClass}">${r.status || '-'}</span></td>
                 <td>${r.sid}</td>
@@ -2197,7 +2206,7 @@ let layoutHTML = "";
             return;
         }
         tbody.innerHTML = rows.map(r => `
-            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${r.sid}" data-sql_id="">
+            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${r.sid}" data-serial="${r.serial || ''}" data-sql_id="">
                 <td>${r.qcsid != null ? r.qcsid : '-'}</td>
                 <td>${r.qcserial != null ? r.qcserial : '-'}</td>
                 <td>${r.sid}</td>
@@ -2754,7 +2763,7 @@ let layoutHTML = "";
                                     const durationVal = s.duration_time !== null ? Number(s.duration_time) : 0;
                                     const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
                                     const durationHtml = s.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
-                                    html += `<tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
+                                    html += `<tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-serial="${s.serial || ''}" data-sql_id="${s.sql_id || ''}">
                                         <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="dash-sess-checkbox" data-sid="${s.sid}" data-serial="${s.serial}"></td>
                                         <td>${s.db_name || '-'}</td>
                                         <td><span class="status-badge online">${s.status}</span></td>
@@ -3160,10 +3169,11 @@ document.addEventListener('click', (e) => {
     const row = e.target.closest('.clickable-session-row');
     if (row && !e.target.closest('input[type="checkbox"]')) {
         const sid = row.getAttribute('data-sid');
+        const serial = row.getAttribute('data-serial') || '';
         const sql_id = row.getAttribute('data-sql_id') || '';
         if (!sid && !sql_id) return;
 
-        const url = `session-detail.html?db_id=${encodeURIComponent(window.currentDbId || '')}&sid=${encodeURIComponent(sid || '')}&sql_id=${encodeURIComponent(sql_id)}`;
+        const url = `session-detail.html?db_id=${encodeURIComponent(window.currentDbId || '')}&sid=${encodeURIComponent(sid || '')}&serial=${encodeURIComponent(serial)}&sql_id=${encodeURIComponent(sql_id)}`;
         // Window name keyed on sid/sql_id: re-clicking the same row focuses/reloads its existing
         // popup instead of spawning a duplicate, while different sessions each get their own window.
         const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, 'width=640,height=720,resizable=yes,scrollbars=yes');
@@ -3227,6 +3237,9 @@ function scatterPointerToLocal(e, container) {
         scatterContainer.addEventListener('mousedown', (e) => {
             if (e.target.id !== 'session-scatter-chart') return;
             isDragging = true;
+            // Freezes the live chart render (see the polling code around window.scatterDragActive)
+            // so the axis window doesn't slide out from under the box while the user is still dragging.
+            window.scatterDragActive = true;
             const p = scatterPointerToLocal(e, scatterContainer);
             startX = p.x;
             startY = p.y;
@@ -3258,8 +3271,11 @@ function scatterPointerToLocal(e, container) {
         window.addEventListener('mouseup', (e) => {
             if (!isDragging) return;
             isDragging = false;
+            // Cleared before every early return below so the live chart never stays frozen past the
+            // drag that set window.scatterDragActive in mousedown.
+            window.scatterDragActive = false;
             selectionBox.style.display = 'none';
-            
+
             if (!window.globalSessionScatterChart) return;
 
             const p = scatterPointerToLocal(e, scatterContainer);
@@ -3547,7 +3563,7 @@ function updateHistoryUI(data) {
     }
     
     tbody.innerHTML = data.map(s => `
-        <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
+        <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-serial="${s.serial || ''}" data-sql_id="${s.sql_id || ''}">
             <td>${s.capture_time}</td>
             <td>${s.sid}</td>
             <td>${s.serial}</td>
@@ -4121,6 +4137,98 @@ let historySortAsc = true;
         });
     }
 
+// SQL Tune Advisor Logic (사내 튜닝 사례 RAG 검색 + LLM 분석, /api/sqltuneadvisor/query 를 통해
+// 폐쇄망 GPU 서버의 sqlrestapi(RAGController)를 호출한다. 그 서버의 System Prompt 가 답변을
+// "### 1. 문제점 분석" 처럼 마크다운 4단계 구조로 강제하므로, 여기서는 채팅처럼 줄바꿈만 바꾸는 대신
+// 헤더/코드블록/굵게/글머리 정도만 가볍게 렌더링한다(외부 마크다운 라이브러리는 추가하지 않음 - 이
+// 프로젝트는 폐쇄망 배포 대상이라 CDN 의존 없이 로컬 vendored 라이브러리만 쓰는 원칙, style.css 참고).
+(function initSqlTuneAdvisor() {
+    const input = document.getElementById('sqltuneadvisor-input');
+    const runBtn = document.getElementById('sqltuneadvisor-run-btn');
+    const clearBtn = document.getElementById('sqltuneadvisor-clear-btn');
+    const resultEl = document.getElementById('sqltuneadvisor-result');
+    if (!input || !runBtn || !clearBtn || !resultEl) return;
+
+    const PLACEHOLDER_HTML = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">쿼리나 튜닝하고 싶은 상황을 입력하고 분석을 실행해주세요.</div>';
+
+    const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    // System Prompt 가 요구하는 답변 포맷(### 헤더, ```sql 코드블록, **굵게**, - 글머리)만 가볍게
+    // HTML로 바꾼다 - 정식 마크다운 파서가 아니라 이 화면에서 실제로 나오는 패턴에 맞춘 간이 변환.
+    function formatAdvisorAnswer(text) {
+        if (!text) return '';
+        let html = escapeHtml(text);
+        html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (m, lang, code) =>
+            `<pre style="background: rgba(0,0,0,0.3); color: #e2e8f0; padding: 12px 14px; border-radius: 6px; overflow-x: auto; white-space: pre; font-family: 'D2Coding', Consolas, monospace; font-size: 0.85rem; margin: 10px 0; line-height: 1.4;">${code}</pre>`);
+        html = html.replace(/^#{2,4}\s+(.+)$/gm,
+            '<div style="margin: 16px 0 8px; font-weight: 700; color: var(--primary); font-size: 1rem;">$1</div>');
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/`([^`]+)`/g, '<code style="background: rgba(0,0,0,0.25); padding: 1px 5px; border-radius: 4px; font-family: Consolas, monospace;">$1</code>');
+        html = html.replace(/^-\s+(.+)$/gm, '<div style="margin: 3px 0 3px 14px;">• $1</div>');
+        html = html.replace(/\n/g, '<br/>');
+        return html;
+    }
+
+    function formatReferences(references) {
+        if (!references || references.length === 0) return '';
+        const items = references.map((ref, i) => {
+            const label = escapeHtml(ref.source || ('사례 ' + (i + 1)));
+            const content = escapeHtml(ref.content || '');
+            return `
+                <div style="margin-bottom: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                        <span style="font-size: 0.85rem; color: var(--text-secondary);">${i + 1}. ${label}</span>
+                        <span style="font-size: 0.82rem; font-weight: 600; color: var(--primary); cursor: pointer; user-select: none; white-space: nowrap;"
+                              onclick="var b=this.parentElement.nextElementSibling; var willOpen=(b.style.display==='none'); b.style.display=willOpen?'block':'none'; this.textContent=willOpen?'[-] 접기':'[+] 상세보기';">[+] 상세보기</span>
+                    </div>
+                    <div style="display: none; font-size: 0.85rem; line-height: 1.6; color: var(--text-main); background: var(--bg-card); border: 1px solid var(--border-color); padding: 10px 12px; border-radius: 6px; margin-top: 6px; white-space: pre-wrap; word-break: break-word; font-family: 'D2Coding', Consolas, monospace; max-height: 280px; overflow-y: auto;">${content}</div>
+                </div>`;
+        }).join('');
+        return `<div style="margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border-color);">
+                    <div style="font-weight: 700; color: var(--text-secondary); margin-bottom: 10px; font-size: 0.9rem;">참고한 사내 튜닝 사례 (${references.length}건)</div>
+                    ${items}
+                </div>`;
+    }
+
+    const run = () => {
+        const text = input.value.trim();
+        if (!text || runBtn.disabled) return;
+
+        runBtn.disabled = true;
+        resultEl.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary);"><i data-lucide="loader-2" class="spinning"></i> 사내 튜닝 사례를 검색하고 분석 중입니다...</div>';
+        if (typeof lucide !== 'undefined') lucide.createIcons({root: resultEl});
+
+        fetch('/api/sqltuneadvisor/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: text })
+        })
+        .then(res => res.json())
+        .then(data => {
+            runBtn.disabled = false;
+            if (data.success === false) {
+                resultEl.innerHTML = `<div style="color: #d03b3b;">${escapeHtml(data.message || '분석 중 오류가 발생했습니다.')}</div>`;
+                return;
+            }
+            resultEl.innerHTML = `<div style="line-height: 1.6;">${formatAdvisorAnswer(data.answer)}${formatReferences(data.references)}</div>`;
+        })
+        .catch(() => {
+            runBtn.disabled = false;
+            resultEl.innerHTML = '<div style="color: #d03b3b;">서버 통신 오류가 발생했습니다. (SQL Tune Advisor 서버가 켜져 있는지 확인하세요)</div>';
+        });
+    };
+
+    runBtn.addEventListener('click', run);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) run();
+    });
+    clearBtn.addEventListener('click', () => {
+        input.value = '';
+        resultEl.innerHTML = PLACEHOLDER_HTML;
+        input.focus();
+    });
+})();
+
 // AI DBA Tabs & Error Search Logic
 
 
@@ -4225,12 +4333,13 @@ let historySortAsc = true;
     //    (aidba-chat-* 로 되어 있다) 아래 블록 전체가 실행되지 않았고, 결과적으로 전송 버튼이
     //    아무 반응도 하지 않는 상태였다. 2026-09-07 에 실제 id 로 교정.
     //
-    // 2) AIX 서버에는 Ollama(GPU 런타임 필요)를 직접 올릴 수 없어 사내망 GPU 서버를 붙여야
-    //    동작한다. 아직 연결 전이므로 AIDBA_GPU_PENDING 으로 모델 호출을 막고 안내만 띄운다.
-    //    GPU 서버가 준비되면 (a) application.properties 에 aidba.ollama.url / model 을 지정하고
-    //    (dist-aix/application.properties.sample 참고) (b) 아래 상수를 false 로 바꾸면 된다.
-    //    실제 호출 코드는 지우지 않고 그대로 두었으므로 한 줄 수정으로 되살아난다.
-    const AIDBA_GPU_PENDING = true;
+    // 2) AIX 서버에는 Ollama(GPU 런타임 필요)를 직접 올릴 수 없어 사내망 GPU 서버(sqlrestapi)를
+    //    거쳐야 동작한다. GPU 서버 방화벽이 REST API 포트(9300)만 열어주는 구성으로 확정되고
+    //    OllamaChatService가 sqlrestapi의 /api/chat을 호출하도록 이관되면서(2026-09-11) 이 상수를
+    //    false로 바꿨다 - application.properties의 aidba.ollama.url을 그 sqlrestapi 주소로
+    //    맞춰야 실제로 동작한다(dist-aix/application.properties.sample 참고, 모델명 설정은 이제
+    //    불필요).
+    const AIDBA_GPU_PENDING = false;
     const chatInput = document.getElementById('aidba-chat-input');
     const chatSendBtn = document.getElementById('aidba-chat-send-btn');
     const chatLog = document.getElementById('aidba-chat-history');

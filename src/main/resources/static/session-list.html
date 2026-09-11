@@ -58,7 +58,7 @@
                                 ${sessions.map(s => {
                                     const cmdText = s.command !== undefined ? (cmdMap[s.command] || s.command) : '-';
                                     return `
-                                    <tr class="clickable-session-row" style="cursor:pointer; border-bottom:1px solid var(--border);" data-sid="${s.sid}" data-sql_id="${s.sql_id || ''}">
+                                    <tr class="clickable-session-row" style="cursor:pointer; border-bottom:1px solid var(--border);" data-sid="${s.sid}" data-serial="${s.serial || ''}" data-sql_id="${s.sql_id || ''}">
                                         <td style="padding:10px;">${s.db_name || '-'}</td>
                                         <td style="padding:10px;">${s.capture_time || '-'}</td>
                                         <td style="padding:10px;">${s.sid}</td>
@@ -101,11 +101,12 @@
                 if (!row || e.target.closest('input[type="checkbox"]')) return;
 
                 const sid = row.getAttribute('data-sid');
+                const serial = row.getAttribute('data-serial') || '';
                 const sql_id = row.getAttribute('data-sql_id') || '';
                 if (!sid && !sql_id) return;
 
                 const dbId = (window.opener && !window.opener.closed && window.opener.currentDbId) ? window.opener.currentDbId : '';
-                const url = `session-detail.html?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(sid || '')}&sql_id=${encodeURIComponent(sql_id)}`;
+                const url = `session-detail.html?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(sid || '')}&serial=${encodeURIComponent(serial)}&sql_id=${encodeURIComponent(sql_id)}`;
                 const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, 'width=640,height=720,resizable=yes,scrollbars=yes');
                 if (popup) {
                     // A window's `.opener` defaults to whatever actually called window.open() on it -
