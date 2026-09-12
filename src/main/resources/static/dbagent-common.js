@@ -69,7 +69,6 @@
                 { id: 'relation', label: 'Table Parent/Child 관계' },
                 { id: 'sqlrunner', label: 'SQL 실행' },
                 { id: 'aidba', label: 'AI DBA' },
-                { id: 'sqltuneadvisor', label: 'SQL Tune Advisor' },
                 { id: 'sqltuning', label: 'SQL 정합성/튜닝' }
             ]
         },

@@ -818,9 +818,15 @@ function getToken() {
         if (targetId === 'sqlrunner' && typeof window.loadSqlRunnerAccounts === 'function') {
             window.loadSqlRunnerAccounts();
         }
-        if (targetId === 'sqltuning' && typeof window.loadSqlTuningAccounts === 'function') {
-            window.loadSqlTuningAccounts();
-            if (typeof window.renderSqlTuningBindFields === 'function') window.renderSqlTuningBindFields();
+        if (targetId === 'aidba' && typeof window.loadAiDbaHealth === 'function') {
+            window.loadAiDbaHealth();
+        }
+        if (targetId === 'aidba' && typeof window.loadTunnerCurrentAccounts === 'function') {
+            window.loadTunnerCurrentAccounts();
+            if (typeof window.renderTunnerCurrentBindFields === 'function') window.renderTunnerCurrentBindFields();
+        }
+        if (targetId === 'aidba' && typeof window.loadSqlWriterAccounts === 'function') {
+            window.loadSqlWriterAccounts();
         }
 
         // Auto-fetch data if tmlock
@@ -3181,32 +3187,47 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// Receiving end of the "튜닝" button in the session-detail.html popup (called via window.opener).
-// Fills the SQL 정합성/튜닝 메뉴 with the popup's session data and switches to it. AIX has no sLLM
-// server, but the menu's Oracle-only features (1차 성능점검, 바인드 불러오기) still work fully.
-window.openSqlTuningFromPopup = function(sqlText, hashValue, binds) {
+// Receiving end of the "Tuning" button in the session-detail.html popup (called via window.opener).
+// 2026-09-12 매뉴통합.md 2-1: 목적지가 SQL 정합성/튜닝 화면에서 AI DBA > AI SQL Tunner > AI Current
+// SQL 분석 탭으로 바뀌었다 - 같은 handoff 메커니즘에 목적지만 바꾼 것. AIX는 sLLM 서버가 없지만
+// 이 탭의 기능(1차 성능점검, 바인드 불러오기, sqlrestapi 기반 성능분석)은 원본과 동일하게 동작한다.
+window.openSqlTuningFromPopup = function(sqlText, hashValue, binds, plan) {
     // If this popup was opened by clicking a session inside the Trace-drag "선택된 세션 리스트" modal
     // (see showSelectedSessionsPopup), that modal is still open behind the popup - switching the main
     // window's menu here without closing it first leaves its fixed full-screen overlay sitting on top
-    // of the new SQL 튜닝 screen, making the page look unresponsive/disabled.
+    // of the new 화면, making the page look unresponsive/disabled.
     const selectionModal = document.getElementById('image-modal');
     if (selectionModal) selectionModal.style.display = 'none';
 
-    const tuningInputEl = document.getElementById('sqltuning-input');
-    const tuningHashEl = document.getElementById('sqltuning-bind-hashvalue');
+    const tuningInputEl = document.getElementById('tunner-current-input');
+    const tuningHashEl = document.getElementById('tunner-current-bind-hashvalue');
     if (tuningInputEl) tuningInputEl.value = sqlText || '';
     if (tuningHashEl) tuningHashEl.value = (hashValue != null) ? String(hashValue) : '';
 
-    sqlTuningBindValues = {};
+    tunnerCurrentBindValues = {};
     (binds || []).forEach(b => {
         if (!b.name) return;
         const name = b.name.startsWith(':') ? b.name.substring(1) : b.name;
-        sqlTuningBindValues[name] = b.value || '';
+        tunnerCurrentBindValues[name] = b.value || '';
     });
 
-    const navItem = document.querySelector('.nav-item[data-target="sqltuning"]');
+    const navItem = document.querySelector('.nav-item[data-target="aidba"]');
     if (navItem) navItem.click();
-    if (typeof window.renderSqlTuningBindFields === 'function') window.renderSqlTuningBindFields();
+    const tunnerSideBtn = document.querySelector('.aidba-side-btn[data-view="aidba-view-tunner"]');
+    if (tunnerSideBtn) tunnerSideBtn.click();
+    const currentTabBtn = document.querySelector('.tunner-tab-btn[data-tunner-tab="tab-tunner-current"]');
+    if (currentTabBtn) currentTabBtn.click();
+    if (typeof window.renderTunnerCurrentBindFields === 'function') window.renderTunnerCurrentBindFields();
+
+    // 세션상세 팝업은 이미 실측 Plan(v$sql_plan)을 들고 있으므로, 1차점검을 다시 실행하지 않아도
+    // 바로 "성능분석"을 누를 수 있는 상태로 채워 넣는다(매뉴통합.md 2-1 - Plan handoff 확장).
+    if (plan) {
+        tunnerCurrentLastPlan = plan;
+        const analyzeBtn = document.getElementById('tunner-current-analyze-btn');
+        if (analyzeBtn) analyzeBtn.disabled = false;
+        renderTunnerCurrentPlan(plan);
+    }
+
     if (tuningInputEl) tuningInputEl.focus();
 };
 
@@ -3891,24 +3912,40 @@ let historySortAsc = true;
         });
     }
 
-    // 바인드 변수 자동 조회 (관리자 전용, 1차 성능점검에서 사용)
-    const sqlTuningAccountSelect = document.getElementById('sqltuning-account-select');
-    const sqlTuningBindPanel = document.getElementById('sqltuning-bind-panel');
-    const sqlTuningBindFields = document.getElementById('sqltuning-bind-fields');
-    const sqlTuningBindToggleBtn = document.getElementById('sqltuning-bind-toggle-btn');
-    const sqlTuningBindHashInput = document.getElementById('sqltuning-bind-hashvalue');
-    const sqlTuningBindCaptureBtn = document.getElementById('sqltuning-bind-capture-btn');
-    const sqlTuningBindCaptureStatus = document.getElementById('sqltuning-bind-capture-status');
-    const SQLTUNING_BIND_COLLAPSE_THRESHOLD = 6; // 이보다 많으면 기본 접힘 + 펼치기 버튼
-    let sqlTuningBindValues = {};
-    let sqlTuningBindExpanded = false;
+    // 화면 클리어 - sLLM 자체 분석 화면은 바인드/계정이 없는 자유 텍스트라 입력/결과만 초기화
+    const sqlTuningClearBtn = document.getElementById('sqltuning-clear-btn');
+    if (sqlTuningClearBtn && sqlTuningInput && sqlTuningResult) {
+        sqlTuningClearBtn.addEventListener('click', () => {
+            sqlTuningInput.value = '';
+            sqlTuningResult.innerHTML = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">쿼리/실행계획을 입력하고 분석 실행 버튼을 누르세요.</div>';
+            sqlTuningInput.focus();
+        });
+    }
 
-    // 쿼리에서 :1, :SID 같은 오라클 바인드 변수(콜론 표기, JDBC ? 아님)를 찾아 입력칸을 그려줌.
-    // 문자열 리터럴과 주석(/* */, --) 안의 콜론은 매칭에서 제외 - 예: "/* CSR:111234 목록 처리 */"가
-    // 바인드 변수 ":111234"로 오인되지 않도록 함. 문자열/주석을 한 번에(하나의 정규식 alternation으로)
-    // 처리 - 문자열 제거 후 주석 제거하는 2단계 방식이면, 주석 안의 따옴표(예: "-- don't touch")가
-    // 문자열 정규식을 오작동시켜 그 뒤에 나오는 실제 바인드 변수를 삼켜버릴 수 있음.
-    function extractSqlTuningBindNames(query) {
+// AI Current SQL 분석 Logic (매뉴통합.md 2-1) - 1차 성능점검(기존 /api/sqltuning/quick_check 재사용) +
+// 바인드 변수 패널은 기존 SQL 정합성/튜닝 화면에서 이 탭으로 이동한 것. 1차점검 결과가 있어야만
+// "성능분석"(sqlrestapi promptId=current-sql)이 활성화되는 human-in-the-loop 구조.
+
+    const tunnerCurrentInput = document.getElementById('tunner-current-input');
+    const tunnerCurrentResult = document.getElementById('tunner-current-result');
+    const tunnerCurrentAccountSelect = document.getElementById('tunner-current-account-select');
+    const tunnerCurrentBindPanel = document.getElementById('tunner-current-bind-panel');
+    const tunnerCurrentBindFields = document.getElementById('tunner-current-bind-fields');
+    const tunnerCurrentBindToggleBtn = document.getElementById('tunner-current-bind-toggle-btn');
+    const tunnerCurrentBindHashInput = document.getElementById('tunner-current-bind-hashvalue');
+    const tunnerCurrentBindCaptureBtn = document.getElementById('tunner-current-bind-capture-btn');
+    const tunnerCurrentBindCaptureStatus = document.getElementById('tunner-current-bind-capture-status');
+    const tunnerCurrentQuickCheckBtn = document.getElementById('tunner-current-quickcheck-btn');
+    const tunnerCurrentAnalyzeBtn = document.getElementById('tunner-current-analyze-btn');
+    const tunnerCurrentClearBtn = document.getElementById('tunner-current-clear-btn');
+    const TUNNER_CURRENT_BIND_COLLAPSE_THRESHOLD = 6; // 이보다 많으면 기본 접힘 + 펼치기 버튼
+    let tunnerCurrentBindValues = {};
+    let tunnerCurrentBindExpanded = false;
+    // 성능분석은 1차점검으로 실측치를 이미 얻었을 때만 의미가 있다(쿼리 텍스트만 있는 분석은 탭 ①의
+    // 몫이라 중복) - 직전 1차점검 결과를 여기 들고 있다가 성능분석 호출 시 그대로 함께 보낸다.
+    let tunnerCurrentLastPlan = null;
+
+    function extractTunnerCurrentBindNames(query) {
         const stripped = query.replace(/'(?:[^']|'')*'|\/\*[\s\S]*?\*\/|--[^\r\n]*/g, (m) => m.charAt(0) === "'" ? "''" : ' ');
         const re = /:([A-Za-z][A-Za-z0-9_$#]*|[0-9]+)/g;
         const seen = new Set();
@@ -3920,160 +3957,211 @@ let historySortAsc = true;
         return names;
     }
 
-    function renderBindField(name) {
-        const val = (sqlTuningBindValues[name] || '').replace(/"/g, '&quot;');
+    function renderTunnerCurrentBindField(name) {
+        const val = (tunnerCurrentBindValues[name] || '').replace(/"/g, '&quot;');
         return `<label style="display:flex; align-items:center; gap:4px; font-size:0.85rem; color: var(--text-secondary);">:${name}
             <input type="text" data-bind-name="${name}" value="${val}" style="width: 140px; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-main); color: var(--text-main); font-family: 'Consolas', 'D2Coding', monospace;">
         </label>`;
     }
 
-    window.renderSqlTuningBindFields = function () {
-        if (!sqlTuningBindPanel || !sqlTuningBindFields || !sqlTuningInput || !isAdmin()) return;
-        const names = extractSqlTuningBindNames(sqlTuningInput.value);
+    window.renderTunnerCurrentBindFields = function () {
+        if (!tunnerCurrentBindPanel || !tunnerCurrentBindFields || !tunnerCurrentInput || !isAdmin()) return;
+        const names = extractTunnerCurrentBindNames(tunnerCurrentInput.value);
         if (names.length === 0) {
-            sqlTuningBindPanel.style.display = 'none';
-            sqlTuningBindFields.innerHTML = '';
+            tunnerCurrentBindPanel.style.display = 'none';
+            tunnerCurrentBindFields.innerHTML = '';
             return;
         }
-        sqlTuningBindPanel.style.display = 'flex';
+        tunnerCurrentBindPanel.style.display = 'flex';
 
-        const isCollapsible = names.length > SQLTUNING_BIND_COLLAPSE_THRESHOLD;
-        if (sqlTuningBindToggleBtn) {
-            sqlTuningBindToggleBtn.style.display = isCollapsible ? 'inline-block' : 'none';
-            sqlTuningBindToggleBtn.textContent = `바인드 변수 ${names.length}개 (${sqlTuningBindExpanded ? '접기 ▲' : '펼치기 ▼'})`;
+        const isCollapsible = names.length > TUNNER_CURRENT_BIND_COLLAPSE_THRESHOLD;
+        if (tunnerCurrentBindToggleBtn) {
+            tunnerCurrentBindToggleBtn.style.display = isCollapsible ? 'inline-block' : 'none';
+            tunnerCurrentBindToggleBtn.textContent = `바인드 변수 ${names.length}개 (${tunnerCurrentBindExpanded ? '접기 ▲' : '펼치기 ▼'})`;
         }
 
-        if (isCollapsible && !sqlTuningBindExpanded) {
-            sqlTuningBindFields.style.display = 'none';
+        if (isCollapsible && !tunnerCurrentBindExpanded) {
+            tunnerCurrentBindFields.style.display = 'none';
             return;
         }
 
-        sqlTuningBindFields.style.cssText = isCollapsible
+        tunnerCurrentBindFields.style.cssText = isCollapsible
             ? 'display: flex; flex-wrap: wrap; gap: 8px; max-height: 320px; overflow-y: auto; padding: 4px;'
             : 'display: flex; flex-wrap: wrap; gap: 8px;';
-        sqlTuningBindFields.innerHTML = names.map(renderBindField).join('');
-        sqlTuningBindFields.querySelectorAll('input[data-bind-name]').forEach(inp => {
+        tunnerCurrentBindFields.innerHTML = names.map(renderTunnerCurrentBindField).join('');
+        tunnerCurrentBindFields.querySelectorAll('input[data-bind-name]').forEach(inp => {
             inp.addEventListener('input', () => {
-                sqlTuningBindValues[inp.dataset.bindName] = inp.value;
+                tunnerCurrentBindValues[inp.dataset.bindName] = inp.value;
             });
         });
     }
 
-    if (sqlTuningBindToggleBtn) {
-        sqlTuningBindToggleBtn.addEventListener('click', () => {
-            sqlTuningBindExpanded = !sqlTuningBindExpanded;
-            window.renderSqlTuningBindFields();
+    if (tunnerCurrentBindToggleBtn) {
+        tunnerCurrentBindToggleBtn.addEventListener('click', () => {
+            tunnerCurrentBindExpanded = !tunnerCurrentBindExpanded;
+            window.renderTunnerCurrentBindFields();
         });
     }
 
-    if (sqlTuningBindCaptureBtn && sqlTuningBindHashInput) {
-        sqlTuningBindCaptureBtn.addEventListener('click', async () => {
-            const hashValue = sqlTuningBindHashInput.value.trim();
+    if (tunnerCurrentBindCaptureBtn && tunnerCurrentBindHashInput) {
+        tunnerCurrentBindCaptureBtn.addEventListener('click', async () => {
+            const hashValue = tunnerCurrentBindHashInput.value.trim();
             if (!hashValue) return;
-            sqlTuningBindCaptureBtn.disabled = true;
-            if (sqlTuningBindCaptureStatus) sqlTuningBindCaptureStatus.textContent = '조회 중...';
+            tunnerCurrentBindCaptureBtn.disabled = true;
+            if (tunnerCurrentBindCaptureStatus) tunnerCurrentBindCaptureStatus.textContent = '조회 중...';
             try {
                 const res = await fetch('/api/sqltuning/bind_capture', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         db_id: window.currentDbId || '',
-                        account: sqlTuningAccountSelect ? sqlTuningAccountSelect.value : '',
+                        account: tunnerCurrentAccountSelect ? tunnerCurrentAccountSelect.value : '',
                         token: getToken(),
                         hash_value: hashValue
                     })
                 });
                 const data = await res.json();
                 if (!data.success) {
-                    if (sqlTuningBindCaptureStatus) sqlTuningBindCaptureStatus.textContent = data.message || '조회 실패';
+                    if (tunnerCurrentBindCaptureStatus) tunnerCurrentBindCaptureStatus.textContent = data.message || '조회 실패';
                     return;
                 }
-                Object.assign(sqlTuningBindValues, data.binds || {});
-                sqlTuningBindExpanded = true;
-                window.renderSqlTuningBindFields();
-                if (sqlTuningBindCaptureStatus) {
-                    sqlTuningBindCaptureStatus.textContent = `${Object.keys(data.binds || {}).length}개 값 채움`;
+                Object.assign(tunnerCurrentBindValues, data.binds || {});
+                tunnerCurrentBindExpanded = true;
+                window.renderTunnerCurrentBindFields();
+                if (tunnerCurrentBindCaptureStatus) {
+                    tunnerCurrentBindCaptureStatus.textContent = `${Object.keys(data.binds || {}).length}개 값 채움`;
                 }
             } catch (e) {
-                if (sqlTuningBindCaptureStatus) sqlTuningBindCaptureStatus.textContent = '서버 통신 오류';
+                if (tunnerCurrentBindCaptureStatus) tunnerCurrentBindCaptureStatus.textContent = '서버 통신 오류';
             } finally {
-                sqlTuningBindCaptureBtn.disabled = false;
+                tunnerCurrentBindCaptureBtn.disabled = false;
             }
         });
     }
 
-    if (sqlTuningInput) {
-        sqlTuningInput.addEventListener('input', window.renderSqlTuningBindFields);
+    if (tunnerCurrentInput) {
+        tunnerCurrentInput.addEventListener('input', () => {
+            window.renderTunnerCurrentBindFields();
+            // 쿼리를 고치면 방금 전 1차점검 결과와 더 이상 대응하지 않으므로 성능분석을 다시 잠근다.
+            tunnerCurrentLastPlan = null;
+            if (tunnerCurrentAnalyzeBtn) tunnerCurrentAnalyzeBtn.disabled = true;
+        });
     }
 
-    window.loadSqlTuningAccounts = async function () {
-        if (!sqlTuningAccountSelect) return;
+    window.loadTunnerCurrentAccounts = async function () {
+        if (!tunnerCurrentAccountSelect) return;
         const dbId = window.currentDbId || '';
         try {
             const res = await fetch(`/api/query/accounts?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`);
             const data = await res.json();
             const accounts = data.accounts || [];
-            const previous = sqlTuningAccountSelect.value;
-            sqlTuningAccountSelect.innerHTML = accounts.map(a => `<option value="${a}">${a}</option>`).join('');
+            const previous = tunnerCurrentAccountSelect.value;
+            tunnerCurrentAccountSelect.innerHTML = accounts.map(a => `<option value="${a}">${a}</option>`).join('');
             if (accounts.includes(previous)) {
-                sqlTuningAccountSelect.value = previous;
+                tunnerCurrentAccountSelect.value = previous;
             }
         } catch (e) {
-            console.error('Failed to load SQL tuning accounts:', e);
+            console.error('Failed to load AI Current SQL 분석 accounts:', e);
         }
     };
 
-    // 1차 성능점검 - 실행계획/실측 통계를 얻지만 sLLM(FastAPI) 호출 없이
-    // 그대로 바로 보여줌 (AI 분석 전에 DBA가 눈으로 먼저 훑어보는 용도, 훨씬 빠름).
-    const sqlTuningQuickCheckBtn = document.getElementById('sqltuning-quickcheck-btn');
-    if (sqlTuningQuickCheckBtn && sqlTuningInput && sqlTuningResult) {
-        sqlTuningQuickCheckBtn.addEventListener('click', () => {
-            const query = sqlTuningInput.value.trim();
-            if (!query || sqlTuningQuickCheckBtn.disabled) return;
+    function renderTunnerCurrentPlan(plan) {
+        if (!tunnerCurrentResult) return;
+        tunnerCurrentResult.innerHTML = `<div style="font-size: 0.85rem; color: var(--text-muted); background: var(--bg-card); padding: 12px; border-radius: 4px; white-space: pre-wrap; font-family: 'Consolas', 'D2Coding', monospace;">${plan}</div>
+            <div id="tunner-current-analysis"></div>`;
+    }
 
-            sqlTuningQuickCheckBtn.disabled = true;
-            sqlTuningResult.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary);"><i data-lucide="loader-2" class="spinning"></i> 쿼리를 실제로 실행 중...</div>';
-            if (typeof lucide !== 'undefined') lucide.createIcons({root: sqlTuningResult});
+    // 1차 성능점검 - 실행계획/실측 통계를 얻지만 AI 호출 없이 그대로 바로 보여줌
+    // (AI 분석 전에 DBA가 눈으로 먼저 훑어보는 용도, 훨씬 빠름). 성공하면 성능분석 버튼이 열린다.
+    if (tunnerCurrentQuickCheckBtn && tunnerCurrentInput && tunnerCurrentResult) {
+        tunnerCurrentQuickCheckBtn.addEventListener('click', () => {
+            const query = tunnerCurrentInput.value.trim();
+            if (!query || tunnerCurrentQuickCheckBtn.disabled) return;
+
+            tunnerCurrentQuickCheckBtn.disabled = true;
+            if (tunnerCurrentAnalyzeBtn) tunnerCurrentAnalyzeBtn.disabled = true;
+            tunnerCurrentLastPlan = null;
+            tunnerCurrentResult.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary);"><i data-lucide="loader-2" class="spinning"></i> 쿼리를 실제로 실행 중...</div>';
+            if (typeof lucide !== 'undefined') lucide.createIcons({root: tunnerCurrentResult});
 
             fetch('/api/sqltuning/quick_check', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     db_id: window.currentDbId || '',
-                    account: sqlTuningAccountSelect ? sqlTuningAccountSelect.value : '',
+                    account: tunnerCurrentAccountSelect ? tunnerCurrentAccountSelect.value : '',
                     token: getToken(),
                     query: query,
-                    binds: sqlTuningBindValues
+                    binds: tunnerCurrentBindValues
                 })
             })
             .then(res => res.json())
             .then(data => {
-                sqlTuningQuickCheckBtn.disabled = false;
+                tunnerCurrentQuickCheckBtn.disabled = false;
                 if (data.success === false) {
-                    sqlTuningResult.innerHTML = `<div style="color: #d03b3b;">${data.message || '점검 중 오류가 발생했습니다.'}</div>`;
+                    tunnerCurrentResult.innerHTML = `<div style="color: #d03b3b;">${data.message || '점검 중 오류가 발생했습니다.'}</div>`;
                     return;
                 }
-                sqlTuningResult.innerHTML = `<div style="font-size: 0.85rem; color: var(--text-muted); background: var(--bg-card); padding: 12px; border-radius: 4px; white-space: pre-wrap; font-family: 'Consolas', 'D2Coding', monospace;">${data.plan}</div>`;
+                tunnerCurrentLastPlan = data.plan;
+                if (tunnerCurrentAnalyzeBtn) tunnerCurrentAnalyzeBtn.disabled = false;
+                renderTunnerCurrentPlan(data.plan);
             })
             .catch(() => {
-                sqlTuningQuickCheckBtn.disabled = false;
-                sqlTuningResult.innerHTML = '<div style="color: #d03b3b;">서버 통신 오류가 발생했습니다.</div>';
+                tunnerCurrentQuickCheckBtn.disabled = false;
+                tunnerCurrentResult.innerHTML = '<div style="color: #d03b3b;">서버 통신 오류가 발생했습니다.</div>';
             });
         });
     }
 
-    // 화면 클리어 - 쿼리 입력, 바인드 변수, 결과 영역을 전부 초기 상태로 되돌림
-    const sqlTuningClearBtn = document.getElementById('sqltuning-clear-btn');
-    if (sqlTuningClearBtn && sqlTuningInput && sqlTuningResult) {
-        sqlTuningClearBtn.addEventListener('click', () => {
-            sqlTuningInput.value = '';
-            sqlTuningBindValues = {};
-            sqlTuningBindExpanded = false;
-            if (sqlTuningBindHashInput) sqlTuningBindHashInput.value = '';
-            if (sqlTuningBindCaptureStatus) sqlTuningBindCaptureStatus.textContent = '';
-            window.renderSqlTuningBindFields();
-            sqlTuningResult.innerHTML = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">쿼리/실행계획을 입력하고 분석 실행 버튼을 누르세요.</div>';
-            sqlTuningInput.focus();
+    // 성능분석 - 1차점검 결과(쿼리+바인드+실행계획/실측치)를 sqlrestapi(promptId=current-sql)로 보내
+    // 해석을 요청한다. RAG 검색 없이 바로 답변만 받는다(사내 사례를 찾는 게 아니라 눈앞의 실측치를
+    // 해석하는 작업이라 - 매뉴통합.md 2-1).
+    if (tunnerCurrentAnalyzeBtn) {
+        tunnerCurrentAnalyzeBtn.addEventListener('click', () => {
+            if (tunnerCurrentAnalyzeBtn.disabled || !tunnerCurrentLastPlan) return;
+            const query = tunnerCurrentInput.value.trim();
+            const analysisEl = document.getElementById('tunner-current-analysis');
+            if (!analysisEl) return;
+
+            tunnerCurrentAnalyzeBtn.disabled = true;
+            analysisEl.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary); margin-top: 16px;"><i data-lucide="loader-2" class="spinning"></i> AI가 실측치를 분석 중입니다...</div>';
+            if (typeof lucide !== 'undefined') lucide.createIcons({root: analysisEl});
+
+            fetch('/api/aidba/current_sql/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query, binds: tunnerCurrentBindValues, plan: tunnerCurrentLastPlan })
+            })
+            .then(res => res.json())
+            .then(data => {
+                tunnerCurrentAnalyzeBtn.disabled = false;
+                if (data.success === false) {
+                    analysisEl.innerHTML = `<div style="color: #d03b3b; margin-top: 16px;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
+                    return;
+                }
+                const formatted = formatSqlTuningAnswer(data.answer);
+                analysisEl.innerHTML = `<div style="line-height: 1.6; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">${formatted}</div>`;
+            })
+            .catch(() => {
+                tunnerCurrentAnalyzeBtn.disabled = false;
+                analysisEl.innerHTML = '<div style="color: #d03b3b; margin-top: 16px;">서버 통신 오류가 발생했습니다.</div>';
+            });
+        });
+    }
+
+    // 화면 클리어
+    if (tunnerCurrentClearBtn && tunnerCurrentInput && tunnerCurrentResult) {
+        tunnerCurrentClearBtn.addEventListener('click', () => {
+            tunnerCurrentInput.value = '';
+            tunnerCurrentBindValues = {};
+            tunnerCurrentBindExpanded = false;
+            tunnerCurrentLastPlan = null;
+            if (tunnerCurrentAnalyzeBtn) tunnerCurrentAnalyzeBtn.disabled = true;
+            if (tunnerCurrentBindHashInput) tunnerCurrentBindHashInput.value = '';
+            if (tunnerCurrentBindCaptureStatus) tunnerCurrentBindCaptureStatus.textContent = '';
+            window.renderTunnerCurrentBindFields();
+            tunnerCurrentResult.innerHTML = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">쿼리를 입력하고 "1차 성능점검"을 실행하면 실행계획/실측 통계가 여기에 표시됩니다.</div>';
+            tunnerCurrentInput.focus();
         });
     }
 
@@ -4169,53 +4257,308 @@ let historySortAsc = true;
     });
 })();
 
-// AI DBA Tabs & Error Search Logic
+// AI DBA 좌측 프레임 화면 전환 + AI SQL Tunner 내부 탭 + Error Search Logic
 
 
 
-    // Tab switching
-    const tabBtns = document.querySelectorAll('.aidba-tab-btn');
-    const tabContents = document.querySelectorAll('.aidba-tab-content');
+    // 좌측 프레임 화면 전환 (AI SQL Tunner / AI 챗봇 / AI SQL 작성기 / Regex 오류검색) - 탭이 아니라
+    // 화면 자체를 바꾸는 것이므로 아래쪽 강조는 좌측 보더로 표시한다(매뉴통합.md 1절).
+    const aidbaSideBtns = document.querySelectorAll('.aidba-side-btn');
+    const aidbaViews = document.querySelectorAll('.aidba-view');
 
-    tabBtns.forEach(btn => {
+    aidbaSideBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            tabBtns.forEach(b => {
+            aidbaSideBtns.forEach(b => {
+                b.classList.remove('active');
+                b.style.color = 'var(--text-secondary)';
+                b.style.fontWeight = '500';
+                b.style.borderLeftColor = 'transparent';
+                b.style.background = 'transparent';
+            });
+            aidbaViews.forEach(v => v.style.display = 'none');
+
+            btn.classList.add('active');
+            btn.style.color = 'var(--primary)';
+            btn.style.fontWeight = '600';
+            btn.style.borderLeftColor = 'var(--primary)';
+            btn.style.background = 'var(--bg-main)';
+
+            const targetId = btn.getAttribute('data-view');
+            document.getElementById(targetId).style.display = 'flex';
+        });
+    });
+
+    // AI SQL Tunner 하위 탭 (AI SQL 성능분석 / AI Current SQL 분석)
+    const tunnerTabBtns = document.querySelectorAll('.tunner-tab-btn');
+    const tunnerTabContents = document.querySelectorAll('.tunner-tab-content');
+
+    tunnerTabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            tunnerTabBtns.forEach(b => {
                 b.classList.remove('active');
                 b.style.color = 'var(--text-secondary)';
                 b.style.borderBottomColor = 'transparent';
             });
-            tabContents.forEach(c => c.style.display = 'none');
+            tunnerTabContents.forEach(c => c.style.display = 'none');
 
             btn.classList.add('active');
             btn.style.color = 'var(--primary)';
             btn.style.borderBottomColor = 'var(--primary)';
-            
-            const targetId = btn.getAttribute('data-tab');
-            document.getElementById(targetId).style.display = 'flex';
 
-            // AIX 이관본: 실 서버(폐쇄망)에는 Ollama가 없어 AI 챗봇은 항상 동작 불가 (사용자 요청,
-            // 2026-08-29) - SQL 튜닝 탭처럼 질문을 입력했다가 실패 응답을 받게 하는 대신, 탭을 열자마자
-            // 바로 안내하고 입력 자체를 막는다. "일반오류검색(Regex)" 탭은 Ollama 없이도 동작하므로
-            // 그대로 둔다.
-            if (targetId === 'tab-chat') {
-                const chatLogEl = document.getElementById('chat-log');
-                chatLogEl.innerHTML = `
-                    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; text-align:center; color: var(--text-secondary); gap: 10px;">
-                        <i data-lucide="server-off" style="width:32px; height:32px; color: var(--text-muted);"></i>
-                        <div style="font-weight:600; color: var(--text-primary);">sLLM 모델이 필요합니다</div>
-                        <div style="font-size:0.85rem; max-width: 360px;">이 환경(AIX)에는 AI 챗봇(Ollama) 서버가 연동되어 있지 않습니다. "일반오류검색(Regex)" 탭에서 에러 코드로 직접 검색해주세요.</div>
-                    </div>`;
-                if (typeof lucide !== 'undefined') lucide.createIcons({root: chatLogEl});
-                const chatInputEl = document.getElementById('chat-input');
-                const chatSendBtnEl = document.getElementById('chat-send-btn');
-                if (chatInputEl) {
-                    chatInputEl.disabled = true;
-                    chatInputEl.placeholder = 'AI 챗봇은 이 환경에서 사용할 수 없습니다';
-                }
-                if (chatSendBtnEl) chatSendBtnEl.disabled = true;
-            }
+            const targetId = btn.getAttribute('data-tunner-tab');
+            document.getElementById(targetId).style.display = 'block';
         });
     });
+
+    // AI DBA 메뉴 진입 시 sqlrestapi 모델명/OpenSearch 상태 1회 조회 (폴링 없음, 매뉴통합.md 3절)
+    let aidbaHealthLoaded = false;
+    window.loadAiDbaHealth = function () {
+        if (aidbaHealthLoaded) return;
+        const nameEl = document.getElementById('aidba-model-name');
+        const vecEl = document.getElementById('aidba-vectordb-status');
+        if (!nameEl) return;
+        aidbaHealthLoaded = true;
+        fetch('/api/aidba/health')
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    nameEl.textContent = '모델: ' + (data.llm_model || '알 수 없음');
+                    if (vecEl && data.vector_db === 'connected') {
+                        vecEl.style.display = 'flex';
+                    }
+                } else {
+                    nameEl.textContent = '모델: 확인 불가';
+                }
+            })
+            .catch(() => { nameEl.textContent = '모델: 확인 불가'; });
+    };
+
+// AI SQL 작성기 Logic (매뉴통합.md 2-3) - 테이블명 입력 → 조회 → 추가 방식으로 여러 테이블 구조를
+// 컨텍스트에 누적한 뒤(조인 쿼리 대응) 자연어 요청으로 SQL을 생성한다. 생성 SQL은 SQL 실행/1차
+// 성능점검 화면으로 바로 보낼 수 있다(매뉴통합.md 2-3 - "생성된 SQL은 실행 연동").
+
+    const sqlWriterAccountSelect = document.getElementById('sqlwriter-account-select');
+    const sqlWriterTableInput = document.getElementById('sqlwriter-table-input');
+    const sqlWriterLookupBtn = document.getElementById('sqlwriter-lookup-btn');
+    const sqlWriterLookupStatus = document.getElementById('sqlwriter-lookup-status');
+    const sqlWriterPreview = document.getElementById('sqlwriter-preview');
+    const sqlWriterPreviewBody = document.getElementById('sqlwriter-preview-body');
+    const sqlWriterAddBtn = document.getElementById('sqlwriter-add-btn');
+    const sqlWriterTableList = document.getElementById('sqlwriter-table-list');
+    const sqlWriterTableCount = document.getElementById('sqlwriter-table-count');
+    const sqlWriterRequestInput = document.getElementById('sqlwriter-request-input');
+    const sqlWriterGenerateBtn = document.getElementById('sqlwriter-generate-btn');
+    const sqlWriterClearBtn = document.getElementById('sqlwriter-clear-btn');
+    const sqlWriterResult = document.getElementById('sqlwriter-result');
+    const SQLWRITER_RESULT_PLACEHOLDER = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">테이블을 추가하고 요청 조건을 입력한 뒤 "SQL 생성"을 눌러주세요.</div>';
+
+    let sqlWriterPendingTable = null; // 방금 조회했지만 아직 "추가"하지 않은 테이블
+    let sqlWriterTables = [];         // 컨텍스트에 추가된 테이블들 (table_info 응답 그대로)
+
+    window.loadSqlWriterAccounts = async function () {
+        if (!sqlWriterAccountSelect) return;
+        const dbId = window.currentDbId || '';
+        try {
+            const res = await fetch(`/api/query/accounts?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`);
+            const data = await res.json();
+            const accounts = data.accounts || [];
+            const previous = sqlWriterAccountSelect.value;
+            sqlWriterAccountSelect.innerHTML = accounts.map(a => `<option value="${a}">${a}</option>`).join('');
+            if (accounts.includes(previous)) sqlWriterAccountSelect.value = previous;
+        } catch (e) {
+            console.error('Failed to load AI SQL 작성기 accounts:', e);
+        }
+    };
+
+    function formatTablePreview(table) {
+        const cols = (table.columns || []).map(c => `  ${c.name}  ${c.dataType}${c.nullable ? '' : '  NOT NULL'}`).join('\n');
+        const idxLines = (table.indexes || []).map(i => `  ${i.name}  ${i.unique ? 'UNIQUE ' : ''}(${(i.columns || []).join(', ')})`).join('\n');
+        let text = `TABLE: ${table.name}\nCOLUMNS:\n${cols}`;
+        if (idxLines) text += `\nINDEXES:\n${idxLines}`;
+        return text;
+    }
+
+    function renderSqlWriterTableList() {
+        if (!sqlWriterTableList) return;
+        if (sqlWriterTables.length === 0) {
+            sqlWriterTableList.innerHTML = '<span style="font-size: 0.82rem; color: var(--text-muted);">아직 추가된 테이블이 없습니다.</span>';
+        } else {
+            sqlWriterTableList.innerHTML = sqlWriterTables.map((t, i) => `
+                <span style="display:inline-flex; align-items:center; gap:6px; padding: 4px 10px; border-radius: 14px; background: var(--bg-card); border: 1px solid var(--border-color); font-size: 0.82rem; font-family: 'Consolas', 'D2Coding', monospace;">
+                    ${t.name}
+                    <span data-remove-idx="${i}" style="cursor:pointer; color: var(--text-muted); font-weight: bold;" title="제거">×</span>
+                </span>`).join('');
+            sqlWriterTableList.querySelectorAll('[data-remove-idx]').forEach(el => {
+                el.addEventListener('click', () => {
+                    sqlWriterTables.splice(Number(el.dataset.removeIdx), 1);
+                    renderSqlWriterTableList();
+                });
+            });
+        }
+        if (sqlWriterTableCount) sqlWriterTableCount.textContent = String(sqlWriterTables.length);
+        if (sqlWriterGenerateBtn) sqlWriterGenerateBtn.disabled = sqlWriterTables.length === 0;
+    }
+
+    if (sqlWriterLookupBtn && sqlWriterTableInput) {
+        const doLookup = () => {
+            const tableName = sqlWriterTableInput.value.trim();
+            if (!tableName || sqlWriterLookupBtn.disabled) return;
+            sqlWriterLookupBtn.disabled = true;
+            sqlWriterPendingTable = null;
+            if (sqlWriterPreview) sqlWriterPreview.style.display = 'none';
+            if (sqlWriterLookupStatus) sqlWriterLookupStatus.textContent = '조회 중...';
+
+            fetch('/api/sqlwriter/table_info', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    db_id: window.currentDbId || '',
+                    account: sqlWriterAccountSelect ? sqlWriterAccountSelect.value : '',
+                    token: getToken(),
+                    table_name: tableName
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                sqlWriterLookupBtn.disabled = false;
+                if (!data.success) {
+                    if (sqlWriterLookupStatus) sqlWriterLookupStatus.textContent = data.message || '조회 실패';
+                    return;
+                }
+                sqlWriterPendingTable = data.table;
+                if (sqlWriterLookupStatus) sqlWriterLookupStatus.textContent = '';
+                if (sqlWriterPreviewBody) sqlWriterPreviewBody.textContent = formatTablePreview(data.table);
+                if (sqlWriterPreview) sqlWriterPreview.style.display = 'flex';
+            })
+            .catch(() => {
+                sqlWriterLookupBtn.disabled = false;
+                if (sqlWriterLookupStatus) sqlWriterLookupStatus.textContent = '서버 통신 오류';
+            });
+        };
+        sqlWriterLookupBtn.addEventListener('click', doLookup);
+        sqlWriterTableInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); doLookup(); }
+        });
+    }
+
+    if (sqlWriterAddBtn) {
+        sqlWriterAddBtn.addEventListener('click', () => {
+            if (!sqlWriterPendingTable) return;
+            // 같은 테이블을 다시 추가하면 최신 조회 결과로 교체(중복 방지).
+            sqlWriterTables = sqlWriterTables.filter(t => t.name !== sqlWriterPendingTable.name);
+            sqlWriterTables.push(sqlWriterPendingTable);
+            renderSqlWriterTableList();
+            sqlWriterPendingTable = null;
+            if (sqlWriterPreview) sqlWriterPreview.style.display = 'none';
+            if (sqlWriterTableInput) { sqlWriterTableInput.value = ''; sqlWriterTableInput.focus(); }
+        });
+    }
+
+    // sql-writer.md 는 SQL 코드 블록을 정확히 하나만 답변에 담도록 강제되어 있다(실행 연동을 위해) -
+    // 그 블록만 뽑아 "SQL 실행"/"1차 성능점검" 화면으로 바로 보낼 수 있게 한다.
+    function extractSqlWriterCode(answer) {
+        const m = /```(?:sql)?\r?\n([\s\S]*?)```/i.exec(answer || '');
+        return m ? m[1].trim() : null;
+    }
+
+    function formatSqlWriterAnswer(text) {
+        if (!text) return '';
+        const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        let html = escapeHtml(text);
+        html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (m, lang, code) =>
+            `<pre style="background: rgba(0,0,0,0.3); color: #e2e8f0; padding: 12px 14px; border-radius: 6px; overflow-x: auto; white-space: pre; font-family: 'D2Coding', Consolas, monospace; font-size: 0.85rem; margin: 10px 0; line-height: 1.4;">${code}</pre>`);
+        html = html.replace(/^#{2,4}\s+(.+)$/gm,
+            '<div style="margin: 16px 0 8px; font-weight: 700; color: var(--primary); font-size: 1rem;">$1</div>');
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/^-\s+(.+)$/gm, '<div style="margin: 3px 0 3px 14px;">• $1</div>');
+        html = html.replace(/\n/g, '<br/>');
+        return html;
+    }
+
+    if (sqlWriterGenerateBtn) {
+        const runGenerate = () => {
+            if (sqlWriterGenerateBtn.disabled || sqlWriterTables.length === 0) return;
+            const requestText = (sqlWriterRequestInput ? sqlWriterRequestInput.value.trim() : '');
+            if (!requestText) { if (sqlWriterRequestInput) sqlWriterRequestInput.focus(); return; }
+
+            sqlWriterGenerateBtn.disabled = true;
+            sqlWriterResult.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary);"><i data-lucide="loader-2" class="spinning"></i> AI가 SQL을 작성 중입니다...</div>';
+            if (typeof lucide !== 'undefined') lucide.createIcons({root: sqlWriterResult});
+
+            fetch('/api/sqlwriter/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tables: sqlWriterTables, request_text: requestText })
+            })
+            .then(res => res.json())
+            .then(data => {
+                sqlWriterGenerateBtn.disabled = false;
+                if (data.success === false) {
+                    sqlWriterResult.innerHTML = `<div style="color: #d03b3b;">${data.message || 'SQL 생성 중 오류가 발생했습니다.'}</div>`;
+                    return;
+                }
+                const sql = extractSqlWriterCode(data.answer);
+                let actionsHtml = '';
+                if (sql) {
+                    actionsHtml = `<div style="display: flex; gap: 8px; margin-top: 14px;">
+                        <button type="button" id="sqlwriter-send-runner-btn" class="secondary-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem;"><i data-lucide="play"></i> SQL 실행으로 보내기</button>
+                        <button type="button" id="sqlwriter-send-quickcheck-btn" class="secondary-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem;"><i data-lucide="list-checks"></i> 1차 성능점검으로 보내기</button>
+                    </div>`;
+                }
+                sqlWriterResult.innerHTML = `<div style="line-height: 1.6;">${formatSqlWriterAnswer(data.answer)}</div>${actionsHtml}`;
+                if (typeof lucide !== 'undefined') lucide.createIcons({root: sqlWriterResult});
+
+                const sendRunnerBtn = document.getElementById('sqlwriter-send-runner-btn');
+                if (sendRunnerBtn) {
+                    sendRunnerBtn.addEventListener('click', () => {
+                        const navItem = document.querySelector('.nav-item[data-target="sqlrunner"]');
+                        if (navItem) navItem.click();
+                        const runnerInput = document.getElementById('sqlrunner-input');
+                        if (runnerInput) { runnerInput.value = sql; runnerInput.focus(); }
+                    });
+                }
+                const sendQuickCheckBtn = document.getElementById('sqlwriter-send-quickcheck-btn');
+                if (sendQuickCheckBtn) {
+                    sendQuickCheckBtn.addEventListener('click', () => {
+                        const navItem = document.querySelector('.nav-item[data-target="aidba"]');
+                        if (navItem) navItem.click();
+                        const tunnerSideBtn = document.querySelector('.aidba-side-btn[data-view="aidba-view-tunner"]');
+                        if (tunnerSideBtn) tunnerSideBtn.click();
+                        const currentTabBtn = document.querySelector('.tunner-tab-btn[data-tunner-tab="tab-tunner-current"]');
+                        if (currentTabBtn) currentTabBtn.click();
+                        const currentInput = document.getElementById('tunner-current-input');
+                        if (currentInput) { currentInput.value = sql; currentInput.dispatchEvent(new Event('input')); currentInput.focus(); }
+                    });
+                }
+            })
+            .catch(() => {
+                sqlWriterGenerateBtn.disabled = false;
+                sqlWriterResult.innerHTML = '<div style="color: #d03b3b;">서버 통신 오류가 발생했습니다.</div>';
+            });
+        };
+        sqlWriterGenerateBtn.addEventListener('click', runGenerate);
+        if (sqlWriterRequestInput) {
+            sqlWriterRequestInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) runGenerate();
+            });
+        }
+    }
+
+    if (sqlWriterClearBtn) {
+        sqlWriterClearBtn.addEventListener('click', () => {
+            sqlWriterTables = [];
+            sqlWriterPendingTable = null;
+            renderSqlWriterTableList();
+            if (sqlWriterTableInput) sqlWriterTableInput.value = '';
+            if (sqlWriterRequestInput) sqlWriterRequestInput.value = '';
+            if (sqlWriterPreview) sqlWriterPreview.style.display = 'none';
+            if (sqlWriterLookupStatus) sqlWriterLookupStatus.textContent = '';
+            if (sqlWriterResult) sqlWriterResult.innerHTML = SQLWRITER_RESULT_PLACEHOLDER;
+            if (sqlWriterTableInput) sqlWriterTableInput.focus();
+        });
+    }
+
+    renderSqlWriterTableList();
 
     // Error Search
     const errorCodeInput = document.getElementById('error-code-input');

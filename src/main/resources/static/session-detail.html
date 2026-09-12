@@ -125,7 +125,7 @@
                                 return;
                             }
                             if (typeof window.opener.openSqlTuningFromPopup === 'function') {
-                                window.opener.openSqlTuningFromPopup(result.sql_fulltext, result.hash_value, result.binds);
+                                window.opener.openSqlTuningFromPopup(result.sql_fulltext, result.hash_value, result.binds, result.plan_text);
                             }
                             window.opener.focus();
                             window.close();

@@ -1,6 +1,7 @@
 package com.dbagent.aidba;
 
 import com.dbagent.util.Maps;
+import com.dbagent.util.Strings;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
@@ -92,6 +93,39 @@ public class OllamaChatService {
                 + "\n참고 쿼리/로그: " + lookup.get("query_or_log");
     }
 
+    /**
+     * RAG 검색 없이 완성된 프롬프트를 그대로 sqlrestapi(promptId별 시스템 프롬프트)에 던진다. AI Current
+     * SQL 분석(promptId=current-sql)/AI SQL 작성기(promptId=sql-writer, 매뉴통합.md 2-1/2-3)처럼 사내
+     * 사례를 찾는 게 아니라 이미 가진 데이터를 해석/가공하는 화면들이 공용으로 쓴다.
+     */
+    public String askWithPrompt(String promptId, String finalPrompt) {
+        String answer = callChatApiWithPromptId(promptId, finalPrompt);
+        return Strings.isBlank(answer) ? "답변을 생성하지 못했습니다." : answer;
+    }
+
+    /**
+     * 좌측 프레임 상단 모델명 표시용(매뉴통합.md 3절). sqlrestapi의 isConnected()가 타임아웃 없이
+     * OpenSearch 응답을 무한정 기다릴 수 있어(sqlrestapi 개선 후보, 이 저장소 밖) 여기서라도 짧은
+     * 타임아웃(5초)을 걸어 화면이 멈추지 않게 한다 - 실패하면 호출자가 표시를 생략한다.
+     */
+    public Map<String, Object> health() {
+        JsonNode root = getForJson(ollamaUrl + "/health", 5000);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("llm_model", root.path("llm_model").asText(""));
+        result.put("vector_db", root.path("vector_db").asText(""));
+        return result;
+    }
+
+    private String callChatApiWithPromptId(String promptId, String prompt) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("promptId", promptId);
+        body.put("prompt", prompt);
+
+        JsonNode root = postForJson(ollamaUrl + "/api/chat", body);
+        JsonNode answer = root.path("answer");
+        return answer.isMissingNode() ? "" : answer.asText();
+    }
+
     private String callChatApi(String prompt) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("promptId", PROMPT_ID);
@@ -137,6 +171,20 @@ public class OllamaChatService {
         result.put("answer", answer.isEmpty() ? "답변을 생성하지 못했습니다." : answer);
         result.put("context_used", contextUsed);
         return result;
+    }
+
+    private JsonNode getForJson(String url, int timeoutMsOverride) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(timeoutMsOverride);
+        factory.setReadTimeout(timeoutMsOverride);
+        RestTemplate restTemplate = new RestTemplate(factory);
+
+        String raw = restTemplate.getForObject(url, String.class);
+        try {
+            return objectMapper.readTree(raw);
+        } catch (Exception e) {
+            throw new IllegalStateException("sqlrestapi 응답 파싱 실패: " + e.getMessage(), e);
+        }
     }
 
     private JsonNode postForJson(String url, Object body) {

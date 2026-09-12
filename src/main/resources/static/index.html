@@ -7,7 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
     <link rel="stylesheet" href="style.css?v=34">
     <script src="lib/lucide.js"></script>
-    <script src="dbagent-common.js?v=11"></script>
+    <script src="dbagent-common.js?v=12"></script>
     <script src="lib/mermaid.min.js"></script>
     <script src="lib/chart.js"></script>
     <script src="lib/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -230,10 +230,6 @@
                         <i data-lucide="bot"></i>
                         <span>AI DBA</span>
                     </a>
-                    <a href="#sqltuneadvisor" class="nav-item" data-target="sqltuneadvisor">
-                        <i data-lucide="search-code"></i>
-                        <span>SQL Tune Advisor</span>
-                    </a>
                     <a href="#sqltuning" class="nav-item" data-target="sqltuning">
                         <i data-lucide="wrench"></i>
                         <span>SQL 정합성/튜닝</span>
@@ -422,71 +418,183 @@
                     </div>
                 </section>
 
-                <!-- AI DBA Section -->
+                <!-- AI DBA Section (2026-09-12 설계 확정: 매뉴통합.md - SQL Tune Advisor 를 AI SQL Tunner
+                     탭으로 흡수, 좌측 프레임에서 4개 화면(AI SQL Tunner/AI 챗봇/AI SQL 작성기/Regex 오류검색)
+                     을 전환한다. 좌측 프레임은 탭이 아니라 화면 전환이고, 탭은 AI SQL Tunner 하위에만 있다.
+                     원본 DBAgent-Java 2026-09-12 세션 반영(포팅). AI 챗봇 내부(입력창/버튼)는 AIX 고유
+                     마크업을 그대로 유지 - 원본에는 있는 textarea/화면클리어 기능이 AIX에는 원래 없었음. -->
                 <section id="aidba" class="content-section">
                     <div class="panel">
                         <div class="panel-header">
                             <h2>AI DBA</h2>
-                            <p style="color: var(--text-secondary); margin-top: 5px; font-size: 0.9rem;">AI가 데이터베이스 상태를 분석하고 해결책을 제시해 드립니다.</p>
-                            <div class="aidba-tabs" style="display: flex; gap: 10px; margin-top: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 0px;">
-                                <button class="aidba-tab-btn active" data-tab="tab-ai-chat" style="background: none; border: none; color: var(--primary); font-weight: bold; cursor: pointer; padding: 10px 15px; border-bottom: 2px solid var(--primary);">AI 챗봇</button>
-                                <button class="aidba-tab-btn" data-tab="tab-error-search" style="background: none; border: none; color: var(--text-secondary); font-weight: bold; cursor: pointer; padding: 10px 15px; border-bottom: 2px solid transparent;">일반오류검색(Regex)</button>
-                            </div>
+                            <p style="color: var(--text-secondary); margin-top: 5px; font-size: 0.9rem;">AI가 SQL 튜닝/작성과 데이터베이스 문제 해결을 지원합니다.</p>
                         </div>
-                        <div class="panel-body" style="display: flex; flex-direction: column; height: 780px;">
-                            <!-- AI 챗봇 탭 -->
-                            <div id="tab-ai-chat" class="aidba-tab-content" style="display: flex; flex-direction: column; height: 100%;">
-                                <div id="aidba-chat-history" style="flex: 1; overflow-y: auto; padding: 15px; border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 15px; background: var(--bg-main); display: flex; flex-direction: column; gap: 10px;">
-                                    <div class="chat-message ai-message" style="display: flex; justify-content: flex-start;">
-                                        <div style="background: var(--bg-card); padding: 12px; border-radius: 8px; max-width: 80%; border-left: 4px solid var(--primary); box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                                            안녕하세요! 저는 AI DBA입니다. 현재 DB 상태나 성능 이슈에 대해 무엇이든 물어보세요.
+                        <div class="panel-body" style="display: flex; height: 780px; padding: 0;">
+                            <!-- 좌측 프레임: 화면 전환 (탭 아님) -->
+                            <div style="width: 200px; flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border-color); background: var(--bg-card);">
+                                <div id="aidba-model-info" style="padding: 14px 16px; border-bottom: 1px solid var(--border-color); font-size: 0.8rem; color: var(--text-secondary); line-height: 1.6;">
+                                    <div style="display: flex; align-items: center; gap: 6px;">
+                                        <i data-lucide="cpu" style="width: 13px; height: 13px; flex-shrink: 0;"></i>
+                                        <span id="aidba-model-name">모델: 확인 중...</span>
+                                    </div>
+                                    <div id="aidba-vectordb-status" style="display: none; align-items: center; gap: 6px; margin-top: 6px;">
+                                        <span style="width: 7px; height: 7px; border-radius: 50%; background: #22c55e; display: inline-block; flex-shrink: 0;"></span>
+                                        <span>OpenSearch 연결됨</span>
+                                    </div>
+                                </div>
+                                <button type="button" class="aidba-side-btn active" data-view="aidba-view-tunner" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 12px 16px; border: none; border-left: 3px solid var(--primary); background: var(--bg-main); color: var(--primary); font-weight: 600; cursor: pointer; font-size: 0.88rem;">
+                                    <i data-lucide="search-code" style="width: 15px; height: 15px; flex-shrink: 0;"></i> AI SQL Tunner
+                                </button>
+                                <button type="button" class="aidba-side-btn" data-view="aidba-view-chat" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 12px 16px; border: none; border-left: 3px solid transparent; background: transparent; color: var(--text-secondary); font-weight: 500; cursor: pointer; font-size: 0.88rem;">
+                                    <i data-lucide="bot" style="width: 15px; height: 15px; flex-shrink: 0;"></i> AI 챗봇
+                                </button>
+                                <button type="button" class="aidba-side-btn" data-view="aidba-view-writer" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 12px 16px; border: none; border-left: 3px solid transparent; background: transparent; color: var(--text-secondary); font-weight: 500; cursor: pointer; font-size: 0.88rem;">
+                                    <i data-lucide="pencil-line" style="width: 15px; height: 15px; flex-shrink: 0;"></i> AI SQL 작성기
+                                </button>
+                                <button type="button" class="aidba-side-btn" data-view="aidba-view-regex" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 12px 16px; border: none; border-left: 3px solid transparent; background: transparent; color: var(--text-secondary); font-weight: 500; cursor: pointer; font-size: 0.88rem;">
+                                    <i data-lucide="search" style="width: 15px; height: 15px; flex-shrink: 0;"></i> Regex 오류검색
+                                </button>
+                            </div>
+
+                            <!-- 본문 -->
+                            <div style="flex: 1; min-width: 0; padding: 20px; overflow-y: auto;">
+                                <!-- AI SQL Tunner (구 SQL Tune Advisor 흡수) -->
+                                <div id="aidba-view-tunner" class="aidba-view" style="display: flex; flex-direction: column; height: 100%;">
+                                    <div class="tunner-tabs" style="display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 0px; flex-shrink: 0;">
+                                        <button type="button" class="tunner-tab-btn active" data-tunner-tab="tab-tunner-perf" style="background: none; border: none; color: var(--primary); font-weight: bold; cursor: pointer; padding: 10px 15px; border-bottom: 2px solid var(--primary);">AI SQL 성능분석</button>
+                                        <button type="button" class="tunner-tab-btn" data-tunner-tab="tab-tunner-current" style="background: none; border: none; color: var(--text-secondary); font-weight: bold; cursor: pointer; padding: 10px 15px; border-bottom: 2px solid transparent;">AI Current SQL 분석</button>
+                                    </div>
+
+                                    <!-- 탭 ① AI SQL 성능분석 (기존 SQL Tune Advisor 화면, 기능 그대로) -->
+                                    <div id="tab-tunner-perf" class="tunner-tab-content" style="display: block; flex: 1; overflow-y: auto;">
+                                        <p style="color: var(--text-secondary); margin: 0 0 12px; font-size: 0.88rem;">사내 튜닝 사례를 검색(RAG)해 참고하면서 SQL을 분석합니다. 튜닝이 필요한 쿼리나 증상을 입력하면 문제점 분석 → 최적화된 SQL → 개선 포인트 → 권장 인덱스 순으로 답변합니다. (사내 폐쇄망 GPU 서버 연동, 응답까지 다소 시간이 걸릴 수 있습니다)</p>
+                                        <div class="input-group">
+                                            <textarea id="sqltuneadvisor-input" rows="8" placeholder="예: 아래 쿼리가 풀스캔이 발생하며 느립니다. 튜닝 방안을 제시해주세요.&#10;SELECT ... (Ctrl+Enter: 분석 실행)" style="width: 100%; font-family: 'Consolas', 'D2Coding', monospace; font-size: 0.9rem; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main); resize: vertical;"></textarea>
+                                            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 10px;">
+                                                <button id="sqltuneadvisor-clear-btn" type="button" style="padding: 0 20px; border-radius: 6px; height: 40px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); cursor: pointer;"><i data-lucide="eraser"></i> 화면 클리어</button>
+                                                <button id="sqltuneadvisor-run-btn" class="primary-btn"><i data-lucide="search"></i> 분석 실행 (Ctrl+Enter)</button>
+                                            </div>
+                                        </div>
+                                        <div id="sqltuneadvisor-result" style="margin-top: 20px; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main); min-height: 150px;">
+                                            <div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">
+                                                쿼리나 튜닝하고 싶은 상황을 입력하고 분석을 실행해주세요.
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 탭 ② AI Current SQL 분석 (신규: 매뉴통합.md 2-1) - 쿼리와 실측 성능정보를 먼저 보여주고
+                                         DBA 가 분석이 필요한지 판단한 뒤에만 모델에 던지는 human-in-the-loop 방식.
+                                         1차 성능점검 + 바인드 변수 패널은 기존 SQL 정합성/튜닝 화면에서 이 탭으로 이동한 것 -->
+                                    <div id="tab-tunner-current" class="tunner-tab-content" style="display: none; flex: 1; overflow-y: auto;">
+                                        <p style="color: var(--text-secondary); margin: 0 0 12px; font-size: 0.88rem;">쿼리를 실제로 실행해 실행계획/실측 통계를 먼저 확인한 뒤, 분석이 필요하다고 판단되면 "성능분석"으로 AI에게 해석을 요청합니다. (실시간 세션 상세정보의 "Tuning" 버튼으로도 이 탭에 바로 진입할 수 있습니다)</p>
+                                        <div class="admin-only" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
+                                            <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">관리자 전용</span>
+                                            <label for="tunner-current-account-select" style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">접속 계정</label>
+                                            <select id="tunner-current-account-select" class="form-input" style="padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-main); color: var(--text-main);"></select>
+                                            <button id="tunner-current-quickcheck-btn" class="danger-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem; white-space: nowrap;"><i data-lucide="list-checks"></i> 1차 성능점검</button>
+                                            <span style="font-size: 0.8rem; color: var(--text-muted);">(쿼리를 실제로 실행해 실행계획/실측 통계만 바로 보여줌 - AI 호출 없음, 더 빠름)</span>
+                                        </div>
+                                        <div id="tunner-current-bind-panel" class="admin-only" style="display: none; flex-direction: column; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
+                                            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+                                                <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">바인드 변수 값 (:1, :SID 등 - "1차 성능점검"에만 사용):</span>
+                                                <button type="button" id="tunner-current-bind-toggle-btn" style="display: none; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-secondary); cursor: pointer;"></button>
+                                            </div>
+                                            <div id="tunner-current-bind-fields" style="display: flex; flex-wrap: wrap; gap: 8px;"></div>
+                                            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border-color);">
+                                                <span style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;">V$SQL_BIND_CAPTURE에서 불러오기 (HASH_VALUE):</span>
+                                                <input type="text" id="tunner-current-bind-hashvalue" placeholder="예: 1234567890" style="width: 140px; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-main); color: var(--text-main); font-family: 'Consolas', 'D2Coding', monospace;">
+                                                <button type="button" id="tunner-current-bind-capture-btn" style="padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-secondary); cursor: pointer;">불러오기</button>
+                                                <span id="tunner-current-bind-capture-status" style="font-size: 0.8rem; color: var(--text-muted);"></span>
+                                            </div>
+                                        </div>
+                                        <div class="input-group">
+                                            <textarea id="tunner-current-input" rows="8" placeholder="분석할 쿼리를 입력하세요. (Ctrl+Enter: 1차 성능점검)" style="width: 100%; font-family: 'Consolas', 'D2Coding', monospace; font-size: 0.9rem; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main); resize: vertical;"></textarea>
+                                            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 10px;">
+                                                <button id="tunner-current-clear-btn" type="button" style="padding: 0 20px; border-radius: 6px; height: 40px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); cursor: pointer;"><i data-lucide="eraser"></i> 화면 클리어</button>
+                                                <button id="tunner-current-analyze-btn" class="primary-btn" disabled title="먼저 1차 성능점검을 실행하세요"><i data-lucide="sparkles"></i> 성능분석</button>
+                                            </div>
+                                        </div>
+                                        <div id="tunner-current-result" style="margin-top: 20px; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main); min-height: 150px;">
+                                            <div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">
+                                                쿼리를 입력하고 "1차 성능점검"을 실행하면 실행계획/실측 통계가 여기에 표시됩니다.
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="search-bar" style="display: flex; gap: 10px; margin-bottom: 0;">
-                                    <input type="text" id="aidba-chat-input" placeholder="질문을 입력하세요..." style="flex: 1; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-                                    <button id="aidba-chat-send-btn" class="primary-btn" style="padding: 0 20px; border-radius: 6px;">
-                                        <i data-lucide="send"></i> 전송
-                                    </button>
-                                </div>
-                            </div>
-                            
-                            <!-- 일반오류검색(Regex) 탭 -->
-                            <div id="tab-error-search" class="aidba-tab-content" style="display: none; flex-direction: column; height: 100%;">
-                                <div class="search-bar" style="display: flex; gap: 10px; margin-bottom: 15px;">
-                                    <input type="text" id="error-code-input" placeholder="오라클 에러 코드 입력 (예: ORA-01555)" style="flex: 1; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-                                    <button id="error-search-btn" class="primary-btn" style="padding: 0 20px; border-radius: 6px;">
-                                        <i data-lucide="search"></i> 검색
-                                    </button>
-                                </div>
-                                <div id="error-search-result" style="flex: 1; overflow-y: auto; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main);">
-                                    <div style="color: var(--text-secondary); text-align: center; margin-top: 50px;">
-                                        에러 코드를 검색하시면 원인과 조치 방안이 여기에 표시됩니다.
+
+                                <!-- AI 챗봇 (AIX 고유 마크업 그대로 유지 - textarea/화면클리어는 원본에만 있던 기능) -->
+                                <div id="aidba-view-chat" class="aidba-view" style="display: none; flex-direction: column; height: 100%;">
+                                    <div id="aidba-chat-history" style="flex: 1; overflow-y: auto; padding: 15px; border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 15px; background: var(--bg-main); display: flex; flex-direction: column; gap: 10px;">
+                                        <div class="chat-message ai-message" style="display: flex; justify-content: flex-start;">
+                                            <div style="background: var(--bg-card); padding: 12px; border-radius: 8px; max-width: 80%; border-left: 4px solid var(--primary); box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                                안녕하세요! 저는 AI DBA입니다. 현재 DB 상태나 성능 이슈에 대해 무엇이든 물어보세요.
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="search-bar" style="display: flex; gap: 10px; margin-bottom: 0;">
+                                        <input type="text" id="aidba-chat-input" placeholder="질문을 입력하세요..." style="flex: 1; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+                                        <button id="aidba-chat-send-btn" class="primary-btn" style="padding: 0 20px; border-radius: 6px;">
+                                            <i data-lucide="send"></i> 전송
+                                        </button>
                                     </div>
                                 </div>
-                            </div>
-                        </div>
-                    </div>
-                </section>
 
-                <!-- SQL Tune Advisor Section (사내 튜닝 사례 RAG 검색 + LLM 분석, 폐쇄망 GPU 서버 연동) -->
-                <section id="sqltuneadvisor" class="content-section">
-                    <div class="panel">
-                        <div class="panel-header">
-                            <h2>SQL Tune Advisor</h2>
-                            <p style="color: var(--text-secondary); margin-top: 5px; font-size: 0.9rem;">사내 튜닝 사례를 검색(RAG)해 참고하면서 SQL을 분석하는 어드바이저입니다. 튜닝이 필요한 쿼리나 증상을 입력하면 문제점 분석 → 최적화된 SQL → 개선 포인트 → 권장 인덱스 순으로 답변합니다. (사내 폐쇄망 GPU 서버 연동, 응답까지 다소 시간이 걸릴 수 있습니다)</p>
-                        </div>
-                        <div class="panel-body">
-                            <div class="input-group">
-                                <textarea id="sqltuneadvisor-input" rows="8" placeholder="예: 아래 쿼리가 풀스캔이 발생하며 느립니다. 튜닝 방안을 제시해주세요.&#10;SELECT ... (Ctrl+Enter: 분석 실행)" style="width: 100%; font-family: 'Consolas', 'D2Coding', monospace; font-size: 0.9rem; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main); resize: vertical;"></textarea>
-                                <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 10px;">
-                                    <button id="sqltuneadvisor-clear-btn" type="button" style="padding: 0 20px; border-radius: 6px; height: 40px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); cursor: pointer;"><i data-lucide="eraser"></i> 화면 클리어</button>
-                                    <button id="sqltuneadvisor-run-btn" class="primary-btn"><i data-lucide="search"></i> 분석 실행 (Ctrl+Enter)</button>
+                                <!-- AI SQL 작성기 (신규: 매뉴통합.md 2-3) - 테이블명 입력 → 조회 → 추가 방식으로
+                                     여러 테이블을 컨텍스트에 누적한 뒤(조인 쿼리 대응) 자연어 요청으로 SQL을 작성한다 -->
+                                <div id="aidba-view-writer" class="aidba-view" style="display: none; flex-direction: column; height: 100%;">
+                                    <p style="color: var(--text-secondary); margin: 0 0 12px; font-size: 0.88rem;">테이블 구조를 조회해 컨텍스트에 추가한 뒤, 원하는 조건을 자연어로 입력하면 AI가 조인까지 고려한 조회(SELECT/WITH) SQL을 작성합니다.</p>
+
+                                    <div class="admin-only" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
+                                        <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">관리자 전용</span>
+                                        <label for="sqlwriter-account-select" style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">접속 계정</label>
+                                        <select id="sqlwriter-account-select" class="form-input" style="padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-main); color: var(--text-main);"></select>
+                                        <input type="text" id="sqlwriter-table-input" placeholder="테이블명 (예: EMP)" style="width: 160px; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-main); color: var(--text-main); font-family: 'Consolas', 'D2Coding', monospace;">
+                                        <button id="sqlwriter-lookup-btn" class="secondary-btn" type="button" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem; white-space: nowrap;"><i data-lucide="search"></i> 조회</button>
+                                        <span id="sqlwriter-lookup-status" style="font-size: 0.8rem; color: var(--text-muted);"></span>
+                                    </div>
+
+                                    <div id="sqlwriter-preview" class="admin-only" style="display: none; flex-direction: column; gap: 8px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
+                                        <div id="sqlwriter-preview-body" style="font-size: 0.82rem; color: var(--text-secondary); font-family: 'Consolas', 'D2Coding', monospace; white-space: pre-wrap; max-height: 220px; overflow-y: auto;"></div>
+                                        <div style="text-align: right;">
+                                            <button id="sqlwriter-add-btn" class="primary-btn" type="button" style="padding: 4px 14px; border-radius: 4px; font-size: 0.85rem;"><i data-lucide="plus"></i> 컨텍스트에 추가</button>
+                                        </div>
+                                    </div>
+
+                                    <div style="margin-bottom: 12px;">
+                                        <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">추가된 테이블 (<span id="sqlwriter-table-count">0</span>개)</div>
+                                        <div id="sqlwriter-table-list" style="display: flex; flex-wrap: wrap; gap: 8px;">
+                                            <span id="sqlwriter-table-list-empty" style="font-size: 0.82rem; color: var(--text-muted);">아직 추가된 테이블이 없습니다.</span>
+                                        </div>
+                                    </div>
+
+                                    <div class="input-group">
+                                        <textarea id="sqlwriter-request-input" rows="4" placeholder="예: EMP와 DEPT를 조인해서 부서별 평균 급여를 조회하는 쿼리 (Ctrl+Enter: SQL 생성)" style="width: 100%; font-family: inherit; font-size: 0.9rem; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main); resize: vertical;"></textarea>
+                                        <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 10px;">
+                                            <button id="sqlwriter-clear-btn" type="button" style="padding: 0 20px; border-radius: 6px; height: 40px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); cursor: pointer;"><i data-lucide="eraser"></i> 화면 클리어</button>
+                                            <button id="sqlwriter-generate-btn" class="primary-btn" disabled title="먼저 테이블을 추가하세요"><i data-lucide="wand-2"></i> SQL 생성 (Ctrl+Enter)</button>
+                                        </div>
+                                    </div>
+
+                                    <div id="sqlwriter-result" style="margin-top: 20px; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main); min-height: 150px;">
+                                        <div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">
+                                            테이블을 추가하고 요청 조건을 입력한 뒤 "SQL 생성"을 눌러주세요.
+                                        </div>
+                                    </div>
                                 </div>
-                            </div>
-                            <div id="sqltuneadvisor-result" style="margin-top: 20px; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main); min-height: 150px;">
-                                <div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">
-                                    쿼리나 튜닝하고 싶은 상황을 입력하고 분석을 실행해주세요.
+
+                                <!-- Regex 오류검색 (기존 기능 그대로, LLM 미사용) -->
+                                <div id="aidba-view-regex" class="aidba-view" style="display: none; flex-direction: column; height: 100%;">
+                                    <div class="search-bar" style="display: flex; gap: 10px; margin-bottom: 15px;">
+                                        <input type="text" id="error-code-input" placeholder="오라클 에러 코드 입력 (예: ORA-01555)" style="flex: 1; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+                                        <button id="error-search-btn" class="primary-btn" style="padding: 0 20px; border-radius: 6px;">
+                                            <i data-lucide="search"></i> 검색
+                                        </button>
+                                    </div>
+                                    <div id="error-search-result" style="flex: 1; overflow-y: auto; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main);">
+                                        <div style="color: var(--text-secondary); text-align: center; margin-top: 50px;">
+                                            에러 코드를 검색하시면 원인과 조치 방안이 여기에 표시됩니다.
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -501,26 +609,6 @@
                             <p style="color: var(--text-secondary); margin-top: 5px; font-size: 0.9rem;">Oracle SQL 정합성/성능 튜닝 전용으로 파인튜닝한 로컬 sLLM입니다. 쿼리/실행계획이나 증상을 설명하면 원인과 조치 방안을 제시합니다. (첫 응답까지 최대 1분 정도 걸릴 수 있습니다)</p>
                         </div>
                         <div class="panel-body">
-                            <div class="admin-only" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
-                                <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">관리자 전용</span>
-                                <label for="sqltuning-account-select" style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">접속 계정</label>
-                                <select id="sqltuning-account-select" class="form-input" style="padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-main); color: var(--text-main);"></select>
-                                <button id="sqltuning-quickcheck-btn" class="danger-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem; white-space: nowrap;"><i data-lucide="list-checks"></i> 1차 성능점검</button>
-                                <span style="font-size: 0.8rem; color: var(--text-muted);">(위와 동일하게 <strong>쿼리를 실제로 실행</strong>하지만, AI 분석 없이 실행계획/실측 통계만 바로 보여줌 - 더 빠름)</span>
-                            </div>
-                            <div id="sqltuning-bind-panel" class="admin-only" style="display: none; flex-direction: column; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
-                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
-                                    <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">바인드 변수 값 (:1, :SID 등 - "1차 성능점검"에만 사용):</span>
-                                    <button type="button" id="sqltuning-bind-toggle-btn" style="display: none; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-secondary); cursor: pointer;"></button>
-                                </div>
-                                <div id="sqltuning-bind-fields" style="display: flex; flex-wrap: wrap; gap: 8px;"></div>
-                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border-color);">
-                                    <span style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;">V$SQL_BIND_CAPTURE에서 불러오기 (HASH_VALUE):</span>
-                                    <input type="text" id="sqltuning-bind-hashvalue" placeholder="예: 1234567890" style="width: 140px; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-main); color: var(--text-main); font-family: 'Consolas', 'D2Coding', monospace;">
-                                    <button type="button" id="sqltuning-bind-capture-btn" style="padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-secondary); cursor: pointer;">불러오기</button>
-                                    <span id="sqltuning-bind-capture-status" style="font-size: 0.8rem; color: var(--text-muted);"></span>
-                                </div>
-                            </div>
                             <div class="input-group">
                                 <textarea id="sqltuning-input" rows="8" placeholder="예: ORDERS와 ORDER_ITEMS를 조인하는 쿼리가 NESTED LOOPS로 실행되어 Cost가 매우 높게 나옵니다. 실행계획: ... (Ctrl+Enter: 분석 실행)" style="width: 100%; font-family: 'Consolas', 'D2Coding', monospace; font-size: 0.9rem; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main); resize: vertical;"></textarea>
                                 <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 10px;">
@@ -991,6 +1079,6 @@
     </div>
 
 
-    <script src="app.js?v=101"></script>
+    <script src="app.js?v=102"></script>
 </body>
 </html>
