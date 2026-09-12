@@ -3213,8 +3213,7 @@ window.openSqlTuningFromPopup = function(sqlText, hashValue, binds, plan) {
 
     const navItem = document.querySelector('.nav-item[data-target="aidba"]');
     if (navItem) navItem.click();
-    const tunnerSideBtn = document.querySelector('.aidba-side-btn[data-view="aidba-view-tunner"]');
-    if (tunnerSideBtn) tunnerSideBtn.click();
+    // 트리 메뉴로 바뀐 뒤로는 Current SQL 탭 버튼 클릭 한 번이 Tunner 화면 전환까지 함께 처리한다.
     const currentTabBtn = document.querySelector('.tunner-tab-btn[data-tunner-tab="tab-tunner-current"]');
     if (currentTabBtn) currentTabBtn.click();
     if (typeof window.renderTunnerCurrentBindFields === 'function') window.renderTunnerCurrentBindFields();
@@ -4266,44 +4265,56 @@ let historySortAsc = true;
     const aidbaSideBtns = document.querySelectorAll('.aidba-side-btn');
     const aidbaViews = document.querySelectorAll('.aidba-view');
 
-    aidbaSideBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            aidbaSideBtns.forEach(b => {
-                b.classList.remove('active');
-                b.style.color = 'var(--text-secondary)';
-                b.style.fontWeight = '500';
-                b.style.borderLeftColor = 'transparent';
-                b.style.background = 'transparent';
-            });
-            aidbaViews.forEach(v => v.style.display = 'none');
-
-            btn.classList.add('active');
-            btn.style.color = 'var(--primary)';
-            btn.style.fontWeight = '600';
-            btn.style.borderLeftColor = 'var(--primary)';
-            btn.style.background = 'var(--bg-main)';
-
-            const targetId = btn.getAttribute('data-view');
-            document.getElementById(targetId).style.display = 'flex';
+    // AI SQL Tunner 하위 탭 버튼 클릭도 같은 화면 전환을 함께 트리거해야 하므로(트리 메뉴로 좌측에
+    // 옮겨진 뒤로는 다른 화면을 보다가 바로 성능분석/Current SQL 탭을 눌러도 Tunner 화면으로 전환되어야
+    // 함) 별도 함수로 빼서 두 클릭 핸들러가 공유한다 - 2026-09-12 사용자 요청으로 가로 탭에서 좌측
+    // 트리 메뉴로 변경.
+    function activateAidbaView(viewId) {
+        aidbaSideBtns.forEach(b => {
+            b.classList.remove('active');
+            b.style.color = 'var(--text-secondary)';
+            b.style.fontWeight = '500';
+            b.style.borderLeftColor = 'transparent';
+            b.style.background = 'transparent';
         });
+        aidbaViews.forEach(v => v.style.display = 'none');
+
+        const activeBtn = document.querySelector(`.aidba-side-btn[data-view="${viewId}"]`);
+        if (activeBtn) {
+            activeBtn.classList.add('active');
+            activeBtn.style.color = 'var(--primary)';
+            activeBtn.style.fontWeight = '600';
+            activeBtn.style.borderLeftColor = 'var(--primary)';
+            activeBtn.style.background = 'var(--bg-main)';
+        }
+        const view = document.getElementById(viewId);
+        if (view) view.style.display = 'flex';
+    }
+
+    aidbaSideBtns.forEach(btn => {
+        btn.addEventListener('click', () => activateAidbaView(btn.getAttribute('data-view')));
     });
 
-    // AI SQL Tunner 하위 탭 (AI SQL 성능분석 / AI Current SQL 분석)
+    // AI SQL Tunner 하위 트리 (AI SQL 성능분석 / AI Current SQL 분석) - 좌측 프레임에 부모/자식으로
+    // 통합됐다(사용자 요청, 2026-09-12). 본문 상단 가로 탭은 없어졌고, 이 버튼들을 누르면 Tunner
+    // 화면 전환 + 해당 탭 콘텐츠 표시를 함께 한다.
     const tunnerTabBtns = document.querySelectorAll('.tunner-tab-btn');
     const tunnerTabContents = document.querySelectorAll('.tunner-tab-content');
 
     tunnerTabBtns.forEach(btn => {
         btn.addEventListener('click', () => {
+            activateAidbaView('aidba-view-tunner');
+
             tunnerTabBtns.forEach(b => {
                 b.classList.remove('active');
                 b.style.color = 'var(--text-secondary)';
-                b.style.borderBottomColor = 'transparent';
+                b.style.fontWeight = '500';
             });
             tunnerTabContents.forEach(c => c.style.display = 'none');
 
             btn.classList.add('active');
             btn.style.color = 'var(--primary)';
-            btn.style.borderBottomColor = 'var(--primary)';
+            btn.style.fontWeight = '600';
 
             const targetId = btn.getAttribute('data-tunner-tab');
             document.getElementById(targetId).style.display = 'block';
@@ -4522,8 +4533,6 @@ let historySortAsc = true;
                     sendQuickCheckBtn.addEventListener('click', () => {
                         const navItem = document.querySelector('.nav-item[data-target="aidba"]');
                         if (navItem) navItem.click();
-                        const tunnerSideBtn = document.querySelector('.aidba-side-btn[data-view="aidba-view-tunner"]');
-                        if (tunnerSideBtn) tunnerSideBtn.click();
                         const currentTabBtn = document.querySelector('.tunner-tab-btn[data-tunner-tab="tab-tunner-current"]');
                         if (currentTabBtn) currentTabBtn.click();
                         const currentInput = document.getElementById('tunner-current-input');

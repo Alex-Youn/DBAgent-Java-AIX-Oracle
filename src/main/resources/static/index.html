@@ -442,9 +442,17 @@
                                         <span>OpenSearch 연결됨</span>
                                     </div>
                                 </div>
-                                <button type="button" class="aidba-side-btn active" data-view="aidba-view-tunner" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 12px 16px; border: none; border-left: 3px solid var(--primary); background: var(--bg-main); color: var(--primary); font-weight: 600; cursor: pointer; font-size: 0.88rem;">
+                                <button type="button" class="aidba-side-btn active" data-view="aidba-view-tunner" style="display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; padding: 12px 16px; border: none; border-left: 3px solid var(--primary); background: var(--bg-main); color: var(--primary); font-weight: 600; cursor: pointer; font-size: 0.88rem;">
+                                    <i data-lucide="chevron-down" style="width: 13px; height: 13px; flex-shrink: 0;"></i>
                                     <i data-lucide="search-code" style="width: 15px; height: 15px; flex-shrink: 0;"></i> AI SQL Tunner
                                 </button>
+                                <!-- AI SQL Tunner 하위 트리 - 좌측 트리 메뉴로 통합(사용자 요청, 2026-09-12).
+                                     본문 상단의 가로 탭 대신 이 두 항목을 클릭해 화면을 전환한다.
+                                     data-tunner-tab 값과 아래 tunner-tab-content id는 그대로 재사용. -->
+                                <div style="display: flex; flex-direction: column;">
+                                    <button type="button" class="tunner-tab-btn active" data-tunner-tab="tab-tunner-perf" style="display: flex; align-items: center; width: 100%; text-align: left; padding: 8px 16px 8px 41px; border: none; background: transparent; color: var(--primary); font-weight: 600; cursor: pointer; font-size: 0.82rem;">AI SQL 성능분석</button>
+                                    <button type="button" class="tunner-tab-btn" data-tunner-tab="tab-tunner-current" style="display: flex; align-items: center; width: 100%; text-align: left; padding: 8px 16px 8px 41px; border: none; background: transparent; color: var(--text-secondary); font-weight: 500; cursor: pointer; font-size: 0.82rem;">AI Current SQL 분석</button>
+                                </div>
                                 <button type="button" class="aidba-side-btn" data-view="aidba-view-chat" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 12px 16px; border: none; border-left: 3px solid transparent; background: transparent; color: var(--text-secondary); font-weight: 500; cursor: pointer; font-size: 0.88rem;">
                                     <i data-lucide="bot" style="width: 15px; height: 15px; flex-shrink: 0;"></i> AI 챗봇
                                 </button>
@@ -460,11 +468,6 @@
                             <div style="flex: 1; min-width: 0; padding: 20px; overflow-y: auto;">
                                 <!-- AI SQL Tunner (구 SQL Tune Advisor 흡수) -->
                                 <div id="aidba-view-tunner" class="aidba-view" style="display: flex; flex-direction: column; height: 100%;">
-                                    <div class="tunner-tabs" style="display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 0px; flex-shrink: 0;">
-                                        <button type="button" class="tunner-tab-btn active" data-tunner-tab="tab-tunner-perf" style="background: none; border: none; color: var(--primary); font-weight: bold; cursor: pointer; padding: 10px 15px; border-bottom: 2px solid var(--primary);">AI SQL 성능분석</button>
-                                        <button type="button" class="tunner-tab-btn" data-tunner-tab="tab-tunner-current" style="background: none; border: none; color: var(--text-secondary); font-weight: bold; cursor: pointer; padding: 10px 15px; border-bottom: 2px solid transparent;">AI Current SQL 분석</button>
-                                    </div>
-
                                     <!-- 탭 ① AI SQL 성능분석 (기존 SQL Tune Advisor 화면, 기능 그대로) -->
                                     <div id="tab-tunner-perf" class="tunner-tab-content" style="display: block; flex: 1; overflow-y: auto;">
                                         <p style="color: var(--text-secondary); margin: 0 0 12px; font-size: 0.88rem;">사내 튜닝 사례를 검색(RAG)해 참고하면서 SQL을 분석합니다. 튜닝이 필요한 쿼리나 증상을 입력하면 문제점 분석 → 최적화된 SQL → 개선 포인트 → 권장 인덱스 순으로 답변합니다. (사내 폐쇄망 GPU 서버 연동, 응답까지 다소 시간이 걸릴 수 있습니다)</p>
@@ -1079,6 +1082,6 @@
     </div>
 
 
-    <script src="app.js?v=102"></script>
+    <script src="app.js?v=103"></script>
 </body>
 </html>
