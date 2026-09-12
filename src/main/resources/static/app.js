@@ -4265,10 +4265,26 @@ let historySortAsc = true;
     const aidbaSideBtns = document.querySelectorAll('.aidba-side-btn');
     const aidbaViews = document.querySelectorAll('.aidba-view');
 
-    // AI SQL Tunner 하위 탭 버튼 클릭도 같은 화면 전환을 함께 트리거해야 하므로(트리 메뉴로 좌측에
-    // 옮겨진 뒤로는 다른 화면을 보다가 바로 성능분석/Current SQL 탭을 눌러도 Tunner 화면으로 전환되어야
-    // 함) 별도 함수로 빼서 두 클릭 핸들러가 공유한다 - 2026-09-12 사용자 요청으로 가로 탭에서 좌측
-    // 트리 메뉴로 변경.
+    // AI SQL Tunner 하위 트리 (AI SQL 성능분석 / AI Current SQL 분석) - 좌측 프레임에 부모/자식으로
+    // 통합됐다(사용자 요청, 2026-09-12). 본문 상단 가로 탭은 없어졌고, 이 버튼들을 누르면 해당 탭
+    // 콘텐츠 표시 + Tunner 화면 전환(activateAidbaView)을 함께 한다 - 다른 화면을 보다가 바로 자식
+    // 탭을 눌러도 Tunner 화면으로 전환되어야 하기 때문.
+    const tunnerTabBtns = document.querySelectorAll('.tunner-tab-btn');
+    const tunnerTabContents = document.querySelectorAll('.tunner-tab-content');
+
+    // 자식 버튼의 "선택됨" 강조(글씨색/굵기)는 .active 클래스만으로는 부족하다 - 다른 좌측 항목(AI
+    // 챗봇 등)으로 옮겨가도 클래스가 그대로 남아 강조색이 계속 보이는 버그가 있었다(사용자 리포트,
+    // 2026-09-12). Tunner 화면이 실제로 보이고 있을 때만 강조를 켠다.
+    function refreshTunnerTabStyles() {
+        const tunnerBtn = document.querySelector('.aidba-side-btn[data-view="aidba-view-tunner"]');
+        const tunnerIsActive = !!(tunnerBtn && tunnerBtn.classList.contains('active'));
+        tunnerTabBtns.forEach(b => {
+            const isActive = tunnerIsActive && b.classList.contains('active');
+            b.style.color = isActive ? 'var(--primary)' : 'var(--text-secondary)';
+            b.style.fontWeight = isActive ? '600' : '500';
+        });
+    }
+
     function activateAidbaView(viewId) {
         aidbaSideBtns.forEach(b => {
             b.classList.remove('active');
@@ -4289,35 +4305,33 @@ let historySortAsc = true;
         }
         const view = document.getElementById(viewId);
         if (view) view.style.display = 'flex';
+        refreshTunnerTabStyles();
     }
 
     aidbaSideBtns.forEach(btn => {
-        btn.addEventListener('click', () => activateAidbaView(btn.getAttribute('data-view')));
+        btn.addEventListener('click', () => {
+            const viewId = btn.getAttribute('data-view');
+            // "AI SQL Tunner" 부모 자체를 누르면(자식이 아니라) 항상 기본 탭(AI SQL 성능분석)으로
+            // 들어간다 - 마지막으로 보던 자식을 기억해 뒀다가 엉뚱한 화면(예: AI Current SQL 분석)
+            // 으로 복귀하면 사용자가 "리턴이 안 된다"고 느낀다(사용자 리포트, 2026-09-12).
+            if (viewId === 'aidba-view-tunner') {
+                const defaultTab = document.querySelector('.tunner-tab-btn[data-tunner-tab="tab-tunner-perf"]');
+                if (defaultTab) { defaultTab.click(); return; }
+            }
+            activateAidbaView(viewId);
+        });
     });
-
-    // AI SQL Tunner 하위 트리 (AI SQL 성능분석 / AI Current SQL 분석) - 좌측 프레임에 부모/자식으로
-    // 통합됐다(사용자 요청, 2026-09-12). 본문 상단 가로 탭은 없어졌고, 이 버튼들을 누르면 Tunner
-    // 화면 전환 + 해당 탭 콘텐츠 표시를 함께 한다.
-    const tunnerTabBtns = document.querySelectorAll('.tunner-tab-btn');
-    const tunnerTabContents = document.querySelectorAll('.tunner-tab-content');
 
     tunnerTabBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            activateAidbaView('aidba-view-tunner');
-
-            tunnerTabBtns.forEach(b => {
-                b.classList.remove('active');
-                b.style.color = 'var(--text-secondary)';
-                b.style.fontWeight = '500';
-            });
+            tunnerTabBtns.forEach(b => b.classList.remove('active'));
             tunnerTabContents.forEach(c => c.style.display = 'none');
 
             btn.classList.add('active');
-            btn.style.color = 'var(--primary)';
-            btn.style.fontWeight = '600';
-
             const targetId = btn.getAttribute('data-tunner-tab');
             document.getElementById(targetId).style.display = 'block';
+
+            activateAidbaView('aidba-view-tunner');
         });
     });
 
