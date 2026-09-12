@@ -58,7 +58,7 @@ public class SqlWriterController {
             Map<String, Object> table = tableInfoService.fetchTableInfo(target, tableName);
             if (table == null) {
                 return ResponseEntity.ok(Maps.of("success", false,
-                        "message", "테이블 " + tableName.trim().toUpperCase()
+                        "message", "테이블 " + TableInfoService.normalizeTableName(tableName)
                                 + "을(를) 찾지 못했습니다 (테이블명을 확인하거나 접속 계정 소유 테이블인지 확인하세요)."));
             }
             return ResponseEntity.ok(Maps.of("success", true, "table", table));
@@ -86,7 +86,7 @@ public class SqlWriterController {
             String answer = ollamaChatService.askWithPrompt(PROMPT_ID, prompt);
             return ResponseEntity.ok(Maps.of("success", true, "answer", answer));
         } catch (Exception e) {
-            return ResponseEntity.ok(Maps.of("success", false, "message", "서버 오류: " + e.getMessage()));
+            return ResponseEntity.ok(Maps.of("success", false, "message", ollamaChatService.friendlyErrorMessage("SQL 생성", e)));
         }
     }
 

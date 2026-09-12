@@ -4045,6 +4045,13 @@ let historySortAsc = true;
             tunnerCurrentLastPlan = null;
             if (tunnerCurrentAnalyzeBtn) tunnerCurrentAnalyzeBtn.disabled = true;
         });
+        // placeholder 가 "(Ctrl+Enter: 1차 성능점검)" 이라고 안내하므로 실제로 동작하게 한다.
+        tunnerCurrentInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && tunnerCurrentQuickCheckBtn) {
+                e.preventDefault();
+                tunnerCurrentQuickCheckBtn.click();
+            }
+        });
     }
 
     window.loadTunnerCurrentAccounts = async function () {
@@ -4064,10 +4071,14 @@ let historySortAsc = true;
         }
     };
 
+    // 실행계획 본문은 반드시 textContent 로 넣는다 - innerHTML 로 흘리면 쿼리에 들어있는 `a<b` 같은
+    // 표현이 태그 시작으로 해석돼 그 뒤 실행계획이 통째로 화면에서 사라진다(DISPLAY_CURSOR 출력에는
+    // 쿼리 원문이 그대로 들어있다).
     function renderTunnerCurrentPlan(plan) {
         if (!tunnerCurrentResult) return;
-        tunnerCurrentResult.innerHTML = `<div style="font-size: 0.85rem; color: var(--text-muted); background: var(--bg-card); padding: 12px; border-radius: 4px; white-space: pre-wrap; font-family: 'Consolas', 'D2Coding', monospace;">${plan}</div>
+        tunnerCurrentResult.innerHTML = `<div id="tunner-current-plan" style="font-size: 0.85rem; color: var(--text-muted); background: var(--bg-card); padding: 12px; border-radius: 4px; white-space: pre-wrap; font-family: 'Consolas', 'D2Coding', monospace;"></div>
             <div id="tunner-current-analysis"></div>`;
+        document.getElementById('tunner-current-plan').textContent = plan || '';
     }
 
     // 1차 성능점검 - 실행계획/실측 통계를 얻지만 AI 호출 없이 그대로 바로 보여줌
@@ -4138,7 +4149,9 @@ let historySortAsc = true;
                     analysisEl.innerHTML = `<div style="color: #d03b3b; margin-top: 16px;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
                     return;
                 }
-                const formatted = formatSqlTuningAnswer(data.answer);
+                // current-sql.md 는 "### 1. 실측 요약" 같은 마크다운 4단 구조를 강제하므로 줄바꿈만
+                // 바꾸는 formatSqlTuningAnswer(자체 sLLM 화면용) 로는 ###/``` 가 그대로 보인다.
+                const formatted = formatAiMarkdownAnswer(data.answer);
                 analysisEl.innerHTML = `<div style="line-height: 1.6; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">${formatted}</div>`;
             })
             .catch(() => {
@@ -4410,7 +4423,7 @@ let historySortAsc = true;
         } else {
             sqlWriterTableList.innerHTML = sqlWriterTables.map((t, i) => `
                 <span style="display:inline-flex; align-items:center; gap:6px; padding: 4px 10px; border-radius: 14px; background: var(--bg-card); border: 1px solid var(--border-color); font-size: 0.82rem; font-family: 'Consolas', 'D2Coding', monospace;">
-                    ${t.name}
+                    ${String(t.name || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))}
                     <span data-remove-idx="${i}" style="cursor:pointer; color: var(--text-muted); font-weight: bold;" title="제거">×</span>
                 </span>`).join('');
             sqlWriterTableList.querySelectorAll('[data-remove-idx]').forEach(el => {
@@ -4486,7 +4499,10 @@ let historySortAsc = true;
         return m ? m[1].trim() : null;
     }
 
-    function formatSqlWriterAnswer(text) {
+    // AI SQL 작성기/AI Current SQL 분석의 답변 렌더러. 두 프롬프트(sql-writer.md, current-sql.md) 모두
+    // "### 헤더 + ```코드블록" 마크다운을 강제하므로 같은 렌더러를 쓴다. 먼저 escape 한 뒤 서식을
+    // 입히므로, 답변에 섞인 SQL(`a<b` 등)이 태그로 해석돼 이후 내용이 통째로 사라지는 일이 없다.
+    function formatAiMarkdownAnswer(text) {
         if (!text) return '';
         const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         let html = escapeHtml(text);
@@ -4530,7 +4546,7 @@ let historySortAsc = true;
                         <button type="button" id="sqlwriter-send-quickcheck-btn" class="secondary-btn" style="padding: 6px 14px; border-radius: 4px; font-size: 0.85rem;"><i data-lucide="list-checks"></i> 1차 성능점검으로 보내기</button>
                     </div>`;
                 }
-                sqlWriterResult.innerHTML = `<div style="line-height: 1.6;">${formatSqlWriterAnswer(data.answer)}</div>${actionsHtml}`;
+                sqlWriterResult.innerHTML = `<div style="line-height: 1.6;">${formatAiMarkdownAnswer(data.answer)}</div>${actionsHtml}`;
                 if (typeof lucide !== 'undefined') lucide.createIcons({root: sqlWriterResult});
 
                 const sendRunnerBtn = document.getElementById('sqlwriter-send-runner-btn');

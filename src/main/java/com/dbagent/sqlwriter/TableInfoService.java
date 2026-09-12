@@ -11,6 +11,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -27,9 +28,14 @@ public class TableInfoService {
         this.poolManager = poolManager;
     }
 
+    /** 입력 테이블명을 Oracle 식별자 규칙(대문자)으로 맞춘 이름. 터키어 로케일의 i→İ 변환을 피하려고 ROOT 고정. */
+    public static String normalizeTableName(String tableName) {
+        return tableName.trim().toUpperCase(Locale.ROOT);
+    }
+
     /** 테이블이 없으면 null. */
     public Map<String, Object> fetchTableInfo(TargetDbConfig target, String tableName) throws SQLException {
-        String upperName = tableName.trim().toUpperCase();
+        String upperName = normalizeTableName(tableName);
 
         try (Connection conn = poolManager.getConnection(target)) {
             List<Map<String, Object>> columns = fetchColumns(conn, upperName);
@@ -47,7 +53,11 @@ public class TableInfoService {
     }
 
     private List<Map<String, Object>> fetchColumns(Connection conn, String tableName) throws SQLException {
-        String sql = "SELECT column_name, data_type, data_length, data_precision, data_scale, nullable "
+        // char_length/char_used 까지 읽는 이유: NLS_LENGTH_SEMANTICS=CHAR 로 만든 VARCHAR2(50 CHAR)
+        // 컬럼은 AL32UTF8 에서 data_length 가 200(바이트)으로 나와, 그대로 쓰면 미리보기와 LLM 프롬프트에
+        // 컬럼 길이가 4배로 부풀어 보인다.
+        String sql = "SELECT column_name, data_type, data_length, char_length, char_used, "
+                + "data_precision, data_scale, nullable "
                 + "FROM USER_TAB_COLUMNS WHERE table_name = ? ORDER BY column_id";
         List<Map<String, Object>> columns = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -58,7 +68,8 @@ public class TableInfoService {
                     col.put("name", rs.getString("column_name"));
                     Integer precision = rs.getObject("data_precision") != null ? rs.getInt("data_precision") : null;
                     Integer scale = rs.getObject("data_scale") != null ? rs.getInt("data_scale") : null;
-                    col.put("dataType", formatDataType(rs.getString("data_type"), rs.getInt("data_length"), precision, scale));
+                    col.put("dataType", formatDataType(rs.getString("data_type"), rs.getInt("data_length"),
+                            rs.getInt("char_length"), rs.getString("char_used"), precision, scale));
                     col.put("nullable", "Y".equals(rs.getString("nullable")));
                     columns.add(col);
                 }
@@ -97,15 +108,20 @@ public class TableInfoService {
     }
 
     /** sql-writer.md 예시("NUMBER(4)", "VARCHAR2(10)")와 같은 표기로 맞춘다. */
-    private String formatDataType(String dataType, int length, Integer precision, Integer scale) {
+    private String formatDataType(String dataType, int length, int charLength, String charUsed,
+                                   Integer precision, Integer scale) {
         if ("NUMBER".equals(dataType)) {
             if (precision == null) {
                 return "NUMBER";
             }
             return (scale != null && scale != 0) ? "NUMBER(" + precision + "," + scale + ")" : "NUMBER(" + precision + ")";
         }
+        // CHAR 세만틱(char_used='C')이면 선언 그대로 "(50 CHAR)"로, 아니면 바이트 길이를 쓴다.
         if ("VARCHAR2".equals(dataType) || "NVARCHAR2".equals(dataType) || "CHAR".equals(dataType)
-                || "NCHAR".equals(dataType) || "RAW".equals(dataType)) {
+                || "NCHAR".equals(dataType)) {
+            return "C".equals(charUsed) ? dataType + "(" + charLength + " CHAR)" : dataType + "(" + length + ")";
+        }
+        if ("RAW".equals(dataType)) {
             return dataType + "(" + length + ")";
         }
         return dataType;

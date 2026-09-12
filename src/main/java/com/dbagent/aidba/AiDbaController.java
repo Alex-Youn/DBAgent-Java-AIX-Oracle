@@ -68,7 +68,7 @@ public class AiDbaController {
             String answer = ollamaChatService.askWithPrompt(CURRENT_SQL_PROMPT_ID, prompt);
             return ResponseEntity.ok(Maps.of("success", true, "answer", answer));
         } catch (Exception e) {
-            return ResponseEntity.ok(Maps.of("success", false, "message", "서버 오류: " + e.getMessage()));
+            return ResponseEntity.ok(Maps.of("success", false, "message", ollamaChatService.friendlyErrorMessage("AI 분석", e)));
         }
     }
 

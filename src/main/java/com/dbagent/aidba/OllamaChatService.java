@@ -4,6 +4,8 @@ import com.dbagent.util.Maps;
 import com.dbagent.util.Strings;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -37,6 +39,8 @@ import java.util.regex.Pattern;
 @Service
 public class OllamaChatService {
 
+    private static final Logger log = LoggerFactory.getLogger(OllamaChatService.class);
+
     private static final Pattern ORA_CODE_PATTERN = Pattern.compile("ORA-\\d{4,5}", Pattern.CASE_INSENSITIVE);
     private static final String PROMPT_ID = "chatbot";
     private static final String ERROR_INDEX = "error_dictionary";
@@ -52,6 +56,32 @@ public class OllamaChatService {
 
     public OllamaChatService(ErrorSearchService errorSearchService) {
         this.errorSearchService = errorSearchService;
+    }
+
+    /** 연결 실패 안내에 대상 주소를 함께 보여주려고 컨트롤러가 읽는다(SqlTuningService.apiUrl()과 같은 용도). */
+    public String apiUrl() {
+        return ollamaUrl;
+    }
+
+    /**
+     * SqlTuningController의 modelErrorMessage()와 같은 이유로 둔다 - 이 문자열은 화면에 그대로 빨간
+     * 글씨로 나가므로 원시 예외("I/O error on POST request ..." 등)를 흘리면 안 된다. 서버가 안 떠
+     * 있는 건 폐쇄망 운영 중 흔한 상황이라 다음 행동을 알려주는 안내문으로 바꾸고 원인은 로그로만
+     * 남긴다. sqlrestapi를 호출하는 화면들(AI Current SQL 분석, AI SQL 작성기)이 공유한다.
+     * AIX는 RestTemplate 기반이라 연결 실패가 ResourceAccessException으로 온다(원본의 ConnectException 아님).
+     */
+    public String friendlyErrorMessage(String what, Exception e) {
+        Throwable cause = e;
+        while (cause != null && !(cause instanceof ResourceAccessException)) {
+            cause = cause.getCause();
+        }
+        if (cause != null) {
+            log.warn("sqlrestapi 연결 실패 (url={}): {}", ollamaUrl, e.toString());
+            return "AI 서버(" + ollamaUrl + ")에 연결할 수 없습니다. "
+                    + "서버가 켜져 있는지, 이 호스트에서 도달 가능한 주소인지 확인해주세요.";
+        }
+        log.warn("sqlrestapi {} 실패", what, e);
+        return what + " 중 오류가 발생했습니다: " + e.getMessage();
     }
 
     public Map<String, Object> chat(String userMessage) {
