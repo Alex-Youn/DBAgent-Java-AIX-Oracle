@@ -4152,7 +4152,11 @@ let historySortAsc = true;
                 // current-sql.md 는 "### 1. 실측 요약" 같은 마크다운 4단 구조를 강제하므로 줄바꿈만
                 // 바꾸는 formatSqlTuningAnswer(자체 sLLM 화면용) 로는 ###/``` 가 그대로 보인다.
                 const formatted = formatAiMarkdownAnswer(data.answer);
-                analysisEl.innerHTML = `<div style="line-height: 1.6; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">${formatted}</div>`;
+                analysisEl.innerHTML = '';
+                const analysisWrapper = document.createElement('div');
+                analysisWrapper.style.cssText = 'line-height: 1.6; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);';
+                analysisEl.appendChild(analysisWrapper);
+                typeHtmlInto(analysisWrapper, formatted);
             })
             .catch(() => {
                 tunnerCurrentAnalyzeBtn.disabled = false;
@@ -4499,6 +4503,92 @@ let historySortAsc = true;
         return m ? m[1].trim() : null;
     }
 
+    // container의 조상 중 실제로 스크롤되는 엘리먼트를 찾는다. AI Current SQL 분석 패널은 좌측 트리
+    // 메뉴 레이아웃(AI SQL Tunner 트리 메뉴) 때문에 페이지 전체가 아니라 `#tab-tunner-current`
+    // (고정 높이 + overflow-y:auto)가 실제 스크롤 경계다 - `.main-content`를 스크롤해도 이 안쪽 패널은
+    // 바닥까지 내려가지 않는다(non-AIX 쪽에서 실측 확인). 클래스명을 하드코딩하는 대신 overflow-y:auto인
+    // 첫 조상을 찾아야 다른 화면에 재사용해도 맞는 스크롤 박스를 잡는다.
+    function findScrollParent(el) {
+        let node = el.parentElement;
+        while (node && node !== document.body) {
+            const overflowY = getComputedStyle(node).overflowY;
+            if (overflowY === 'auto' || overflowY === 'scroll') {
+                return node;
+            }
+            node = node.parentElement;
+        }
+        return document.scrollingElement || document.documentElement;
+    }
+
+    // AI Current SQL 분석(성능분석)의 타이핑 효과 - formatAiMarkdownAnswer가 만든 HTML을 한 번에
+    // innerHTML로 꽂는 대신, 태그 구조는 그대로 유지한 채 텍스트만 한 글자씩 흘려 넣는다(순수 문자열
+    // 타이핑이면 태그가 중간에 잘려 그대로 노출된다 - 예: "<div style=" 가 화면에 텍스트로 보임).
+    // 매 틱마다 실제 스크롤 컨테이너를 바닥까지 내려서 글씨가 늘어나는 동안 자동으로 따라 내려가게 한다.
+    function typeHtmlInto(container, html, opts) {
+        opts = opts || {};
+        const charsPerTick = opts.charsPerTick || 3;
+        const intervalMs = opts.intervalMs || 16;
+        const scrollContainer = findScrollParent(container);
+
+        const source = document.createElement('div');
+        source.innerHTML = html;
+
+        const queue = [];
+        function walk(node) {
+            if (node.nodeType === Node.TEXT_NODE) {
+                for (const ch of node.textContent) {
+                    queue.push({ type: 'char', ch });
+                }
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                queue.push({ type: 'open', tag: node.tagName, attrs: Array.from(node.attributes) });
+                node.childNodes.forEach(walk);
+                queue.push({ type: 'close' });
+            }
+        }
+        Array.from(source.childNodes).forEach(walk);
+
+        container.innerHTML = '';
+        const stack = [container];
+        let idx = 0;
+
+        function step() {
+            // container가 DOM에서 떨어져나갔으면(재클릭으로 innerHTML이 갈아치워졌거나 화면 클리어) 이
+            // 루프를 멈춘다 - 안 그러면 고아가 된 타이머가 계속 살아서 실제 화면의 scrollContainer를
+            // 매 틱마다 바닥으로 강제로 끌어내려, 사용자가 새 내용을 보다가도 스크롤이 붙잡힌다.
+            if (!container.isConnected) {
+                return;
+            }
+            let charsThisTick = 0;
+            while (idx < queue.length && charsThisTick < charsPerTick) {
+                const item = queue[idx++];
+                const parent = stack[stack.length - 1];
+                if (item.type === 'open') {
+                    const el = document.createElement(item.tag);
+                    item.attrs.forEach(a => el.setAttribute(a.name, a.value));
+                    parent.appendChild(el);
+                    stack.push(el);
+                } else if (item.type === 'close') {
+                    stack.pop();
+                } else {
+                    const last = parent.lastChild;
+                    if (last && last.nodeType === Node.TEXT_NODE) {
+                        last.textContent += item.ch;
+                    } else {
+                        parent.appendChild(document.createTextNode(item.ch));
+                    }
+                    charsThisTick++;
+                }
+            }
+            if (scrollContainer) {
+                scrollContainer.scrollTop = scrollContainer.scrollHeight;
+            }
+            if (idx < queue.length) {
+                setTimeout(step, intervalMs);
+            }
+        }
+        step();
+    }
+
     // AI SQL 작성기/AI Current SQL 분석의 답변 렌더러. 두 프롬프트(sql-writer.md, current-sql.md) 모두
     // "### 헤더 + ```코드블록" 마크다운을 강제하므로 같은 렌더러를 쓴다. 먼저 escape 한 뒤 서식을
     // 입히므로, 답변에 섞인 SQL(`a<b` 등)이 태그로 해석돼 이후 내용이 통째로 사라지는 일이 없다.
@@ -4710,14 +4800,23 @@ let historySortAsc = true;
                 const response = await fetch('/api/aidba/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message })
+                    body: JSON.stringify({ prompt: message })
                 });
                 const data = await response.json();
                 const textDiv = pending.querySelector('div');
-                if (data.error) {
-                    textDiv.textContent = `오류: ${data.error}`;
+                if (data.error || data.success === false) {
+                    textDiv.textContent = `오류: ${data.error || data.message || '알 수 없는 오류'}`;
                 } else {
-                    textDiv.textContent = data.answer || '(빈 응답)';
+                    // non-AIX 쪽과 동일하게 ORA 코드 regex/시맨틱 검색으로 찾은 error_dictionary 원문을
+                    // "첨부 문서"로 답변 아래 기본 펼침 상태로 붙인다(2026-09-13 포팅). 답변/첨부 문서 모두
+                    // 사용자 입력이 아니라 DB/LLM에서 온 텍스트지만 HTML로 렌더링하므로 이스케이프한다 -
+                    // 개행은 부모 버블의 white-space:pre-wrap이 그대로 살려준다.
+                    let sourceHtml = '';
+                    if (data.context_used) {
+                        const srcLabel = '첨부 문서';
+                        sourceHtml = `<div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.9rem; font-weight: 600; color: var(--primary); cursor: pointer; user-select: none;" onclick="var b=this.nextElementSibling; var willOpen=(b.style.display==='none'); b.style.display=willOpen?'block':'none'; this.textContent=(willOpen?'[-] ':'[+] ')+'${srcLabel}';">[-] ${srcLabel}</div><div style="display: block; font-size: 0.95rem; line-height: 1.7; white-space: pre-wrap; word-break: break-word; font-family: 'D2Coding', Consolas, 'Courier New', monospace; max-height: 320px; overflow-y: auto; margin-top: 8px;">${escapeHtml(data.context_used)}</div>`;
+                    }
+                    textDiv.innerHTML = escapeHtml(data.answer || '(빈 응답)') + sourceHtml;
                 }
             } catch (err) {
                 pending.querySelector('div').textContent = '서버 통신 오류가 발생했습니다.';

@@ -5,14 +5,14 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 public final class ChatRequest {
 
-    private final String message;
+    private final String prompt;
 
     @JsonCreator
-    public ChatRequest(@JsonProperty("message") String message) {
-        this.message = message;
+    public ChatRequest(@JsonProperty("prompt") String prompt) {
+        this.prompt = prompt;
     }
 
-    public String message() {
-        return message;
+    public String prompt() {
+        return prompt;
     }
 }
