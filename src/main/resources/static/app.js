@@ -802,7 +802,7 @@ function getToken() {
         
         // 사용자 요청(2026-08-31): 다른 메뉴 갔다가 Current Session으로 돌아와도 추이/Trace 그래프가
         // 안 끊기게 - 예전엔 여기서 매번 resetSessionMonitor()를 무조건 호출해 그래프를 지웠는데, 자동
-        // 갱신이 켜져 있으면 이 탭을 안 보고 있는 동안에도 폴링(setInterval)은 백그라운드에서 계속 돌며
+        // 갱신이 켜져 있으면 이 탭을 안 보고 있는 동안에도 폴링은 백그라운드에서 계속 돌며
         // sessionHistory/scatterDataPoints를 쌓고 있었으므로, 돌아왔을 때 그걸 지우는 게 아니라 그대로
         // 이어서 보여주면 됨. DB를 바꿨을 때의 초기화는 이 메뉴 진입과 무관하게 인스턴스 클릭
         // 핸들러(위쪽, resetSessionMonitor() 호출부)에서 이미 별도로 처리하고 있어 여기서 또 지울
@@ -2151,10 +2151,32 @@ let layoutHTML = "";
         sessionRefreshBtn.addEventListener('click', fetchSessions);
     }
 
+    // 사용자 실측(2026-09-14): getSessionExtra()의 v$lock 스캔이 이 환경 일부 인스턴스에서 최대
+    // 49초까지 걸릴 수 있음(서버 쪽에 쿼리 타임아웃을 추가했지만, 그와 별개로 이전엔 setInterval이
+    // 이전 fetchSessions() 완료 여부와 무관하게 무조건 매 주기마다 새 요청을 쐈다 - 한 사이클이
+    // 오래 걸리면 다음 주기 요청들이 겹쳐 쌓이면서 오라클 커넥션 풀을 잠식했다. setInterval 대신
+    // "이전 호출이 끝난 뒤에만 다음 걸 예약"하는 재귀 setTimeout으로 바꿔 겹침 자체를 차단한다.
+    // 코드 리뷰 지적(2026-09-14): isSessionAutoRefreshing 하나만으로는 Start→Stop→Start를 첫 fetch가
+    // 끝나기 전에 빠르게 누르는 경우를 못 막는다 - Stop 후 다시 Start하면 플래그가 다시 true가 되므로,
+    // 그 사이 아직 살아있던 이전 Start의 fetchSessions() 체인도 resolve될 때 조건을 통과해 자기 체인을
+    // 또 예약해버려 폴링 체인이 두 개로 늘어난다(정확히 이 fix가 막으려던 겹침이 재발). Start를 누를
+    // 때마다 세대(generation)를 하나씩 올리고, 그 세대를 클로저로 들고 있다가 resolve 시점에 "지금도
+    // 그 세대가 최신인지"까지 같이 확인해야 낡은 체인이 스스로 죽는다.
+    let sessionRefreshGeneration = 0;
+    function scheduleNextSessionFetch(intervalMs, generation) {
+        sessionTimer = setTimeout(async () => {
+            await fetchSessions();
+            if (isSessionAutoRefreshing && generation === sessionRefreshGeneration) {
+                scheduleNextSessionFetch(intervalMs, generation);
+            }
+        }, intervalMs);
+    }
+
     if (sessionToggleBtn) {
         sessionToggleBtn.addEventListener('click', () => {
             if (isSessionAutoRefreshing) {
-                clearInterval(sessionTimer);
+                clearTimeout(sessionTimer);
+                sessionRefreshGeneration++; // 아직 살아있는 이전 체인이 있다면 여기서 무효화.
                 isSessionAutoRefreshing = false;
                 sessionToggleBtn.textContent = '자동 갱신 시작';
                 sessionToggleBtn.classList.remove('danger-btn');
@@ -2162,9 +2184,13 @@ let layoutHTML = "";
                 sessionRefreshBtn.disabled = false;
             } else {
                 const interval = parseInt(sessionIntervalInput.value) || 5;
-                fetchSessions(); // fetch immediately
-                sessionTimer = setInterval(fetchSessions, interval * 1000);
                 isSessionAutoRefreshing = true;
+                const generation = ++sessionRefreshGeneration;
+                fetchSessions().then(() => {
+                    if (isSessionAutoRefreshing && generation === sessionRefreshGeneration) {
+                        scheduleNextSessionFetch(interval * 1000, generation);
+                    }
+                });
                 sessionToggleBtn.textContent = '자동 갱신 중지';
                 sessionToggleBtn.classList.remove('primary-btn');
                 sessionToggleBtn.classList.add('danger-btn');

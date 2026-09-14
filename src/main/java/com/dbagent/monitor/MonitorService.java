@@ -6,6 +6,7 @@ import com.dbagent.util.Maps;
 import com.dbagent.util.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.sql.Clob;
@@ -29,6 +30,12 @@ public class MonitorService {
 
     private final OracleConnectionPoolManager poolManager;
     private final OracleQueryHelper queryHelper;
+
+    // 코드 리뷰 지적(2026-09-14): 이 값은 SqlQueryService.timeoutSeconds/ExecutionPlanService.timeoutSeconds
+    // 처럼 이 코드베이스가 이미 쓰는 관례대로 application.properties로 외부화 - 환경별로(v$lock이 특히
+    // 느린 인스턴스 등) 재빌드 없이 조정 가능해야 한다.
+    @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
+    private int lockQueryTimeoutSeconds;
 
     public MonitorService(OracleConnectionPoolManager poolManager, OracleQueryHelper queryHelper) {
         this.poolManager = poolManager;
@@ -67,7 +74,14 @@ public class MonitorService {
                     "WHERE hl.block = 1";
 
             Map<Integer, Map<String, Object>> holdersMap = new LinkedHashMap<>();
-            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
+            // 사용자 실측: 이 환경 일부 인스턴스에서 v$lock 스캔 자체가 49초까지 걸릴 수 있음(enqueue
+            // 해시체인이 김) - 이 쿼리는 그 위에 자기 자신과의 self-join까지 더해져 더 무겁다. Lock
+            // Holder/Waiter Tree 화면이 열려있는 동안 반복 호출되므로(2026-09-14), 짧은 타임아웃으로
+            // 캡을 걸어 느리면 빨리 실패시킨다 - 이 메서드는 throws SQLException 이라 타임아웃도 평소
+            // DB 오류처럼 MonitorController가 그대로 dbError()로 응답한다(별도 폴백 불필요).
+            try (Statement st = conn.createStatement()) {
+                st.setQueryTimeout(lockQueryTimeoutSeconds);
+                try (ResultSet rs = st.executeQuery(query)) {
                 while (rs.next()) {
                     int hSid = rs.getInt("holder_sid");
                     Map<String, Object> holder = holdersMap.computeIfAbsent(hSid, k -> {
@@ -115,6 +129,7 @@ public class MonitorService {
                         List<Map<String, Object>> waiters = (List<Map<String, Object>>) holder.get("waiters");
                         waiters.add(waiter);
                     }
+                }
                 }
             }
             return new ArrayList<>(holdersMap.values());
@@ -376,22 +391,34 @@ public class MonitorService {
         return rows;
     }
 
+    // 사용자 실측: 이 환경 일부 인스턴스에서 v$lock 스캔 자체가 49초까지 걸릴 수 있음(enqueue
+    // 해시체인이 김). getSessionExtra()는 Current Session이 5초 간격으로 폴링하는 경로라, 이 스캔이
+    // 느려지면 세션 리스트 렌더링이 그만큼 밀리고 폴링이 겹쳐 쌓이면서 커넥션 풀도 잠식된다
+    // (2026-09-14 성능 조사, non-AIX 쪽과 동일 반영). 쿼리 타임아웃으로 캡을 걸어 느리면 이번
+    // 사이클만 빈 리스트로 폴백 - 다음 폴링에서 다시 시도되므로 최신 락 상태를 영구히 놓치지 않는다.
     private Map<String, List<Object>> queryLockWaitSidsByType(Connection conn) {
         List<Object> txSids = new ArrayList<>();
         List<Object> tmSids = new ArrayList<>();
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(
-                     "SELECT DISTINCT sid, type FROM v$lock WHERE request > 0 AND type IN ('TX', 'TM')")) {
-            while (rs.next()) {
-                Object sid = rs.getObject("sid");
-                String type = rs.getString("type");
-                if ("TX".equals(type)) {
-                    txSids.add(sid);
-                } else if ("TM".equals(type)) {
-                    tmSids.add(sid);
+        try (Statement st = conn.createStatement()) {
+            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            try (ResultSet rs = st.executeQuery(
+                    "SELECT DISTINCT sid, type FROM v$lock WHERE request > 0 AND type IN ('TX', 'TM')")) {
+                while (rs.next()) {
+                    Object sid = rs.getObject("sid");
+                    String type = rs.getString("type");
+                    if ("TX".equals(type)) {
+                        txSids.add(sid);
+                    } else if ("TM".equals(type)) {
+                        tmSids.add(sid);
+                    }
                 }
             }
         } catch (SQLException ignored) {
+            // 코드 리뷰 지적(2026-09-14): 타임아웃(ORA-01013)이 결과 스트리밍 도중에 발생하면 그때까지
+            // rs.next()가 이미 채워 넣은 SID가 남아있어, "이번 사이클은 빈 리스트로 폴백"이라는 위 주석과
+            // 다르게 불완전한 락 목록을 완전한 것처럼 돌려주게 된다 - 실패 시엔 항상 완전히 비운다.
+            txSids.clear();
+            tmSids.clear();
         }
         Map<String, List<Object>> result = new LinkedHashMap<>();
         result.put("tx", txSids);
