@@ -55,13 +55,18 @@ public class SqlWriterController {
             return ResponseEntity.ok(Maps.of("success", false, "message", "등록되지 않은 DB입니다."));
         }
         try {
-            Map<String, Object> table = tableInfoService.fetchTableInfo(target, tableName);
-            if (table == null) {
+            Map<String, Object> result = tableInfoService.fetchTableInfo(target, tableName, req.owner());
+            if (result == null) {
                 return ResponseEntity.ok(Maps.of("success", false,
                         "message", "테이블 " + TableInfoService.normalizeTableName(tableName)
-                                + "을(를) 찾지 못했습니다 (테이블명을 확인하거나 접속 계정 소유 테이블인지 확인하세요)."));
+                                + "을(를) 찾지 못했습니다 (테이블명을 확인하거나 조회 권한이 있는지 확인하세요)."));
             }
-            return ResponseEntity.ok(Maps.of("success", true, "table", table));
+            if (result.containsKey("ambiguousOwners")) {
+                return ResponseEntity.ok(Maps.of("success", false, "needsOwnerSelection", Boolean.TRUE,
+                        "owners", result.get("ambiguousOwners"),
+                        "message", "같은 이름의 테이블이 여러 스키마(OWNER)에 있습니다. OWNER를 선택해주세요."));
+            }
+            return ResponseEntity.ok(Maps.of("success", true, "table", result));
         } catch (SQLException e) {
             return ResponseEntity.ok(Maps.of("success", false, "message", "조회 오류: " + e.getMessage()));
         }
@@ -95,7 +100,11 @@ public class SqlWriterController {
     private String buildTableStructureBlock(List<Map<String, Object>> tables) {
         StringBuilder sb = new StringBuilder();
         for (Map<String, Object> table : tables) {
-            sb.append("TABLE: ").append(table.get("name")).append("\n");
+            // OWNER가 현재 접속 계정과 다른 테이블(GRANT+SYNONYM 없이 권한만 있는 경우 등)은 비한정
+            // 이름으로 쓰면 실행이 안 될 수 있어 OWNER.TABLE로 스키마를 명시한다.
+            Object owner = table.get("owner");
+            String qualifiedName = owner != null ? owner + "." + table.get("name") : String.valueOf(table.get("name"));
+            sb.append("TABLE: ").append(qualifiedName).append("\n");
             sb.append("  COLUMNS:\n");
             Object colsObj = table.get("columns");
             if (colsObj instanceof List) {

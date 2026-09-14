@@ -16,8 +16,14 @@ import java.util.Map;
 
 /**
  * AI SQL 작성기(매뉴통합.md 2-3)의 "테이블 구조 조회" - 접속 계정 소유 테이블의 컬럼/인덱스를 조회한다.
- * USER_TAB_COLUMNS/USER_IND_COLUMNS는 "지금 접속한 계정 소유" 객체만 보여주므로, 다른 스키마의
- * 테이블을 조회하려면 그 계정으로 접속을 바꿔야 한다(SQL 실행 화면과 동일한 "접속 계정" 개념).
+ *
+ * 사용자 지적(2026-09-14): OWNER 스키마가 실제 테이블을 갖고 GRANT + SYNONYM으로 일반 계정에
+ * 쓰게 하는 구성에서는, USER_TAB_COLUMNS(현재 접속 계정 소유 객체만 보임)로는 그 테이블을 영영
+ * 못 찾는다 - SYNONYM 자체도 컬럼을 가진 오브젝트가 아니라 USER_TAB_COLUMNS에 안 잡힌다.
+ * 자동 탐색형으로 해결: ① 먼저 현재 접속 계정 소유(USER_TAB_COLUMNS)로 시도 → ② 없으면
+ * ALL_TAB_COLUMNS에서 같은 이름을 가진 OWNER 후보를 찾아 ③ 후보가 하나면 그걸로 자동 조회,
+ * 여러 개면 프론트가 고르게 "ambiguousOwners" 목록을 돌려준다. ALL_TAB_COLUMNS는 현재 계정이
+ * 권한(GRANT)을 가진 객체까지 보여주므로 SYNONYM 유무와 무관하게 동작한다.
  */
 @Service
 public class TableInfoService {
@@ -33,35 +39,97 @@ public class TableInfoService {
         return tableName.trim().toUpperCase(Locale.ROOT);
     }
 
-    /** 테이블이 없으면 null. */
-    public Map<String, Object> fetchTableInfo(TargetDbConfig target, String tableName) throws SQLException {
+    /**
+     * 테이블을 못 찾으면 null. 후보 OWNER가 여럿이면 {"ambiguousOwners": List&lt;String&gt;}를 돌려주며,
+     * 이 경우 호출자가 owner를 채워 다시 호출해야 한다. owner가 주어지면 바로 ALL_TAB_COLUMNS를
+     * owner+table_name으로 조회한다(자동 탐색 생략).
+     */
+    public Map<String, Object> fetchTableInfo(TargetDbConfig target, String tableName, String owner) throws SQLException {
         String upperName = normalizeTableName(tableName);
+        String upperOwner = (owner == null || owner.trim().isEmpty()) ? null : owner.trim().toUpperCase(Locale.ROOT);
 
         try (Connection conn = poolManager.getConnection(target)) {
-            List<Map<String, Object>> columns = fetchColumns(conn, upperName);
+            if (upperOwner == null) {
+                // ① 현재 접속 계정 소유 객체 우선 - 기존 동작과 동일한 빠른 경로.
+                List<Map<String, Object>> columns = fetchColumns(conn, upperName);
+                if (!columns.isEmpty()) {
+                    List<Map<String, Object>> indexes = fetchIndexes(conn, upperName);
+                    return buildTable(upperName, target.user().toUpperCase(Locale.ROOT), columns, indexes);
+                }
+                // ② 현재 계정 소유가 아니면 ALL_TAB_COLUMNS에서 접근 가능한 OWNER 후보를 찾는다.
+                List<String> owners = fetchCandidateOwners(conn, upperName);
+                if (owners.isEmpty()) {
+                    return null;
+                }
+                if (owners.size() > 1) {
+                    Map<String, Object> ambiguous = new LinkedHashMap<>();
+                    ambiguous.put("ambiguousOwners", owners);
+                    return ambiguous;
+                }
+                upperOwner = owners.get(0);
+            }
+
+            // ③ owner가 명시됐거나 후보가 정확히 하나로 좁혀진 경우.
+            List<Map<String, Object>> columns = fetchColumnsForOwner(conn, upperOwner, upperName);
             if (columns.isEmpty()) {
                 return null;
             }
-            List<Map<String, Object>> indexes = fetchIndexes(conn, upperName);
-
-            Map<String, Object> table = new LinkedHashMap<>();
-            table.put("name", upperName);
-            table.put("columns", columns);
-            table.put("indexes", indexes);
-            return table;
+            List<Map<String, Object>> indexes = fetchIndexesForOwner(conn, upperOwner, upperName);
+            return buildTable(upperName, upperOwner, columns, indexes);
         }
     }
 
+    private Map<String, Object> buildTable(String name, String owner, List<Map<String, Object>> columns, List<Map<String, Object>> indexes) {
+        Map<String, Object> table = new LinkedHashMap<>();
+        table.put("name", name);
+        table.put("owner", owner);
+        table.put("columns", columns);
+        table.put("indexes", indexes);
+        return table;
+    }
+
+    private List<String> fetchCandidateOwners(Connection conn, String tableName) throws SQLException {
+        String sql = "SELECT DISTINCT owner FROM ALL_TAB_COLUMNS WHERE table_name = ? ORDER BY owner";
+        List<String> owners = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, tableName);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    owners.add(rs.getString("owner"));
+                }
+            }
+        }
+        return owners;
+    }
+
     private List<Map<String, Object>> fetchColumns(Connection conn, String tableName) throws SQLException {
-        // char_length/char_used 까지 읽는 이유: NLS_LENGTH_SEMANTICS=CHAR 로 만든 VARCHAR2(50 CHAR)
-        // 컬럼은 AL32UTF8 에서 data_length 가 200(바이트)으로 나와, 그대로 쓰면 미리보기와 LLM 프롬프트에
-        // 컬럼 길이가 4배로 부풀어 보인다.
         String sql = "SELECT column_name, data_type, data_length, char_length, char_used, "
                 + "data_precision, data_scale, nullable "
                 + "FROM USER_TAB_COLUMNS WHERE table_name = ? ORDER BY column_id";
+        return runColumnsQuery(conn, sql, null, tableName);
+    }
+
+    /** fetchColumns()의 ALL_TAB_COLUMNS + owner 필터 버전 - 다른 스키마 소유 테이블 조회용. */
+    private List<Map<String, Object>> fetchColumnsForOwner(Connection conn, String owner, String tableName) throws SQLException {
+        String sql = "SELECT column_name, data_type, data_length, char_length, char_used, "
+                + "data_precision, data_scale, nullable "
+                + "FROM ALL_TAB_COLUMNS WHERE owner = ? AND table_name = ? ORDER BY column_id";
+        return runColumnsQuery(conn, sql, owner, tableName);
+    }
+
+    // fetchColumns/fetchColumnsForOwner가 FROM 절(USER_TAB_COLUMNS vs ALL_TAB_COLUMNS+owner 바인드)만
+    // 다르고 컬럼 매핑 로직은 완전히 동일해서, owner가 null이면 파라미터를 하나만 바인드하는 공용 헬퍼로 합쳤다.
+    private List<Map<String, Object>> runColumnsQuery(Connection conn, String sql, String owner, String tableName) throws SQLException {
+        // char_length/char_used 까지 읽는 이유: NLS_LENGTH_SEMANTICS=CHAR 로 만든 VARCHAR2(50 CHAR)
+        // 컬럼은 AL32UTF8 에서 data_length 가 200(바이트)으로 나와, 그대로 쓰면 미리보기와 LLM 프롬프트에
+        // 컬럼 길이가 4배로 부풀어 보인다.
         List<Map<String, Object>> columns = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, tableName);
+            int idx = 1;
+            if (owner != null) {
+                ps.setString(idx++, owner);
+            }
+            ps.setString(idx, tableName);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> col = new LinkedHashMap<>();
@@ -82,24 +150,41 @@ public class TableInfoService {
         String sql = "SELECT ic.index_name, i.uniqueness, ic.column_name "
                 + "FROM USER_IND_COLUMNS ic JOIN USER_INDEXES i ON i.index_name = ic.index_name "
                 + "WHERE ic.table_name = ? ORDER BY ic.index_name, ic.column_position";
+        return runIndexesQuery(conn, sql, null, tableName);
+    }
+
+    /** fetchIndexes()의 ALL_IND_COLUMNS/ALL_INDEXES + owner 필터 버전. */
+    private List<Map<String, Object>> fetchIndexesForOwner(Connection conn, String owner, String tableName) throws SQLException {
+        String sql = "SELECT ic.index_name, i.uniqueness, ic.column_name "
+                + "FROM ALL_IND_COLUMNS ic JOIN ALL_INDEXES i "
+                + "  ON i.index_name = ic.index_name AND i.owner = ic.index_owner "
+                + "WHERE ic.table_owner = ? AND ic.table_name = ? ORDER BY ic.index_name, ic.column_position";
+        return runIndexesQuery(conn, sql, owner, tableName);
+    }
+
+    private List<Map<String, Object>> runIndexesQuery(Connection conn, String sql, String owner, String tableName) throws SQLException {
         // LinkedHashMap 으로 등장 순서(=인덱스명 순) 유지하며 컬럼을 그룹핑한다.
         Map<String, Map<String, Object>> byIndexName = new LinkedHashMap<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, tableName);
+            int idx = 1;
+            if (owner != null) {
+                ps.setString(idx++, owner);
+            }
+            ps.setString(idx, tableName);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     String indexName = rs.getString("index_name");
-                    Map<String, Object> idx = byIndexName.get(indexName);
-                    if (idx == null) {
-                        idx = new LinkedHashMap<>();
-                        idx.put("name", indexName);
-                        idx.put("unique", false);
-                        idx.put("columns", new ArrayList<String>());
-                        byIndexName.put(indexName, idx);
+                    Map<String, Object> ix = byIndexName.get(indexName);
+                    if (ix == null) {
+                        ix = new LinkedHashMap<>();
+                        ix.put("name", indexName);
+                        ix.put("unique", false);
+                        ix.put("columns", new ArrayList<String>());
+                        byIndexName.put(indexName, ix);
                     }
-                    idx.put("unique", "UNIQUE".equals(rs.getString("uniqueness")));
+                    ix.put("unique", "UNIQUE".equals(rs.getString("uniqueness")));
                     @SuppressWarnings("unchecked")
-                    List<String> cols = (List<String>) idx.get("columns");
+                    List<String> cols = (List<String>) ix.get("columns");
                     cols.add(rs.getString("column_name"));
                 }
             }

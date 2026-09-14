@@ -81,11 +81,13 @@
 #aidba.errors-db-path=data/oracle_errors
 # GPU 서버 방화벽이 REST API 포트(9300, sqlrestapi)만 열어주는 구성으로 확정되면서(2026-09-11)
 # Ollama(11434)에는 AIX에서 더 이상 직접 못 붙는다 - 이 값은 이제 Ollama가 아니라 sqlrestapi(RAGController
-# 의 /api/chat)의 베이스 URL이다. 어떤 LLM을 쓰는지는 이 URL이 가리키는 sqlrestapi 쪽의
-# sqltune.llm.model 설정을 따르므로, 여기서 모델명을 지정할 필요가 없다(과거 aidba.ollama.model
-# 프로퍼티는 제거됨). 프로퍼티 이름 자체는 과거 호환을 위해 그대로 유지. 사내망에서 접근
-# 가능한 GPU 서버 주소로 바꿔서 사용할 것(기본값 localhost라 빠뜨리면 조용히 실패한다).
-#aidba.ollama.url=http://<GPU서버>:9300
+# 의 /api/chat)의 베이스 URL이다. AI 챗봇/AI Current SQL 분석/AI SQL 작성기와 AI SQL 성능분석(SQL Tune
+# Advisor)이 이 프로퍼티 하나를 공유한다(과거 aidba.ollama.url + sqltuneadvisor.api.url 두 프로퍼티를
+# 통합, 2026-09-14). 스킴(http(s)://) 없이 IP:포트만 적어도 자동으로 http://가 붙는다. 어떤 LLM을
+# 쓰는지는 이 URL이 가리키는 sqlrestapi 쪽 설정을 따르므로 여기서 모델명을 지정할 필요는 없다(과거
+# aidba.ollama.model 프로퍼티는 제거됨). 사내망에서 접근 가능한 GPU 서버 주소로 바꿔서 사용할 것
+# (기본값 localhost라 빠뜨리면 조용히 실패한다).
+#aidba.restapi.url=http://<GPU서버>:9300
 # 생성 응답 대기 한도(ms). 원격 GPU 서버는 로컬보다 네트워크 왕복 + 모델 로딩 시간이 더 걸릴 수 있어
 # 넉넉하게 잡는다. 모델 크기와 실행 위치에 따라 적정값이 크게 다르다.
 #aidba.ollama.timeout-ms=30000
@@ -102,11 +104,10 @@
 # ── SQL Tune Advisor (사내 튜닝 사례 RAG 검색 + LLM 분석) ────────────────
 # sqltuning.*(자체 파인튜닝 sLLM)과는 별개의 서버/연동이다 - 이쪽은 bge-m3 임베딩으로 사내 튜닝
 # 사례를 OpenSearch에서 검색한 뒤 그 사례를 근거로 qwen3-coder:30b가 답변한다
-# (sqltune-rag-java/RAGController 호출). AIX에서도 사내망 접근 가능한 GPU 서버 주소로 바꿔서
-# 사용할 것(기본값 localhost라 빠뜨리면 조용히 실패한다).
-#sqltuneadvisor.api.url=http://localhost:9300
-# 응답 대기 한도(ms). GPU 서버 성능과 검색된 사내 사례 분량에 따라 편차가 커서
-# sqltuning.* 과 동일하게 설정으로 뺐다.
+# (sqltune-rag-java/RAGController 호출). 서버 주소는 위 aidba.restapi.url과 통합됨(2026-09-14) -
+# 같은 GPU 서버의 같은 sqlrestapi라 별도 프로퍼티를 둘 이유가 없었다.
+# 응답 대기 한도(ms)만 화면 성격이 달라 별도 유지. GPU 서버 성능과 검색된 사내 사례 분량에 따라
+# 편차가 커서 sqltuning.* 과 동일하게 설정으로 뺐다.
 #sqltuneadvisor.api.timeout-ms=180000
 
 # ── SQL Runner (AI DBA 탭의 "SQL 실행") 상한 ─────────────────────────────

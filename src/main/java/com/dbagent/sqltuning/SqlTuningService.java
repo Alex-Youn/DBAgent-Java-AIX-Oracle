@@ -23,7 +23,7 @@ import java.util.Map;
  *
  * sqltuning.api.url doesn't have to point at localhost - this service only does plain HTTP(JSON), so
  * it works the same whether the FastAPI sLLM server runs on this machine, a GPU box on the LAN, or a
- * WSL instance on a developer's machine reachable over the network (see OllamaChatService's aidba.ollama.url
+ * WSL instance on a developer's machine reachable over the network (see OllamaChatService's aidba.restapi.url
  * for the same pattern). It does NOT work if this AIX host has no network path to wherever that server
  * actually runs - verify reachability (e.g. curl <url>/health from this host) before relying on it.
  */

@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
+import javax.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,11 +45,20 @@ public class OllamaChatService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @Value("${aidba.ollama.url}")
+    // 2026-09-14: aidba.ollama.url + sqltuneadvisor.api.url 는 결국 같은 sqlrestapi 서버를 가리키므로
+    // aidba.restapi.url 하나로 통합했다. 스킴을 빠뜨려도 되게 normalizeUrl()에서 http://를 보정한다.
+    @Value("${aidba.restapi.url}")
     private String ollamaUrl;
 
     @Value("${aidba.ollama.timeout-ms:30000}")
     private int timeoutMs;
+
+    @PostConstruct
+    private void normalizeUrl() {
+        if (ollamaUrl != null && !ollamaUrl.contains("://")) {
+            ollamaUrl = "http://" + ollamaUrl;
+        }
+    }
 
     /** 연결 실패 안내에 대상 주소를 함께 보여주려고 컨트롤러가 읽는다(SqlTuningService.apiUrl()과 같은 용도). */
     public String apiUrl() {

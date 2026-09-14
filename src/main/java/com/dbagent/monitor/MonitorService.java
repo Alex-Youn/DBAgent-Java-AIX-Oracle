@@ -248,9 +248,17 @@ public class MonitorService {
             // 사용자 요청(2026-08-31): Trace 그래프 점(개별 세션)을 Lock Wait 여부로도 색칠하려면 몇 명인지
             // 뿐 아니라 어떤 SID인지가 필요 - 목록으로 바꾸고 카운트는 그 목록의 크기로 계산해 v$lock을
             // 두 번 조회하지 않는다.
-            List<Object> lockWaitSids = queryLockWaitSids(conn);
-            result.put("lock_wait_count", lockWaitSids.size());
-            result.put("lock_wait_sids", lockWaitSids);
+            // 사용자 요청(2026-09-14): 추이/Trace 그래프의 Lock Wait 한 계열을 세션 리스트의 Session Wait
+            // 막대와 색을 맞추기 위해 TX Lock/TM Lock 두 계열로 쪼갬 - v$lock.type으로 구분(TX=행 락,
+            // TM=DML/테이블 락). 그 외 타입(UL 등)은 세션 리스트의 wait% 분해에서도 "기타"로 묶이므로
+            // 여기서도 둘 다에서 제외.
+            Map<String, List<Object>> lockWaitSids = queryLockWaitSidsByType(conn);
+            List<Object> txLockSids = lockWaitSids.get("tx");
+            List<Object> tmLockSids = lockWaitSids.get("tm");
+            result.put("tx_lock_count", txLockSids.size());
+            result.put("tx_lock_sids", txLockSids);
+            result.put("tm_lock_count", tmLockSids.size());
+            result.put("tm_lock_sids", tmLockSids);
             return result;
         }
     }
@@ -368,16 +376,27 @@ public class MonitorService {
         return rows;
     }
 
-    private List<Object> queryLockWaitSids(Connection conn) {
-        List<Object> sids = new ArrayList<>();
+    private Map<String, List<Object>> queryLockWaitSidsByType(Connection conn) {
+        List<Object> txSids = new ArrayList<>();
+        List<Object> tmSids = new ArrayList<>();
         try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT DISTINCT sid FROM v$lock WHERE request > 0")) {
+             ResultSet rs = st.executeQuery(
+                     "SELECT DISTINCT sid, type FROM v$lock WHERE request > 0 AND type IN ('TX', 'TM')")) {
             while (rs.next()) {
-                sids.add(rs.getObject("sid"));
+                Object sid = rs.getObject("sid");
+                String type = rs.getString("type");
+                if ("TX".equals(type)) {
+                    txSids.add(sid);
+                } else if ("TM".equals(type)) {
+                    tmSids.add(sid);
+                }
             }
         } catch (SQLException ignored) {
         }
-        return sids;
+        Map<String, List<Object>> result = new LinkedHashMap<>();
+        result.put("tx", txSids);
+        result.put("tm", tmSids);
+        return result;
     }
 
     // Fleet Overview's per-instance card metric (replaces a v$lock-based lock-wait count there - 사용자가
@@ -1098,14 +1117,15 @@ public class MonitorService {
     }
 
     // ------------------------------------------------------- history_sessions
-    public List<Map<String, Object>> getHistorySessions(TargetDbConfig target, String startTime, String endTime, String users) throws SQLException {
+    public List<Map<String, Object>> getHistorySessions(TargetDbConfig target, String startTime, String endTime, String users, String machines) throws SQLException {
         String userFilter = buildUserFilter(users);
+        String machineFilter = buildMachineFilter(machines);
         String query = "WITH combined_ash AS (" +
-                "SELECT session_id, session_serial#, sql_id, event, sample_time, sql_exec_start, program, user_id, sql_plan_hash_value, session_type " +
+                "SELECT session_id, session_serial#, sql_id, event, sample_time, sql_exec_start, program, machine, user_id, sql_plan_hash_value, session_type " +
                 "FROM v$active_session_history " +
                 "WHERE sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') " +
                 "UNION ALL " +
-                "SELECT session_id, session_serial#, sql_id, event, sample_time, sql_exec_start, program, user_id, sql_plan_hash_value, session_type " +
+                "SELECT session_id, session_serial#, sql_id, event, sample_time, sql_exec_start, program, machine, user_id, sql_plan_hash_value, session_type " +
                 "FROM dba_hist_active_sess_history " +
                 "WHERE sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI')" +
                 "), sql_execs AS (" +
@@ -1118,7 +1138,8 @@ public class MonitorService {
                 "FROM combined_ash h " +
                 "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
                 "LEFT JOIN sql_execs s ON h.sql_id = s.sql_id " +
-                "WHERE h.session_type = 'FOREGROUND'" + userFilter +
+                "WHERE h.session_type = 'FOREGROUND'" + userFilter + machineFilter +
+                excludeMonitoringAccountFilter(target) +
                 "  AND ROUND((CAST(h.sample_time AS DATE) - CAST(NVL(h.sql_exec_start, h.sample_time) AS DATE)) * 24 * 60 * 60, 2) >= 3 " +
                 "  AND NVL(s.exec_count, 0) >= 100 " +
                 "ORDER BY h.sample_time ASC";
@@ -1153,14 +1174,15 @@ public class MonitorService {
     }
 
     // --------------------------------------------------- history_top_sessions
-    public List<Map<String, Object>> getHistoryTopSessions(TargetDbConfig target, String startTime, String endTime, String users) throws SQLException {
+    public List<Map<String, Object>> getHistoryTopSessions(TargetDbConfig target, String startTime, String endTime, String users, String machines) throws SQLException {
         String userFilter = buildUserFilter(users);
+        String machineFilter = buildMachineFilter(machines);
         String query = "WITH combined_ash AS (" +
-                "SELECT session_id, session_serial#, sql_id, sql_exec_id, sql_exec_start, event, sample_time, program, user_id, sql_plan_hash_value, session_type " +
+                "SELECT session_id, session_serial#, sql_id, sql_exec_id, sql_exec_start, event, sample_time, program, machine, user_id, sql_plan_hash_value, session_type " +
                 "FROM v$active_session_history " +
                 "WHERE sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND sql_exec_start IS NOT NULL " +
                 "UNION ALL " +
-                "SELECT session_id, session_serial#, sql_id, sql_exec_id, sql_exec_start, event, sample_time, program, user_id, sql_plan_hash_value, session_type " +
+                "SELECT session_id, session_serial#, sql_id, sql_exec_id, sql_exec_start, event, sample_time, program, machine, user_id, sql_plan_hash_value, session_type " +
                 "FROM dba_hist_active_sess_history " +
                 "WHERE sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND sql_exec_start IS NOT NULL" +
                 ") SELECT h.sql_id, COUNT(DISTINCT h.sql_exec_id) as exec_count, " +
@@ -1169,7 +1191,8 @@ public class MonitorService {
                 "MAX(h.program) as program_name, MAX(u.username) as osuser, MAX(h.sql_plan_hash_value) as plan_hash_value, " +
                 "MAX(h.session_id) as sid, MAX(h.session_serial#) as serial " +
                 "FROM combined_ash h LEFT JOIN dba_users u ON h.user_id = u.user_id " +
-                "WHERE h.session_type = 'FOREGROUND'" + userFilter +
+                "WHERE h.session_type = 'FOREGROUND'" + userFilter + machineFilter +
+                excludeMonitoringAccountFilter(target) +
                 " GROUP BY h.sql_id, u.username " +
                 "HAVING MAX(ROUND((CAST(h.sample_time AS DATE) - CAST(h.sql_exec_start AS DATE)) * 24 * 60 * 60, 2)) >= 5 " +
                 "ORDER BY max_duration_time DESC FETCH FIRST 100 ROWS ONLY";
@@ -1201,15 +1224,51 @@ public class MonitorService {
         return sessions;
     }
 
-    // ------------------------------------------------------------- db_users
-    public List<String> getDbUsers(TargetDbConfig target) throws SQLException {
+    // ------------------------------------------------------------- history_users
+    // 사용자 지적(2026-09-14): 계정 드롭다운이 dba_users(인스턴스에 열려있는 계정 전체)에서 왔던 반면
+    // machine 드롭다운은 실제 ASH/AWR 관측값에서 왔던 것이 서로 기준이 달라 어색함 - 계정도 machine과
+    // 같은 기준(성능 이력에 실제로 잡힌 계정만)으로 통일. 이력이 전혀 없는 스키마 계정은 이제 목록에
+    // 안 뜬다. 필터링용 드롭다운 값이라 user_id가 dba_users에 없는 행은 애초에 고를 대상이 아니므로
+    // getHistorySessions/getHistoryTopSessions 본문 필터와 달리 여기선 LEFT JOIN이 아니라 JOIN.
+    public List<String> getHistoryUsers(TargetDbConfig target) throws SQLException {
+        String query = "SELECT DISTINCT u.username FROM (" +
+                "SELECT user_id FROM v$active_session_history WHERE session_type = 'FOREGROUND' " +
+                "UNION ALL " +
+                "SELECT user_id FROM dba_hist_active_sess_history " +
+                "WHERE session_type = 'FOREGROUND' AND sample_time >= SYSDATE - 7" +
+                ") h JOIN dba_users u ON h.user_id = u.user_id " +
+                "WHERE u.username != " + monitoringAccountLiteral(target) + " " +
+                "ORDER BY u.username";
         List<String> users = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
              Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT username FROM dba_users WHERE account_status = 'OPEN' ORDER BY username")) {
+             ResultSet rs = st.executeQuery(query)) {
             while (rs.next()) users.add(rs.getString(1));
         }
         return users;
+    }
+
+    // ---------------------------------------------------------- history_machines
+    // 사용자 요청(2026-09-14): 성능 이력 조회(ASH)에 WAS 서버 기준 필터가 없어 DBA 툴/배치/모니터링
+    // 계정 등 업무와 무관한 세션까지 섞여 나오는 문제 - v$active_session_history/AWR에 남아있는
+    // 세션이 실제로 접속했던 machine(호스트명) 목록을 뽑아 드롭다운으로 골라 쓰게 한다. dba_hist_
+    // active_sess_history 전체를 훑으면 무거우니 최근 7일로 제한(대부분 폐쇄망 조회 목적엔 충분).
+    public List<String> getHistoryMachines(TargetDbConfig target) throws SQLException {
+        String query = "SELECT DISTINCT h.machine FROM (" +
+                "SELECT machine, user_id FROM v$active_session_history WHERE session_type = 'FOREGROUND' AND machine IS NOT NULL " +
+                "UNION ALL " +
+                "SELECT machine, user_id FROM dba_hist_active_sess_history " +
+                "WHERE session_type = 'FOREGROUND' AND machine IS NOT NULL AND sample_time >= SYSDATE - 7" +
+                ") h LEFT JOIN dba_users u ON h.user_id = u.user_id " +
+                "WHERE (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ") " +
+                "ORDER BY h.machine";
+        List<String> machines = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(query)) {
+            while (rs.next()) machines.add(rs.getString(1));
+        }
+        return machines;
     }
 
     private String buildUserFilter(String usersParam) {
@@ -1225,6 +1284,19 @@ public class MonitorService {
         return " AND u.username IN (" + String.join(",", list) + ") ";
     }
 
+    private String buildMachineFilter(String machinesParam) {
+        if (machinesParam == null || Strings.isBlank(machinesParam)) return "";
+        List<String> list = new ArrayList<>();
+        for (String m : machinesParam.split(",")) {
+            String trimmed = Strings.strip(m);
+            if (!trimmed.isEmpty()) {
+                list.add("'" + trimmed.replace("'", "''") + "'");
+            }
+        }
+        if (list.isEmpty()) return "";
+        return " AND h.machine IN (" + String.join(",", list) + ") ";
+    }
+
     // 사용자 요청(2026-08-31/2026-09-01): 모니터링 계정 자신의 세션을 Active Session류 화면에서
     // 제외할 때 SYS_CONTEXT('USERENV','SID') 방식(현재 커넥션 자신만 제외)을 써봤으나, 폐쇄망 실사용
     // 테스트 결과 같은 모니터링 계정의 풀에 있는 "다른" 커넥션(동시에 도는 다른 폴링 쿼리)은 SID가
@@ -1233,6 +1305,14 @@ public class MonitorService {
     // 세션을 전부(SID와 무관하게) 제외하는 원래 방식으로 되돌림.
     private String monitoringAccountLiteral(TargetDbConfig target) {
         return "'" + target.user().toUpperCase().replace("'", "''") + "'";
+    }
+
+    // 사용자 지적(2026-09-14): 성능 이력 조회(getHistorySessions/getHistoryTopSessions)엔 이 모니터링
+    // 계정 제외 로직이 빠져 있었다 - 실시간 Active Session류 화면과 달리 dba_users를 LEFT JOIN해서
+    // 얻은 u.username이라 NULL일 수 있어(user_id가 dba_users에 없는 극단적 케이스), 순수 "!="만 쓰면
+    // NULL 비교의 3치 논리로 그 행이 통째로 걸러진다 - u.username IS NULL 인 행은 그대로 살려둔다.
+    private String excludeMonitoringAccountFilter(TargetDbConfig target) {
+        return "  AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ") ";
     }
 
     private Object orZero(Object value) {

@@ -430,7 +430,8 @@ public class MonitorController {
             @RequestParam(required = false) String token,
             @RequestParam(name = "start_time", required = false) String startTime,
             @RequestParam(name = "end_time", required = false) String endTime,
-            @RequestParam(required = false) String users) {
+            @RequestParam(required = false) String users,
+            @RequestParam(required = false) String machines) {
         if (!authService.canAccessDb(token, db_id)) {
             return dbAccessDenied();
         }
@@ -442,7 +443,7 @@ public class MonitorController {
             return dbNotFound();
         }
         try {
-            return ResponseEntity.ok(monitorService.getHistorySessions(target, startTime, endTime, users));
+            return ResponseEntity.ok(monitorService.getHistorySessions(target, startTime, endTime, users, machines));
         } catch (SQLException e) {
             return dbError(e);
         }
@@ -467,7 +468,8 @@ public class MonitorController {
             @RequestParam(required = false) String token,
             @RequestParam(name = "start_time", required = false) String startTime,
             @RequestParam(name = "end_time", required = false) String endTime,
-            @RequestParam(required = false) String users) {
+            @RequestParam(required = false) String users,
+            @RequestParam(required = false) String machines) {
         if (!authService.canAccessDb(token, db_id)) {
             return dbAccessDenied();
         }
@@ -479,15 +481,15 @@ public class MonitorController {
             return dbNotFound();
         }
         try {
-            return ResponseEntity.ok(monitorService.getHistoryTopSessions(target, startTime, endTime, users));
+            return ResponseEntity.ok(monitorService.getHistoryTopSessions(target, startTime, endTime, users, machines));
         } catch (SQLException e) {
             return dbError(e);
         }
     }
 
-    @GetMapping("/db_users")
-    public ResponseEntity<Object> dbUsers(@RequestParam(required = false) String db_id,
-                                           @RequestParam(required = false) String token) {
+    @GetMapping("/history_machines")
+    public ResponseEntity<Object> historyMachines(@RequestParam(required = false) String db_id,
+                                                    @RequestParam(required = false) String token) {
         if (!authService.canAccessDb(token, db_id)) {
             return dbAccessDenied();
         }
@@ -496,7 +498,24 @@ public class MonitorController {
             return dbNotFound();
         }
         try {
-            return ResponseEntity.ok(monitorService.getDbUsers(target));
+            return ResponseEntity.ok(monitorService.getHistoryMachines(target));
+        } catch (SQLException e) {
+            return dbError(e);
+        }
+    }
+
+    @GetMapping("/history_users")
+    public ResponseEntity<Object> historyUsers(@RequestParam(required = false) String db_id,
+                                                @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null) {
+            return dbNotFound();
+        }
+        try {
+            return ResponseEntity.ok(monitorService.getHistoryUsers(target));
         } catch (SQLException e) {
             return ResponseEntity.ok(Maps.of("error", e.getMessage()));
         }

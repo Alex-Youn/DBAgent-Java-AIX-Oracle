@@ -1448,10 +1448,12 @@ let layoutHTML = "";
                 `;
             }
 
-            const checkedTmlockSids = Array.from(document.querySelectorAll('.tmlock-checkbox:checked')).map(cb => cb.getAttribute('data-sid'));
+            // Oracle SID는 재사용되므로 SID만으로는 세션을 특정할 수 없다 - SID+SERIAL# 복합키로 대조.
+            const checkedTmlockKeys = new Set(Array.from(document.querySelectorAll('.tmlock-checkbox:checked'))
+                .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
             tmlockTbody.innerHTML = tableHtml;
             document.querySelectorAll('.tmlock-checkbox').forEach(cb => {
-                if (checkedTmlockSids.includes(cb.getAttribute('data-sid'))) {
+                if (checkedTmlockKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
                     cb.checked = true;
                 }
             });
@@ -1584,8 +1586,8 @@ let layoutHTML = "";
         activeSessions: [],
         activeTx: [],
         parallel: [],
-        pending2pc: [],
-        lockWait: []
+        txLock: [],
+        tmLock: []
     };
 
     // 사용자 요청(2026-09-01): 다른 DB로 갔다가 원래 DB로 돌아와도 Current Session 추이/Trace 그래프가
@@ -1628,8 +1630,8 @@ let layoutHTML = "";
                 activeSessions: sessionHistory.activeSessions.slice(),
                 activeTx: sessionHistory.activeTx.slice(),
                 parallel: sessionHistory.parallel.slice(),
-                pending2pc: sessionHistory.pending2pc.slice(),
-                lockWait: sessionHistory.lockWait.slice()
+                txLock: sessionHistory.txLock.slice(),
+                tmLock: sessionHistory.tmLock.slice()
             },
             scatterDataPoints: scatterDataPoints.slice()
         });
@@ -1645,22 +1647,32 @@ let layoutHTML = "";
     });
 
     // 사용자 요청(2026-08-31): 추이 그래프와 Trace 그래프의 색상/범례를 동기화하고, 각 계열을 체크박스로
-    // 켜고 끌 수 있게 함. 두 배열의 색상은 반드시 같은 순서로 유지 - TREND_SERIES는 추이 그래프(라인)
-    // 5계열, SCATTER_CATEGORIES는 Trace 그래프(산점도) 4계열(2PC Pending은 살아있는 세션에 붙는 속성이
-    // 아니라 개별 점으로 표시할 대상이 원천적으로 없어 제외 - dba_2pc_pending은 보통 이미 끊어진/고아
-    // 상태의 분산 트랜잭션이라 대응되는 v$session 행이 없는 경우가 대부분).
+    // 켜고 끌 수 있게 함. 두 배열의 색상은 반드시 같은 순서로 유지.
+    // 사용자 요청(2026-09-14): (1) 2PC Pending은 추이 그래프에서 제외 - dba_2pc_pending은 보통 이미
+    // 끊어진/고아 상태의 분산 트랜잭션이라 대응되는 v$session 행이 없는 경우가 대부분이라 실시간 세션
+    // 추이와는 성격이 다름(탭 자체는 유지, extra.pending_2pc를 그대로 renderPending2pcTab에 사용).
+    // (2) LOCK WAIT 한 계열을 TX LOCK/TM LOCK 두 계열로 쪼갬 - Active Session 리스트의 Session Wait
+    // 막대가 이미 TX Lock/TM Lock을 구분해서 보여주고 있었는데 그래프 쪽만 합쳐진 보라색 한 계열이라
+    // 색이 어긋나 보였음. 처음엔 막대의 핑크(#e91e63)/빨강(#e74c3c)을 그대로 가져왔으나 사용자 확인
+    // 결과 둘이 육안으로 잘 구분되지 않아, dataviz 스킬의 validate_palette 방식(OKLab ΔE, CVD 시뮬레이션)
+    // 으로 재검증해 보라(#7c3aed)/크림슨(#be123c)으로 교체(2026-09-14) - ΔE 8.5(정상 색각)/5.7(색각이상)
+    // 에서 30.1/28.6으로 개선, 기존 초록/파랑/올리브 계열과도 충돌 없음. 같은 이유로 Session Wait 막대의
+    // CPU 색도 보라(#9b59b6)에서 스카이블루(#22d3ee)로 변경 - TX Lock이 보라를 새로 쓰게 되면서 막대
+    // 안에서 CPU와 겹쳐 보였기 때문(막대 쪽 배색은 위 waitHtml 조립부 참고). 이제 TREND_SERIES 5계열,
+    // SCATTER_CATEGORIES도 동일하게 5계열로 맞춘다.
     const TREND_SERIES = [
         { label: 'ACTIVE SESSION', color: '#0ca30c' },
         { label: 'ACTIVE TRANSACTION', color: '#3987e5' },
         { label: 'PARALLEL SESSION', color: '#808000' },
-        { label: '2PC PENDING TRANSACTION', color: '#e53935' },
-        { label: 'LOCK WAIT', color: '#9333ea' }
+        { label: 'TX LOCK', color: '#7c3aed' },
+        { label: 'TM LOCK', color: '#be123c' }
     ];
     const SCATTER_CATEGORIES = [
         { key: 'active_session', label: 'ACTIVE SESSION', color: '#0ca30c' },
         { key: 'active_transaction', label: 'ACTIVE TRANSACTION', color: '#3987e5' },
         { key: 'parallel_session', label: 'PARALLEL SESSION', color: '#808000' },
-        { key: 'lock_wait', label: 'LOCK WAIT', color: '#9333ea' }
+        { key: 'tx_lock', label: 'TX LOCK', color: '#7c3aed' },
+        { key: 'tm_lock', label: 'TM LOCK', color: '#be123c' }
     ];
 
     // 색상박스+글씨로 된 커스텀 범례를 만들고, 클릭할 때마다 on/off 스위치처럼 글씨가 밝아지거나(켜짐)
@@ -1721,7 +1733,7 @@ let layoutHTML = "";
 
             // session_extra is best-effort (feeds the trend lines + the 3 extra tabs below) - a
             // failure there shouldn't take down the primary Active Session list/table.
-            let extra = { active_transactions: [], parallel_sessions: [], pending_2pc: [], lock_wait_count: 0, lock_wait_sids: [] };
+            let extra = { active_transactions: [], parallel_sessions: [], pending_2pc: [], tx_lock_count: 0, tx_lock_sids: [], tm_lock_count: 0, tm_lock_sids: [] };
             try {
                 if (extraResponse.ok) {
                     const extraData = await extraResponse.json();
@@ -1750,8 +1762,8 @@ let layoutHTML = "";
             sessionHistory.activeSessions.push(activeCount);
             sessionHistory.activeTx.push(extra.active_transactions.length);
             sessionHistory.parallel.push(extra.parallel_sessions.length);
-            sessionHistory.pending2pc.push(extra.pending_2pc.length);
-            sessionHistory.lockWait.push(extra.lock_wait_count || 0);
+            sessionHistory.txLock.push(extra.tx_lock_count || 0);
+            sessionHistory.tmLock.push(extra.tm_lock_count || 0);
 
             // Recomputed every fetch (not a fixed constant) since the polling interval is user-adjustable
             // - always keep enough points to cover the fixed CHART_WINDOW_MS window at the current rate.
@@ -1762,8 +1774,8 @@ let layoutHTML = "";
                 sessionHistory.activeSessions.shift();
                 sessionHistory.activeTx.shift();
                 sessionHistory.parallel.shift();
-                sessionHistory.pending2pc.shift();
-                sessionHistory.lockWait.shift();
+                sessionHistory.txLock.shift();
+                sessionHistory.tmLock.shift();
             }
 
             const ctx = document.getElementById('session-chart');
@@ -1808,10 +1820,10 @@ let layoutHTML = "";
                                     tension: 0
                                 },
                                 {
-                                    label: '2PC PENDING TRANSACTION',
-                                    data: sessionHistory.pending2pc,
-                                    borderColor: '#e53935',
-                                    backgroundColor: 'rgba(229, 57, 53, 0.1)',
+                                    label: 'TX LOCK',
+                                    data: sessionHistory.txLock,
+                                    borderColor: '#7c3aed',
+                                    backgroundColor: 'rgba(124, 58, 237, 0.1)',
                                     borderWidth: 1.5,
                                     pointRadius: 1.5,
                                     pointHoverRadius: 3,
@@ -1819,10 +1831,10 @@ let layoutHTML = "";
                                     tension: 0
                                 },
                                 {
-                                    label: 'LOCK WAIT',
-                                    data: sessionHistory.lockWait,
-                                    borderColor: '#9333ea',
-                                    backgroundColor: 'rgba(147, 51, 234, 0.1)',
+                                    label: 'TM LOCK',
+                                    data: sessionHistory.tmLock,
+                                    borderColor: '#be123c',
+                                    backgroundColor: 'rgba(190, 18, 60, 0.1)',
                                     borderWidth: 1.5,
                                     pointRadius: 1.5,
                                     pointHoverRadius: 3,
@@ -1912,17 +1924,21 @@ let layoutHTML = "";
             const scatterNowTime = Date.now();
             // 사용자 요청(2026-08-31): Trace 점(개별 세션)을 추이 그래프와 같은 색으로 카테고리 구분 -
             // 우선순위 Lock Wait > Active Transaction > Parallel Session > 기본 Active Session (더 급한
-            // 신호가 우선). has_transaction은 이미 getSessions()가 내려주는 필드, parallel/lock_wait는
-            // SID 집합으로 대조.
+            // 신호가 우선). has_transaction은 이미 getSessions()가 내려주는 필드, parallel/lock은 SID
+            // 집합으로 대조.
+            // 사용자 요청(2026-09-14): Lock Wait를 TX Lock/TM Lock으로 분리 - 한 세션이 이론상 두 집합에
+            // 모두 걸릴 수도 있으나(v$lock에 여러 request row) 드문 경우이므로 TX Lock을 우선한다.
             const parallelSidSet = new Set((extra.parallel_sessions || []).map(p => p.sid));
-            const lockWaitSidSet = new Set(extra.lock_wait_sids || []);
+            const txLockSidSet = new Set(extra.tx_lock_sids || []);
+            const tmLockSidSet = new Set(extra.tm_lock_sids || []);
             data.forEach(s => {
                 if (s && s.status && s.status.trim().toUpperCase() === 'ACTIVE' && s.duration_time !== null) {
                     // Only add if not exactly identical recently
                     const lastPoint = scatterDataPoints.length > 0 ? scatterDataPoints[scatterDataPoints.length - 1] : null;
                     if (!lastPoint || lastPoint.session.sid !== s.sid || lastPoint.y !== Number(s.duration_time)) {
                         let category = 'active_session';
-                        if (lockWaitSidSet.has(s.sid)) category = 'lock_wait';
+                        if (txLockSidSet.has(s.sid)) category = 'tx_lock';
+                        else if (tmLockSidSet.has(s.sid)) category = 'tm_lock';
                         else if (s.has_transaction) category = 'active_transaction';
                         else if (parallelSidSet.has(s.sid)) category = 'parallel_session';
                         scatterDataPoints.push({
@@ -2092,7 +2108,7 @@ let layoutHTML = "";
                                 if (session.session_wait_pct && session.session_wait_pct.includes(',')) {
                                     const [cpu, uio, sio, latch, txlock, tmlock, other] = session.session_wait_pct.split(',').map(Number);
                                     if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
-                                        waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #e91e63;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #e74c3c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
+                                        waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #22d3ee;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #7c3aed;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #be123c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
                                     }
                                 }
                                 return waitHtml;
@@ -2108,10 +2124,12 @@ let layoutHTML = "";
                         </tr>
                     `;
                 });
-                const checkedSids = Array.from(document.querySelectorAll('.session-checkbox:checked')).map(cb => cb.getAttribute('data-sid'));
+                // Oracle SID는 재사용되므로 SID만으로는 세션을 특정할 수 없다 - SID+SERIAL# 복합키로 대조.
+                const checkedSessionKeys = new Set(Array.from(document.querySelectorAll('.session-checkbox:checked'))
+                    .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
                 sessionTbody.innerHTML = html;
                 document.querySelectorAll('.session-checkbox').forEach(cb => {
-                    if (checkedSids.includes(cb.getAttribute('data-sid'))) {
+                    if (checkedSessionKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
                         cb.checked = true;
                     }
                 });
@@ -2174,7 +2192,7 @@ let layoutHTML = "";
             if (r.session_wait_pct && r.session_wait_pct.includes(',')) {
                 const [cpu, uio, sio, latch, txlock, tmlock, other] = r.session_wait_pct.split(',').map(Number);
                 if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
-                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #e91e63;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #e74c3c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
+                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #22d3ee;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #7c3aed;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #be123c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
                 }
             }
             // Unlike Active Session (queried with status='ACTIVE' only), Active Transaction has no
@@ -2289,8 +2307,8 @@ let layoutHTML = "";
         sessionHistory.activeSessions = cached ? cached.sessionHistory.activeSessions.slice() : [];
         sessionHistory.activeTx = cached ? cached.sessionHistory.activeTx.slice() : [];
         sessionHistory.parallel = cached ? cached.sessionHistory.parallel.slice() : [];
-        sessionHistory.pending2pc = cached ? cached.sessionHistory.pending2pc.slice() : [];
-        sessionHistory.lockWait = cached ? cached.sessionHistory.lockWait.slice() : [];
+        sessionHistory.txLock = cached ? cached.sessionHistory.txLock.slice() : [];
+        sessionHistory.tmLock = cached ? cached.sessionHistory.tmLock.slice() : [];
         scatterDataPoints = cached ? cached.scatterDataPoints.slice() : [];
 
         if (sessionTbody) sessionTbody.innerHTML = '<tr><td colspan="16" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
@@ -2782,7 +2800,7 @@ let layoutHTML = "";
                                             if (s.session_wait_pct && s.session_wait_pct.includes(',')) {
                                                 const [cpu, uio, sio, latch, txlock, tmlock, other] = s.session_wait_pct.split(',').map(Number);
                                                 if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
-                                                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #9b59b6;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #e91e63;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #e74c3c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
+                                                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #22d3ee;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #7c3aed;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #be123c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
                                                 }
                                             }
                                             return waitHtml;
@@ -2797,10 +2815,12 @@ let layoutHTML = "";
                                         <td>${s.program_name || '-'}</td>
                                     </tr>`;
                                 });
-                                const checkedSids = Array.from(document.querySelectorAll('.dash-sess-checkbox:checked')).map(cb => cb.getAttribute('data-sid'));
+                                // Oracle SID는 재사용되므로 SID만으로는 세션을 특정할 수 없다 - SID+SERIAL# 복합키로 대조.
+                                const checkedDashKeys = new Set(Array.from(document.querySelectorAll('.dash-sess-checkbox:checked'))
+                                    .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
                                 tbody.innerHTML = html;
                                 document.querySelectorAll('.dash-sess-checkbox').forEach(cb => {
-                                    if (checkedSids.includes(cb.getAttribute('data-sid'))) {
+                                    if (checkedDashKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
                                         cb.checked = true;
                                     }
                                 });
@@ -3392,8 +3412,10 @@ let historyDataCache = [];
             const endTime = document.getElementById('history-end-time').value;
             const userSelect = document.getElementById('history-users');
             const selectedUsers = userSelect ? Array.from(userSelect.selectedOptions).map(o => o.value).join(',') : '';
+            const machineSelect = document.getElementById('history-machines');
+            const selectedMachines = machineSelect ? Array.from(machineSelect.selectedOptions).map(o => o.value).join(',') : '';
             const targetDb = window.currentDbId || "";
-            
+
             if (!startTime || !endTime) {
                 alert("시작 시간과 종료 시간을 모두 입력해주세요.");
                 return;
@@ -3406,7 +3428,7 @@ let historyDataCache = [];
             if (loadingOverlay) loadingOverlay.style.display = 'flex';
 
             try {
-                const response = await fetch(`/api/history_sessions?db_id=${encodeURIComponent(targetDb)}&start_time=${encodeURIComponent(startTime)}&end_time=${encodeURIComponent(endTime)}&users=${encodeURIComponent(selectedUsers)}&token=${encodeURIComponent(getToken())}`);
+                const response = await fetch(`/api/history_sessions?db_id=${encodeURIComponent(targetDb)}&start_time=${encodeURIComponent(startTime)}&end_time=${encodeURIComponent(endTime)}&users=${encodeURIComponent(selectedUsers)}&machines=${encodeURIComponent(selectedMachines)}&token=${encodeURIComponent(getToken())}`);
                 const data = await response.json();
 
                 if (data.error) {
@@ -3727,28 +3749,35 @@ function updateHistoryUI(data) {
 
 // Global DB Users loader
 let dbUsersLoaded = false;
+const dbUsersEscapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 async function loadDbUsers(targetDb) {
     if (!targetDb) return;
+    // 사용자 요청(2026-09-14): history_users/history_machines는 서로 독립적인 요청이라 순차 await로
+    // 묶을 이유가 없다 - 먼저 둘 다 fetch()만 시작해 두고(요청은 즉시 동시에 나감), 각자의 await/처리는
+    // 기존처럼 별도 try/catch로 나눠 에러 처리 독립성은 그대로 유지한다(코드 리뷰 지적, 2026-09-14).
+    const usersFetch = fetch(`/api/history_users?db_id=${encodeURIComponent(targetDb)}&token=${encodeURIComponent(getToken())}`);
+    const machinesFetch = fetch(`/api/history_machines?db_id=${encodeURIComponent(targetDb)}&token=${encodeURIComponent(getToken())}`);
+
     try {
-        const response = await fetch(`/api/db_users?db_id=${encodeURIComponent(targetDb)}&token=${encodeURIComponent(getToken())}`);
+        const response = await usersFetch;
         let users = await response.json();
-        
+
         const hSelect = document.getElementById('history-users');
         const htSelect = document.getElementById('history-top-users');
-        
+
         if (hSelect) {
             hSelect.style.display = 'inline-block';
             if (Array.isArray(users) && users.length > 0) {
-                hSelect.innerHTML = `<option value="">전체 계정(All)</option>` + users.map(u => `<option value="${u}">${u}</option>`).join('');
+                hSelect.innerHTML = `<option value="">전체 계정(All)</option>` + users.map(u => `<option value="${dbUsersEscapeHtml(u)}">${dbUsersEscapeHtml(u)}</option>`).join('');
             } else {
                 hSelect.innerHTML = `<option value="">계정 없음 ` + JSON.stringify(users) + `</option>`;
             }
         }
-        
+
         if (htSelect) {
             htSelect.style.display = 'inline-block';
             if (Array.isArray(users) && users.length > 0) {
-                htSelect.innerHTML = `<option value="">전체 계정(All)</option>` + users.map(u => `<option value="${u}">${u}</option>`).join('');
+                htSelect.innerHTML = `<option value="">전체 계정(All)</option>` + users.map(u => `<option value="${dbUsersEscapeHtml(u)}">${dbUsersEscapeHtml(u)}</option>`).join('');
             } else {
                 htSelect.innerHTML = `<option value="">계정 없음</option>`;
             }
@@ -3758,8 +3787,33 @@ async function loadDbUsers(targetDb) {
         console.error("Failed to load db users", e);
         const hSelect = document.getElementById('history-users');
         if (hSelect) {
-            hSelect.innerHTML = `<option value="">Error: ${e.message}</option>`;
+            hSelect.innerHTML = `<option value="">Error: ${dbUsersEscapeHtml(e.message)}</option>`;
             hSelect.style.display = 'inline-block';
+        }
+    }
+
+    // 사용자 요청(2026-09-14): 성능 이력 조회에서 실제 업무(WAS) 세션만 골라 보고 싶다는 요청 -
+    // 최근 ASH/AWR에 남아있는 접속 호스트(machine) 목록을 드롭다운으로 제공한다. WAS 서버 목록이
+    // databases.json 등 어디에도 설정되어 있지 않아 실측값(dba_hist 최근 7일 + 현재 v$active_
+    // session_history)에서 뽑는 방식 - DBA가 자기 WAS 호스트명을 알아서 고르면 된다.
+    try {
+        const mResponse = await machinesFetch;
+        const machines = await mResponse.json();
+        const mSelect = document.getElementById('history-machines');
+        if (mSelect) {
+            mSelect.style.display = 'inline-block';
+            if (Array.isArray(machines) && machines.length > 0) {
+                mSelect.innerHTML = `<option value="">전체 서버(All)</option>` + machines.map(m => `<option value="${dbUsersEscapeHtml(m)}">${dbUsersEscapeHtml(m)}</option>`).join('');
+            } else {
+                mSelect.innerHTML = `<option value="">서버 없음</option>`;
+            }
+        }
+    } catch (e) {
+        console.error("Failed to load history machines", e);
+        const mSelect = document.getElementById('history-machines');
+        if (mSelect) {
+            mSelect.innerHTML = `<option value="">Error: ${dbUsersEscapeHtml(e.message)}</option>`;
+            mSelect.style.display = 'inline-block';
         }
     }
 }
@@ -4383,6 +4437,9 @@ let historySortAsc = true;
     const sqlWriterTableInput = document.getElementById('sqlwriter-table-input');
     const sqlWriterLookupBtn = document.getElementById('sqlwriter-lookup-btn');
     const sqlWriterLookupStatus = document.getElementById('sqlwriter-lookup-status');
+    const sqlWriterOwnerPicker = document.getElementById('sqlwriter-owner-picker');
+    const sqlWriterOwnerPickerSelect = document.getElementById('sqlwriter-owner-picker-select');
+    const sqlWriterOwnerPickerBtn = document.getElementById('sqlwriter-owner-picker-btn');
     const sqlWriterPreview = document.getElementById('sqlwriter-preview');
     const sqlWriterPreviewBody = document.getElementById('sqlwriter-preview-body');
     const sqlWriterAddBtn = document.getElementById('sqlwriter-add-btn');
@@ -4415,7 +4472,8 @@ let historySortAsc = true;
     function formatTablePreview(table) {
         const cols = (table.columns || []).map(c => `  ${c.name}  ${c.dataType}${c.nullable ? '' : '  NOT NULL'}`).join('\n');
         const idxLines = (table.indexes || []).map(i => `  ${i.name}  ${i.unique ? 'UNIQUE ' : ''}(${(i.columns || []).join(', ')})`).join('\n');
-        let text = `TABLE: ${table.name}\nCOLUMNS:\n${cols}`;
+        const qualifiedName = table.owner ? `${table.owner}.${table.name}` : table.name;
+        let text = `TABLE: ${qualifiedName}\nCOLUMNS:\n${cols}`;
         if (idxLines) text += `\nINDEXES:\n${idxLines}`;
         return text;
     }
@@ -4425,11 +4483,15 @@ let historySortAsc = true;
         if (sqlWriterTables.length === 0) {
             sqlWriterTableList.innerHTML = '<span style="font-size: 0.82rem; color: var(--text-muted);">아직 추가된 테이블이 없습니다.</span>';
         } else {
-            sqlWriterTableList.innerHTML = sqlWriterTables.map((t, i) => `
+            sqlWriterTableList.innerHTML = sqlWriterTables.map((t, i) => {
+                const qualifiedName = t.owner ? `${t.owner}.${t.name}` : (t.name || '');
+                const escaped = String(qualifiedName).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+                return `
                 <span style="display:inline-flex; align-items:center; gap:6px; padding: 4px 10px; border-radius: 14px; background: var(--bg-card); border: 1px solid var(--border-color); font-size: 0.82rem; font-family: 'Consolas', 'D2Coding', monospace;">
-                    ${String(t.name || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))}
+                    ${escaped}
                     <span data-remove-idx="${i}" style="cursor:pointer; color: var(--text-muted); font-weight: bold;" title="제거">×</span>
-                </span>`).join('');
+                </span>`;
+            }).join('');
             sqlWriterTableList.querySelectorAll('[data-remove-idx]').forEach(el => {
                 el.addEventListener('click', () => {
                     sqlWriterTables.splice(Number(el.dataset.removeIdx), 1);
@@ -4442,12 +4504,16 @@ let historySortAsc = true;
     }
 
     if (sqlWriterLookupBtn && sqlWriterTableInput) {
-        const doLookup = () => {
+        // owner를 생략하면(자동 탐색형): 서버가 ① 현재 접속 계정 소유 → ② ALL_TAB_COLUMNS 후보 순으로
+        // 찾고, 후보가 여럿이면 needsOwnerSelection 으로 돌려준다 - 그때만 아래 선택 UI를 띄우고,
+        // 사용자가 고르면 owner를 채워 doLookup을 다시 호출한다(사용자 요청 2026-09-14).
+        const doLookup = (owner) => {
             const tableName = sqlWriterTableInput.value.trim();
             if (!tableName || sqlWriterLookupBtn.disabled) return;
             sqlWriterLookupBtn.disabled = true;
             sqlWriterPendingTable = null;
             if (sqlWriterPreview) sqlWriterPreview.style.display = 'none';
+            if (sqlWriterOwnerPicker) sqlWriterOwnerPicker.style.display = 'none';
             if (sqlWriterLookupStatus) sqlWriterLookupStatus.textContent = '조회 중...';
 
             fetch('/api/sqlwriter/table_info', {
@@ -4457,13 +4523,21 @@ let historySortAsc = true;
                     db_id: window.currentDbId || '',
                     account: sqlWriterAccountSelect ? sqlWriterAccountSelect.value : '',
                     token: getToken(),
-                    table_name: tableName
+                    table_name: tableName,
+                    owner: owner || ''
                 })
             })
             .then(res => res.json())
             .then(data => {
                 sqlWriterLookupBtn.disabled = false;
                 if (!data.success) {
+                    if (data.needsOwnerSelection && Array.isArray(data.owners) && sqlWriterOwnerPicker && sqlWriterOwnerPickerSelect) {
+                        // 코드 리뷰 지적(2026-09-14): OWNER는 따옴표로 감싼 식별자를 쓰면 임의 문자를
+                        // 담을 수 있는 DB 값이라, innerHTML에 그대로 꽂으면 저장형 XSS가 된다.
+                        const escapeOwner = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+                        sqlWriterOwnerPickerSelect.innerHTML = data.owners.map(o => `<option value="${escapeOwner(o)}">${escapeOwner(o)}</option>`).join('');
+                        sqlWriterOwnerPicker.style.display = 'flex';
+                    }
                     if (sqlWriterLookupStatus) sqlWriterLookupStatus.textContent = data.message || '조회 실패';
                     return;
                 }
@@ -4477,10 +4551,19 @@ let historySortAsc = true;
                 if (sqlWriterLookupStatus) sqlWriterLookupStatus.textContent = '서버 통신 오류';
             });
         };
-        sqlWriterLookupBtn.addEventListener('click', doLookup);
+        sqlWriterLookupBtn.addEventListener('click', () => doLookup());
         sqlWriterTableInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); doLookup(); }
         });
+        // 테이블명을 바꾸면 이전 조회에서 뜬 OWNER 후보 목록은 더 이상 유효하지 않으므로 숨긴다.
+        sqlWriterTableInput.addEventListener('input', () => {
+            if (sqlWriterOwnerPicker) sqlWriterOwnerPicker.style.display = 'none';
+        });
+        if (sqlWriterOwnerPickerBtn) {
+            sqlWriterOwnerPickerBtn.addEventListener('click', () => {
+                if (sqlWriterOwnerPickerSelect) doLookup(sqlWriterOwnerPickerSelect.value);
+            });
+        }
     }
 
     if (sqlWriterAddBtn) {
