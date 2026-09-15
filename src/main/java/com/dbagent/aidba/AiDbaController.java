@@ -95,7 +95,7 @@ public class AiDbaController {
             return ResponseEntity.ok(Maps.of("success", false, "message", "먼저 1차 성능점검을 실행해주세요."));
         }
         try {
-            String prompt = buildCurrentSqlPrompt(query, req.binds(), plan);
+            String prompt = buildCurrentSqlPrompt(query, req.binds(), plan, req.previousContext(), req.followUpQuestion());
             String answer = ollamaChatService.askWithPrompt(CURRENT_SQL_PROMPT_ID, prompt);
             return ResponseEntity.ok(Maps.of("success", true, "answer", answer));
         } catch (Exception e) {
@@ -103,8 +103,13 @@ public class AiDbaController {
         }
     }
 
-    /** current-sql.md가 요구하는 입력 형식([분석 대상 SQL]/[바인드 변수]/[실행계획 및 실측 통계]) 그대로 조립. */
-    private String buildCurrentSqlPrompt(String query, Map<String, String> binds, String plan) {
+    /**
+     * current-sql.md가 요구하는 입력 형식([분석 대상 SQL]/[바인드 변수]/[실행계획 및 실측 통계]/[DBA 추가 요청])
+     * 그대로 조립. previousContext(이전 분석/후속문답 누적본)가 있으면 [이전 분석 결과]로 함께 실어,
+     * followUpQuestion을 프롬프트가 이미 정의해둔 [DBA 추가 요청] 블록에 담는다(후속질문, 2026-09-15).
+     */
+    private String buildCurrentSqlPrompt(String query, Map<String, String> binds, String plan,
+                                          String previousContext, String followUpQuestion) {
         StringBuilder sb = new StringBuilder();
         sb.append("[분석 대상 SQL]\n").append(query).append("\n\n");
         if (binds != null && !binds.isEmpty()) {
@@ -115,6 +120,12 @@ public class AiDbaController {
             sb.append("\n");
         }
         sb.append("[실행계획 및 실측 통계]\n").append(plan);
+        if (previousContext != null && !Strings.isBlank(previousContext)) {
+            sb.append("\n\n[이전 분석 결과]\n").append(previousContext);
+        }
+        if (followUpQuestion != null && !Strings.isBlank(followUpQuestion)) {
+            sb.append("\n\n[DBA 추가 요청]\n").append(followUpQuestion);
+        }
         return sb.toString();
     }
 
