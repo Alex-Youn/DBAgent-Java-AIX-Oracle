@@ -450,8 +450,8 @@
                                      본문 상단의 가로 탭 대신 이 두 항목을 클릭해 화면을 전환한다.
                                      data-tunner-tab 값과 아래 tunner-tab-content id는 그대로 재사용. -->
                                 <div style="display: flex; flex-direction: column;">
-                                    <button type="button" class="tunner-tab-btn active" data-tunner-tab="tab-tunner-perf" style="display: flex; align-items: center; width: 100%; text-align: left; padding: 8px 16px 8px 41px; border: none; background: transparent; color: var(--primary); font-weight: 600; cursor: pointer; font-size: 0.82rem;">AI SQL 성능분석</button>
                                     <button type="button" class="tunner-tab-btn" data-tunner-tab="tab-tunner-current" style="display: flex; align-items: center; width: 100%; text-align: left; padding: 8px 16px 8px 41px; border: none; background: transparent; color: var(--text-secondary); font-weight: 500; cursor: pointer; font-size: 0.82rem;">AI Current SQL 분석</button>
+                                    <button type="button" class="tunner-tab-btn active" data-tunner-tab="tab-tunner-perf" style="display: flex; align-items: center; width: 100%; text-align: left; padding: 8px 16px 8px 41px; border: none; background: transparent; color: var(--primary); font-weight: 600; cursor: pointer; font-size: 0.82rem;">AI SQL 성능분석</button>
                                 </div>
                                 <button type="button" class="aidba-side-btn" data-view="aidba-view-chat" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 12px 16px; border: none; border-left: 3px solid transparent; background: transparent; color: var(--text-secondary); font-weight: 500; cursor: pointer; font-size: 0.88rem;">
                                     <i data-lucide="bot" style="width: 15px; height: 15px; flex-shrink: 0;"></i> AI 챗봇
@@ -468,26 +468,10 @@
                             <div style="flex: 1; min-width: 0; padding: 20px; overflow-y: auto;">
                                 <!-- AI SQL Tunner (구 SQL Tune Advisor 흡수) -->
                                 <div id="aidba-view-tunner" class="aidba-view" style="display: flex; flex-direction: column; height: 100%;">
-                                    <!-- 탭 ① AI SQL 성능분석 (기존 SQL Tune Advisor 화면, 기능 그대로) -->
-                                    <div id="tab-tunner-perf" class="tunner-tab-content" style="display: block; flex: 1; overflow-y: auto;">
-                                        <p style="color: var(--text-secondary); margin: 0 0 12px; font-size: 0.88rem;">사내 튜닝 사례를 검색(RAG)해 참고하면서 SQL을 분석합니다. 튜닝이 필요한 쿼리나 증상을 입력하면 문제점 분석 → 최적화된 SQL → 개선 포인트 → 권장 인덱스 순으로 답변합니다. (사내 폐쇄망 GPU 서버 연동, 응답까지 다소 시간이 걸릴 수 있습니다)</p>
-                                        <div class="input-group">
-                                            <textarea id="sqltuneadvisor-input" rows="8" placeholder="예: 아래 쿼리가 풀스캔이 발생하며 느립니다. 튜닝 방안을 제시해주세요.&#10;SELECT ... (Ctrl+Enter: 분석 실행)" style="width: 100%; font-family: 'Consolas', 'D2Coding', monospace; font-size: 0.9rem; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main); resize: vertical;"></textarea>
-                                            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 10px;">
-                                                <button id="sqltuneadvisor-clear-btn" type="button" style="padding: 0 20px; border-radius: 6px; height: 40px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); cursor: pointer;"><i data-lucide="eraser"></i> 화면 클리어</button>
-                                                <button id="sqltuneadvisor-run-btn" class="primary-btn"><i data-lucide="search"></i> 분석 실행 (Ctrl+Enter)</button>
-                                            </div>
-                                        </div>
-                                        <div id="sqltuneadvisor-result" style="margin-top: 20px; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main); min-height: 150px;">
-                                            <div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">
-                                                쿼리나 튜닝하고 싶은 상황을 입력하고 분석을 실행해주세요.
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <!-- 탭 ② AI Current SQL 분석 (신규: 매뉴통합.md 2-1) - 쿼리와 실측 성능정보를 먼저 보여주고
+                                    <!-- 탭 ① AI Current SQL 분석 (신규: 매뉴통합.md 2-1) - 쿼리와 실측 성능정보를 먼저 보여주고
                                          DBA 가 분석이 필요한지 판단한 뒤에만 모델에 던지는 human-in-the-loop 방식.
-                                         1차 성능점검 + 바인드 변수 패널은 기존 SQL 정합성/튜닝 화면에서 이 탭으로 이동한 것 -->
+                                         1차 성능점검 + 바인드 변수 패널은 기존 SQL 정합성/튜닝 화면에서 이 탭으로 이동한 것.
+                                         메뉴 순서상 AI SQL 성능분석보다 앞으로 옮김(사용자 요청, 2026-09-15) -->
                                     <div id="tab-tunner-current" class="tunner-tab-content" style="display: none; flex: 1; overflow-y: auto;">
                                         <p style="color: var(--text-secondary); margin: 0 0 12px; font-size: 0.88rem;">쿼리를 실제로 실행해 실행계획/실측 통계를 먼저 확인한 뒤, 분석이 필요하다고 판단되면 "성능분석"으로 AI에게 해석을 요청합니다. (실시간 세션 상세정보의 "Tuning" 버튼으로도 이 탭에 바로 진입할 수 있습니다)</p>
                                         <div class="admin-only" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card);">
@@ -520,6 +504,23 @@
                                         <div id="tunner-current-result" style="margin-top: 20px; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main); min-height: 150px;">
                                             <div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">
                                                 쿼리를 입력하고 "1차 성능점검"을 실행하면 실행계획/실측 통계가 여기에 표시됩니다.
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 탭 ② AI SQL 성능분석 (기존 SQL Tune Advisor 화면, 기능 그대로) -->
+                                    <div id="tab-tunner-perf" class="tunner-tab-content" style="display: block; flex: 1; overflow-y: auto;">
+                                        <p style="color: var(--text-secondary); margin: 0 0 12px; font-size: 0.88rem;">사내 튜닝 사례를 검색(RAG)해 참고하면서 SQL을 분석합니다. 튜닝이 필요한 쿼리나 증상을 입력하면 문제점 분석 → 최적화된 SQL → 개선 포인트 → 권장 인덱스 순으로 답변합니다. (사내 폐쇄망 GPU 서버 연동, 응답까지 다소 시간이 걸릴 수 있습니다)</p>
+                                        <div class="input-group">
+                                            <textarea id="sqltuneadvisor-input" rows="8" placeholder="예: 아래 쿼리가 풀스캔이 발생하며 느립니다. 튜닝 방안을 제시해주세요.&#10;SELECT ... (Ctrl+Enter: 분석 실행)" style="width: 100%; font-family: 'Consolas', 'D2Coding', monospace; font-size: 0.9rem; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-main); resize: vertical;"></textarea>
+                                            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 10px;">
+                                                <button id="sqltuneadvisor-clear-btn" type="button" style="padding: 0 20px; border-radius: 6px; height: 40px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-secondary); cursor: pointer;"><i data-lucide="eraser"></i> 화면 클리어</button>
+                                                <button id="sqltuneadvisor-run-btn" class="primary-btn"><i data-lucide="search"></i> 분석 실행 (Ctrl+Enter)</button>
+                                            </div>
+                                        </div>
+                                        <div id="sqltuneadvisor-result" style="margin-top: 20px; padding: 20px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-main); min-height: 150px;">
+                                            <div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">
+                                                쿼리나 튜닝하고 싶은 상황을 입력하고 분석을 실행해주세요.
                                             </div>
                                         </div>
                                     </div>
