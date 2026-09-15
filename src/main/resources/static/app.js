@@ -4266,7 +4266,8 @@ let historySortAsc = true;
             if (tunnerCurrentBindHashInput) tunnerCurrentBindHashInput.value = '';
             if (tunnerCurrentBindCaptureStatus) tunnerCurrentBindCaptureStatus.textContent = '';
             window.renderTunnerCurrentBindFields();
-            tunnerCurrentResult.innerHTML = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">쿼리를 입력하고 "1차 성능점검"을 실행하면 실행계획/실측 통계가 여기에 표시됩니다.</div>';
+            tunnerCurrentResult.innerHTML = '<div style="text-align: center; margin-top: 20px;"><div style="display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 16px; background: var(--accent-2-soft); margin-bottom: 12px;"><i data-lucide="message-square-text" style="width: 26px; height: 26px; color: var(--accent-2);"></i></div><div style="color: var(--text-secondary); line-height: 1.7;">쿼리를 입력하고 "1차 성능점검"을 실행하면 실행계획/실측 통계가 여기에 표시됩니다.<br>2차로 "성능분석"을 실행하면 해당쿼리의 성능 분석 및 튜닝을 지원합니다.</div></div>';
+            if (typeof lucide !== 'undefined') lucide.createIcons({root: tunnerCurrentResult});
             tunnerCurrentInput.focus();
         });
     }
@@ -4374,7 +4375,7 @@ let historySortAsc = true;
     const resultEl = document.getElementById('sqltuneadvisor-result');
     if (!input || !runBtn || !clearBtn || !resultEl) return;
 
-    const PLACEHOLDER_HTML = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">쿼리나 튜닝하고 싶은 상황을 입력하고 분석을 실행해주세요.</div>';
+    const PLACEHOLDER_HTML = '<div style="text-align: center; margin-top: 20px;"><div style="display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 16px; background: var(--accent-2-soft); margin-bottom: 12px;"><i data-lucide="message-square-text" style="width: 26px; height: 26px; color: var(--accent-2);"></i></div><div style="color: var(--text-secondary); line-height: 1.7;">쿼리나 튜닝하고 싶은 상황을 입력하고 분석을 실행해주세요.</div></div>';
 
     const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -4507,6 +4508,7 @@ let historySortAsc = true;
     clearBtn.addEventListener('click', () => {
         input.value = '';
         resultEl.innerHTML = PLACEHOLDER_HTML;
+        if (typeof lucide !== 'undefined') lucide.createIcons({root: resultEl});
         input.focus();
     });
 })();
@@ -4535,7 +4537,7 @@ let historySortAsc = true;
         const tunnerIsActive = !!(tunnerBtn && tunnerBtn.classList.contains('active'));
         tunnerTabBtns.forEach(b => {
             const isActive = tunnerIsActive && b.classList.contains('active');
-            b.style.color = isActive ? 'var(--primary)' : 'var(--text-secondary)';
+            b.style.color = isActive ? 'var(--primary)' : 'var(--text-main)';
             b.style.fontWeight = isActive ? '600' : '500';
         });
     }
@@ -4543,7 +4545,7 @@ let historySortAsc = true;
     function activateAidbaView(viewId) {
         aidbaSideBtns.forEach(b => {
             b.classList.remove('active');
-            b.style.color = 'var(--text-secondary)';
+            b.style.color = 'var(--text-main)';
             b.style.fontWeight = '500';
             b.style.borderLeftColor = 'transparent';
             b.style.background = 'transparent';
@@ -4566,11 +4568,12 @@ let historySortAsc = true;
     aidbaSideBtns.forEach(btn => {
         btn.addEventListener('click', () => {
             const viewId = btn.getAttribute('data-view');
-            // "AI SQL Tunner" 부모 자체를 누르면(자식이 아니라) 항상 기본 탭(AI SQL 성능분석)으로
-            // 들어간다 - 마지막으로 보던 자식을 기억해 뒀다가 엉뚱한 화면(예: AI Current SQL 분석)
-            // 으로 복귀하면 사용자가 "리턴이 안 된다"고 느낀다(사용자 리포트, 2026-09-12).
+            // "AI SQL Tunner" 부모 자체를 누르면(자식이 아니라) 항상 기본 탭(AI Current SQL 분석)으로
+            // 들어간다 - 마지막으로 보던 자식을 기억해 뒀다가 엉뚱한 화면으로 복귀하면 사용자가
+            // "리턴이 안 된다"고 느낀다(사용자 리포트, 2026-09-12). 기본 탭은 AI Current SQL 분석으로
+            // 변경(사용자 요청, 2026-09-15).
             if (viewId === 'aidba-view-tunner') {
-                const defaultTab = document.querySelector('.tunner-tab-btn[data-tunner-tab="tab-tunner-perf"]');
+                const defaultTab = document.querySelector('.tunner-tab-btn[data-tunner-tab="tab-tunner-current"]');
                 if (defaultTab) { defaultTab.click(); return; }
             }
             activateAidbaView(viewId);
@@ -4633,7 +4636,7 @@ let historySortAsc = true;
     const sqlWriterGenerateBtn = document.getElementById('sqlwriter-generate-btn');
     const sqlWriterClearBtn = document.getElementById('sqlwriter-clear-btn');
     const sqlWriterResult = document.getElementById('sqlwriter-result');
-    const SQLWRITER_RESULT_PLACEHOLDER = '<div style="color: var(--text-secondary); text-align: center; margin-top: 30px;">테이블을 추가하고 요청 조건을 입력한 뒤 "SQL 생성"을 눌러주세요.</div>';
+    const SQLWRITER_RESULT_PLACEHOLDER = '<div style="text-align: center; margin-top: 20px;"><div style="display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 16px; background: var(--accent-2-soft); margin-bottom: 12px;"><i data-lucide="message-square-text" style="width: 26px; height: 26px; color: var(--accent-2);"></i></div><div style="color: var(--text-secondary); line-height: 1.7;">테이블을 추가하고 요청 조건을 입력한 뒤 "SQL 생성"을 눌러주세요.</div></div>';
 
     let sqlWriterPendingTable = null; // 방금 조회했지만 아직 "추가"하지 않은 테이블
     let sqlWriterTables = [];         // 컨텍스트에 추가된 테이블들 (table_info 응답 그대로)
@@ -5002,7 +5005,10 @@ let historySortAsc = true;
             if (sqlWriterRequestInput) sqlWriterRequestInput.value = '';
             if (sqlWriterPreview) sqlWriterPreview.style.display = 'none';
             if (sqlWriterLookupStatus) sqlWriterLookupStatus.textContent = '';
-            if (sqlWriterResult) sqlWriterResult.innerHTML = SQLWRITER_RESULT_PLACEHOLDER;
+            if (sqlWriterResult) {
+                sqlWriterResult.innerHTML = SQLWRITER_RESULT_PLACEHOLDER;
+                if (typeof lucide !== 'undefined') lucide.createIcons({root: sqlWriterResult});
+            }
             if (sqlWriterTableInput) sqlWriterTableInput.focus();
         });
     }
@@ -5075,6 +5081,9 @@ let historySortAsc = true;
     const chatInput = document.getElementById('aidba-chat-input');
     const chatSendBtn = document.getElementById('aidba-chat-send-btn');
     const chatLog = document.getElementById('aidba-chat-history');
+    const chatClearBtn = document.getElementById('aidba-chat-clear-btn');
+    // "화면 클리어" 로 되돌릴 초기 인사말(원본 app.js와 동일 패턴, 2026-09-15 포팅).
+    const chatInitialHtml = chatLog ? chatLog.innerHTML : '';
 
     if (chatInput && chatSendBtn && chatLog) {
         const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({
@@ -5147,9 +5156,25 @@ let historySortAsc = true;
         };
 
         chatSendBtn.addEventListener('click', doChatSend);
-        chatInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') doChatSend();
+        // input -> textarea 로 바뀌면서 Enter 의 의미가 갈렸다: Enter 는 전송, Shift+Enter 는 줄바꿈.
+        // isComposing 체크가 없으면 한글 조합 중 Enter(글자 확정)에 그대로 전송돼 버린다(원본과 동일 패턴).
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.isComposing) return;
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                doChatSend();
+            }
         });
+
+        if (chatClearBtn) {
+            chatClearBtn.addEventListener('click', () => {
+                chatLog.innerHTML = chatInitialHtml;
+                chatLog.scrollTop = 0;
+                chatInput.value = '';
+                chatInput.focus();
+                if (typeof lucide !== 'undefined') lucide.createIcons({root: chatLog});
+            });
+        }
     }
 
 // SQL Runner Logic
