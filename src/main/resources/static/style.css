@@ -915,6 +915,311 @@ body {
     color: var(--danger);
 }
 
+/* ---- Oracle instance dashboard v2 (신규 인스턴스 대시보드, 2026-09-16) ---- */
+.iv2-view-switch {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 500;
+    display: flex;
+    gap: 2px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 4px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.iv2-view-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.iv2-view-btn i {
+    width: 18px;
+    height: 18px;
+    pointer-events: none;
+}
+
+.iv2-view-btn.active {
+    background: var(--primary);
+    color: #fff;
+}
+
+.iv2-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 14px 20px;
+    margin-bottom: 20px;
+}
+
+.iv2-header-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.iv2-instance-name {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--text-main);
+}
+
+.iv2-tags {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.iv2-tags span {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 3px 8px;
+}
+
+.iv2-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+}
+
+.iv2-kpi-tile {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 14px 16px;
+}
+
+.iv2-kpi-label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.iv2-kpi-value {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text-main);
+    font-variant-numeric: tabular-nums;
+}
+
+.iv2-charts-row {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 16px;
+    margin-top: 20px;
+    margin-bottom: 20px;
+}
+
+.iv2-alert-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.iv2-alert-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--bg-panel);
+    font-size: 0.85rem;
+    color: var(--text-main);
+}
+
+.iv2-alert-item .iv2-alert-time {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.iv2-alert-item.critical { border-left: 3px solid var(--danger); }
+.iv2-alert-item.warning { border-left: 3px solid var(--warning); }
+.iv2-alert-item.info { border-left: 3px solid var(--info); }
+
+.iv2-sql-status {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.iv2-sql-status.tuning_needed { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
+.iv2-sql-status.watching { background: rgba(250, 178, 25, 0.14); color: var(--warning); }
+.iv2-sql-status.normal { background: rgba(12, 163, 12, 0.12); color: var(--success); }
+
+@media (max-width: 1100px) {
+    .iv2-kpi-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .iv2-charts-row { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+    .iv2-kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ---- Oracle instance dashboard v3 (벤토형, 2026-09-16) ---- */
+.iv3-slim-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 18px;
+    margin-bottom: 16px;
+    font-size: 0.85rem;
+}
+
+.iv3-slim-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.iv3-breadcrumb { color: var(--text-muted); }
+.iv3-instance-chip { font-weight: 700; color: var(--text-main); }
+.iv3-meta-text { color: var(--text-muted); }
+.iv3-last-updated { color: var(--text-muted); font-size: 0.8rem; }
+
+.iv3-bento-grid {
+    display: grid;
+    grid-template-columns: 1.9fr 1fr;
+    gap: 16px;
+    /* align-items 기본값(stretch)을 그대로 둔다 - 메인 컬럼/사이드바 둘 다 grid row 높이(둘 중 더 큰
+       쪽)만큼 늘어나야 아래 .panel:last-child의 flex:1이 남는 높이를 흡수해 두 컬럼의 바닥선을 정확히
+       맞출 수 있다(사용자 실측 단차 제보, 2026-09-17 - 콘텐츠만으로 채우는 방식은 근사치일 뿐이라
+       정확히 맞춰달라는 요청으로 이 방식으로 교체). */
+}
+
+.iv3-main-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.iv3-sidebar { display: flex; flex-direction: column; gap: 16px; position: sticky; top: 12px; }
+
+/* 두 컬럼 중 콘텐츠가 짧은 쪽의 마지막 카드가 남는 높이를 떠안아 바닥선을 정확히 맞춘다 - 카드
+   테두리/배경은 늘어나고 내부 콘텐츠는 그대로 위쪽에 붙어있는다(흔한 대시보드 그리드 정렬 패턴). */
+.iv3-main-col > .panel:last-child,
+.iv3-sidebar > .panel:last-child {
+    flex: 1;
+}
+
+.iv3-hero-card { display: flex; align-items: center; gap: 24px; padding: 20px; flex-wrap: wrap; }
+.iv3-hero-gauge { position: relative; width: 160px; height: 160px; flex-shrink: 0; }
+.iv3-gauge-center {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.iv3-gauge-score { font-size: 2rem; font-weight: 800; color: var(--text-main); font-variant-numeric: tabular-nums; }
+.iv3-gauge-label { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+#iv3-gauge-arc { transition: stroke-dasharray 0.4s ease; }
+
+.iv3-hero-breakdown { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 10px; }
+.iv3-breakdown-row { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; }
+.iv3-breakdown-label { width: 150px; color: var(--text-muted); flex-shrink: 0; }
+.iv3-breakdown-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--bg-panel); overflow: hidden; }
+.iv3-breakdown-bar-fill { height: 100%; border-radius: 3px; background: var(--primary); }
+.iv3-breakdown-bar-fill.warning { background: var(--warning); }
+.iv3-breakdown-bar-fill.danger { background: var(--danger); }
+.iv3-breakdown-value { width: 80px; text-align: right; color: var(--text-main); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+.iv3-trend-tabs { display: flex; gap: 6px; }
+.iv3-trend-tab {
+    border: none; background: transparent; color: var(--text-muted);
+    padding: 6px 12px; border-radius: 999px; font-size: 0.82rem; cursor: pointer;
+}
+.iv3-trend-tab.active { background: var(--bg-panel); color: var(--text-main); font-weight: 600; }
+
+.iv3-topsql-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.iv3-topsql-row { display: flex; align-items: center; gap: 10px; padding: 8px 6px; border-bottom: 1px solid var(--border-color); font-size: 0.82rem; }
+.iv3-topsql-row:last-child { border-bottom: none; }
+.iv3-topsql-rank { width: 22px; color: var(--text-muted); font-family: monospace; flex-shrink: 0; }
+.iv3-topsql-sqlid { font-family: monospace; color: var(--primary); width: 90px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iv3-topsql-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-family: monospace; }
+.iv3-topsql-bar { width: 64px; height: 6px; border-radius: 3px; background: var(--bg-panel); overflow: hidden; flex-shrink: 0; }
+.iv3-topsql-bar-fill { display: block; height: 100%; border-radius: 3px; }
+.iv3-topsql-elapsed { width: 80px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; color: var(--text-main); }
+
+.iv3-alerts-panel { border: 1px solid var(--danger); box-shadow: 0 0 0 1px rgba(208, 59, 59, 0.12); }
+.iv3-alert-count { font-size: 0.75rem; font-weight: 700; color: var(--danger); margin-left: 8px; }
+.iv3-alert-list.iv2-alert-list { max-height: none; }
+.iv3-alert-list .iv2-alert-item { border-left-width: 2px; }
+
+.iv3-lock-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.iv3-lock-card { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px; }
+.iv3-lock-card.danger { background: rgba(208, 59, 59, 0.12); border-color: var(--danger); }
+.iv3-lock-label { font-size: 0.72rem; color: var(--text-muted); }
+.iv3-lock-value { font-size: 1.2rem; font-weight: 700; color: var(--text-main); margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+.iv3-lock-card.danger .iv3-lock-value { color: var(--danger); }
+
+.iv3-quickstat-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--border-color); font-size: 0.85rem; }
+.iv3-quickstat-row:last-child { border-bottom: none; }
+.iv3-quickstat-row span:first-child { color: var(--text-muted); }
+.iv3-quickstat-row span:last-child { color: var(--text-main); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1080px) {
+    .iv3-bento-grid { grid-template-columns: 1fr; }
+    .iv3-sidebar { position: static; }
+    .iv3-hero-card { flex-direction: column; align-items: stretch; }
+}
+
+/* v3 전용으로 패널 제목/본문 여백을 살짝 줄임(2026-09-17, 사용자 요청 "타이틀 표시 프레임을 조금
+   줄이고") - 전역 .panel-header/.panel-body(다른 화면 전부가 쓰는 20-24px 여백)는 그대로 두고 이
+   화면 안에서만 스코프해서 좌/우 컬럼 높이 단차를 줄이는 데 보탠다. */
+#dashboard-v3-view .panel-header { padding: 12px 18px; }
+#dashboard-v3-view .panel-header h2 { font-size: 1.05rem; }
+#dashboard-v3-view .panel-body { padding: 16px 18px; }
+
+/* 사이드바 폭에 맞춘 축약 Active Session 리스트(.iv3-session-list 등)는 폐기 - 클래식 대시보드의
+   Active Session 목록 전체(16열+Kill)를 그대로 하단 전체 폭 패널로 옮기는 쪽으로 교체했다(사용자
+   요청, 2026-09-17). 해당 패널은 .panel/.data-table 등 기존 클래스를 그대로 쓰므로 별도 CSS 불필요. */
+
+/* ---- 오라클 인스턴스 대시보드 v2/v3 공통: 기간 선택 스위치 (2026-09-16 보충) ----
+   oracle-instance-dashboard-UI-spec_2.md / DASHBOARD-UI-1,2 샘플 목업의 "실시간/1시간/24시간/7일"
+   기간 선택을 반영. 백엔드가 실제로 지원하는 range는 1h/24h/7d 세 가지뿐이라(MonitorController.
+   metricHistoryRangeMillis) "실시간"은 1h와 같은 값으로 매핑하고(둘 다 기본 10초 폴링으로 계속
+   갱신되므로 사실상 "실시간"과 다르지 않음) "1시간" 버튼은 별도로 두지 않았다. */
+.iv-range-switch { display: flex; gap: 4px; flex-shrink: 0; }
+.iv-range-btn {
+    border: none; background: transparent; color: var(--text-muted);
+    padding: 5px 10px; border-radius: 999px; font-size: 0.78rem; cursor: pointer; white-space: nowrap;
+}
+.iv-range-btn.active { background: var(--bg-panel); color: var(--text-main); font-weight: 600; }
+
+/* v2 Lock 추이 카드 하단의 "현재 TM/TX Lock 대기" 요약 박스 (DASHBOARD-UI-1 샘플 목업 반영) */
+.iv2-lock-current-row { display: flex; gap: 10px; margin-top: 10px; }
+.iv2-lock-current-box { flex: 1; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; }
+.iv2-lock-current-box.danger { background: rgba(208, 59, 59, 0.12); border-color: var(--danger); }
+.iv2-lock-current-label { font-size: 0.75rem; color: var(--text-muted); }
+.iv2-lock-current-value { font-size: 1.1rem; font-weight: 700; color: var(--text-main); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.iv2-lock-current-box.danger .iv2-lock-current-value { color: var(--danger); }
+.iv2-lock-current-sub { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+
+/* v3 Lock 위젯 하단의 Lock Holder/Waiter Tree 바로가기 (oracle-instance-dashboard-UI-spec_2.md §2.7,
+   DASHBOARD-UI-2 샘플 목업 반영) */
+.iv3-lock-linkline { font-size: 0.78rem; color: var(--text-muted); margin-top: 10px; min-height: 1em; }
+.iv3-lock-linkline a { color: var(--primary); cursor: pointer; text-decoration: none; }
+.iv3-lock-linkline a:hover { text-decoration: underline; }
+
 /* Progress bar */
 .progress-bar-container {
     display: flex;

@@ -556,6 +556,210 @@ public class MonitorService {
         }
     }
 
+    // ----------------------------------------------------- instance_overview (dashboard v2)
+    // oracle-instance-dashboard-spec.md의 PageHeader/KpiTileRow용 - 기존 getDashboardStats()와 별도
+    // 엔드포인트로 둔 이유는, 기존 대시보드(레거시)를 건드리지 않고 신규 대시보드를 추가하기로 한
+    // 결정(2026-09-15 설계 검토) 때문 - 응답 shape을 공유하면 레거시 프론트가 깨질 위험이 있다.
+    public Map<String, Object> getInstanceOverview(TargetDbConfig target) throws SQLException {
+        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+            Map<String, Object> result = new LinkedHashMap<>();
+
+            String status = "MOUNTED";
+            double uptimeDays = 0;
+            String version = null;
+            String instanceName = null;
+            try (ResultSet rs = st.executeQuery(
+                    "SELECT status, (SYSDATE - startup_time) AS uptime_days, version, instance_name FROM v$instance")) {
+                if (rs.next()) {
+                    status = rs.getString("status");
+                    uptimeDays = rs.getDouble("uptime_days");
+                    version = rs.getString("version");
+                    instanceName = rs.getString("instance_name");
+                }
+            }
+
+            String versionCodename = null;
+            try (ResultSet rs = st.executeQuery("SELECT banner FROM v$version WHERE banner LIKE 'Oracle Database%'")) {
+                if (rs.next()) {
+                    Matcher m = VERSION_CODENAME_PATTERN.matcher(rs.getString("banner"));
+                    if (m.find()) versionCodename = m.group(1);
+                }
+            } catch (Exception e) {
+                log.warn("v$version lookup failed for db_id={}: {}", target.id(), e.toString());
+            }
+
+            // RAC 여부는 gv$instance 행 수로 판단 - Single Instance(XE 등)에서는 이 뷰 자체가 1행만
+            // 주거나 권한이 없을 수 있어 조회 실패는 조용히 Single Instance로 취급한다.
+            String topology = "Single Instance";
+            try (ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM gv$instance")) {
+                if (rs.next() && rs.getInt(1) > 1) {
+                    topology = "RAC (" + rs.getInt(1) + " nodes)";
+                }
+            } catch (SQLException ignored) {
+            }
+
+            double numCpus = 1;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
+                if (rs.next()) numCpus = rs.getDouble(1);
+            }
+            double cpuUsage = 0;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'CPU Usage Per Sec'")) {
+                if (rs.next()) cpuUsage = rs.getDouble(1);
+            }
+            double cpuPct = numCpus > 0 ? Math.round((cpuUsage / numCpus) * 100.0) / 100.0 : 0;
+
+            double sgaBytes = 0;
+            try (ResultSet rs = st.executeQuery("SELECT sum(bytes) FROM v$sgastat")) {
+                if (rs.next()) sgaBytes = rs.getDouble(1);
+            }
+            double pgaBytes = 0;
+            try (ResultSet rs = st.executeQuery("SELECT sum(value) FROM v$pgastat WHERE name = 'total PGA allocated'")) {
+                if (rs.next()) pgaBytes = rs.getDouble(1);
+            }
+            double totalMem = 1;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'PHYSICAL_MEMORY_BYTES'")) {
+                if (rs.next()) totalMem = rs.getDouble(1);
+            }
+            double memPct = totalMem > 0 ? Math.round(((sgaBytes + pgaBytes) / totalMem) * 10000.0) / 100.0 : 0;
+
+            int activeSessions = 0;
+            try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
+                    "AND username IS NOT NULL AND username != " + monitoringAccountLiteral(target))) {
+                if (rs.next()) activeSessions = rs.getInt(1);
+            }
+            Integer maxSessions = null;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$parameter WHERE name = 'sessions'")) {
+                if (rs.next()) maxSessions = rs.getInt(1);
+            } catch (SQLException ignored) {
+            }
+
+            double dbTimeAas = 0;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'Average Active Sessions'")) {
+                if (rs.next()) dbTimeAas = rs.getDouble(1);
+            }
+            double tps = 0;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'User Transaction Per Sec'")) {
+                if (rs.next()) tps = rs.getDouble(1);
+            }
+            double bufferCacheHitRatio = 0;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'Buffer Cache Hit Ratio'")) {
+                if (rs.next()) bufferCacheHitRatio = rs.getDouble(1);
+            }
+
+            result.put("instanceName", instanceName);
+            result.put("status", "OPEN".equals(status) ? "정상 운영" : "장애");
+            result.put("dbVersion", version);
+            result.put("versionCodename", versionCodename);
+            result.put("topology", topology);
+            result.put("uptimeDays", Math.round(uptimeDays * 100.0) / 100.0);
+            result.put("sgaBytes", sgaBytes);
+            result.put("pgaBytes", pgaBytes);
+            result.put("cpuPct", cpuPct);
+            result.put("memPct", memPct);
+            result.put("activeSessions", activeSessions);
+            result.put("maxSessions", maxSessions);
+            result.put("dbTimeAas", Math.round(dbTimeAas * 100.0) / 100.0);
+            result.put("tps", Math.round(tps * 100.0) / 100.0);
+            result.put("bufferCacheHitRatio", Math.round(bufferCacheHitRatio * 100.0) / 100.0);
+            return result;
+        }
+    }
+
+    // -------------------------------------------------------- top_sql (dashboard v2)
+    // 문서(3.6절) 권장대로 "튜닝 필요/주시 중/정상" 상태를 서버에서 임계치로 계산해 내려준다 -
+    // 프론트가 하드코딩된 기준을 갖지 않도록.
+    private static final double TOP_SQL_TUNING_NEEDED_MS = 1000.0;
+    private static final double TOP_SQL_WATCHING_MS = 300.0;
+
+    public List<Map<String, Object>> getTopSql(TargetDbConfig target) throws SQLException {
+        String query = "SELECT * FROM (" +
+                "SELECT sql_id, sql_text, executions, elapsed_time, cpu_time " +
+                "FROM v$sqlarea WHERE executions > 0 ORDER BY elapsed_time DESC" +
+                ") WHERE ROWNUM <= 5";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(query)) {
+            while (rs.next()) {
+                long executions = rs.getLong("executions");
+                double elapsedTime = rs.getDouble("elapsed_time");
+                double cpuTime = rs.getDouble("cpu_time");
+                double avgElapsedMs = executions > 0 ? elapsedTime / executions / 1000.0 : 0;
+                double cpuPct = elapsedTime > 0 ? Math.min(100.0, cpuTime * 100.0 / elapsedTime) : 0;
+                String status = avgElapsedMs >= TOP_SQL_TUNING_NEEDED_MS ? "tuning_needed"
+                        : avgElapsedMs >= TOP_SQL_WATCHING_MS ? "watching" : "normal";
+
+                String sqlText = rs.getString("sql_text");
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("sqlId", rs.getString("sql_id"));
+                row.put("sqlTextPreview", sqlText == null ? "" : sqlText.substring(0, Math.min(80, sqlText.length())));
+                row.put("execCount", executions);
+                row.put("avgElapsedMs", Math.round(avgElapsedMs * 100.0) / 100.0);
+                row.put("cpuPct", Math.round(cpuPct * 100.0) / 100.0);
+                row.put("status", status);
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
+    // ----------------------------------------------------- active_alerts (dashboard v2)
+    // TEMP 사용률/Blocking Session/장시간 쿼리 3종만 다룬다 - 문서 예시에 있던 "일일 백업 정상 완료"는
+    // RMAN 카탈로그 의존이라 이 테스트 환경에서 검증할 수 없어 제외(2026-09-16). 필요해지면
+    // v$rman_backup_job_details로 추가 가능.
+    private static final double TEMP_TABLESPACE_CRITICAL_PCT = 90.0;
+    private static final int LONG_RUNNING_QUERY_SECONDS = 300;
+
+    public List<Map<String, Object>> getActiveAlerts(TargetDbConfig target) throws SQLException {
+        List<Map<String, Object>> alerts = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+            try (ResultSet rs = st.executeQuery(
+                    "SELECT tablespace_name, ROUND(SUM(bytes_used) / SUM(bytes_used + bytes_free) * 100, 1) as pct " +
+                            "FROM v$temp_space_header GROUP BY tablespace_name")) {
+                while (rs.next()) {
+                    double pct = rs.getDouble("pct");
+                    if (pct >= TEMP_TABLESPACE_CRITICAL_PCT) {
+                        alerts.add(alertItem("critical",
+                                rs.getString("tablespace_name") + " 테이블스페이스 " + pct + "%", null));
+                    }
+                }
+            } catch (SQLException ignored) {
+            }
+
+            try (ResultSet rs = st.executeQuery(
+                    "SELECT DISTINCT s.sid FROM v$session s " +
+                            "JOIN v$lock l ON s.sid = l.sid JOIN dba_objects o ON l.id1 = o.object_id " +
+                            "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
+                            "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid) AND ROWNUM <= 3")) {
+                while (rs.next()) {
+                    String sid = String.valueOf(rs.getInt("sid"));
+                    alerts.add(alertItem("warning", "Blocking Session 감지(SID " + sid + ")", sid));
+                }
+            } catch (SQLException ignored) {
+            }
+
+            try (ResultSet rs = st.executeQuery(
+                    "SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
+                            "AND username IS NOT NULL AND username != " + monitoringAccountLiteral(target) +
+                            " AND last_call_et >= " + LONG_RUNNING_QUERY_SECONDS)) {
+                if (rs.next() && rs.getInt(1) > 0) {
+                    alerts.add(alertItem("warning", "장시간 실행 쿼리 " + rs.getInt(1) + "건", null));
+                }
+            } catch (SQLException ignored) {
+            }
+        }
+        return alerts;
+    }
+
+    private Map<String, Object> alertItem(String severity, String message, String relatedSid) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("severity", severity);
+        item.put("message", message);
+        item.put("occurredAt", System.currentTimeMillis());
+        item.put("relatedSid", relatedSid);
+        return item;
+    }
+
     // ------------------------------------------------------------- top_events
     public List<Map<String, Object>> getTopEvents(TargetDbConfig target) throws SQLException {
         // Dashboard의 "Active Session 목록" 탭 바로 옆 "Top Event 목록" 탭이라, 같은 세션 집합을

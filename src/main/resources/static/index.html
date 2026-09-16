@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=35">
+    <link rel="stylesheet" href="style.css?v=36">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=12"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -240,6 +240,7 @@
             <div class="content-area">
                 <!-- Dashboard Section -->
                 <section id="dashboard" class="content-section active">
+                    <div id="dashboard-legacy-view">
                     <div class="db-mini-status" style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border-color); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);">
                         <div style="display: flex; gap: 30px; align-items: center; flex-wrap: wrap; row-gap: 8px;">
                             <div style="display: flex; align-items: center; gap: 8px;">
@@ -385,6 +386,255 @@
                             </div>
                         </div>
                     </div>
+                    </div><!-- /#dashboard-legacy-view -->
+
+                    <div id="dashboard-v2-view" style="display: none;">
+                        <div class="iv2-header">
+                            <div class="iv2-header-main">
+                                <div class="iv2-instance-name" id="iv2-instance-name">--</div>
+                                <span class="status-badge offline" id="iv2-status-badge">상태 확인 중</span>
+                            </div>
+                            <div class="iv2-tags" id="iv2-tags"></div>
+                            <div class="iv-range-switch" id="iv2-range-switch">
+                                <button type="button" class="iv-range-btn active" data-range="1h">실시간</button>
+                                <button type="button" class="iv-range-btn" data-range="24h">24시간</button>
+                                <button type="button" class="iv-range-btn" data-range="7d">7일</button>
+                            </div>
+                        </div>
+
+                        <div class="iv2-kpi-row" id="iv2-kpi-row">
+                            <div class="iv2-kpi-tile">
+                                <div class="iv2-kpi-label">CPU 사용률</div>
+                                <div class="iv2-kpi-value" id="iv2-kpi-cpu">--%</div>
+                            </div>
+                            <div class="iv2-kpi-tile">
+                                <div class="iv2-kpi-label">메모리 사용률 (SGA/PGA)</div>
+                                <div class="iv2-kpi-value" id="iv2-kpi-mem">--%</div>
+                            </div>
+                            <div class="iv2-kpi-tile">
+                                <div class="iv2-kpi-label">Active Sessions</div>
+                                <div class="iv2-kpi-value" id="iv2-kpi-sessions">-- / --</div>
+                            </div>
+                            <div class="iv2-kpi-tile">
+                                <div class="iv2-kpi-label">DB Time (AAS)</div>
+                                <div class="iv2-kpi-value" id="iv2-kpi-aas">--</div>
+                            </div>
+                            <div class="iv2-kpi-tile">
+                                <div class="iv2-kpi-label">TPS</div>
+                                <div class="iv2-kpi-value" id="iv2-kpi-tps">-- 건/초</div>
+                            </div>
+                            <div class="iv2-kpi-tile">
+                                <div class="iv2-kpi-label">Buffer Cache Hit Ratio</div>
+                                <div class="iv2-kpi-value" id="iv2-kpi-hitratio">--%</div>
+                            </div>
+                        </div>
+
+                        <div class="iv2-charts-row">
+                            <div class="panel iv2-chart-panel">
+                                <div class="panel-header"><h2>CPU / DB Time 추이</h2></div>
+                                <div class="panel-body" style="height: 220px;"><canvas id="iv2-cpu-dbtime-chart"></canvas></div>
+                            </div>
+                            <div class="panel iv2-chart-panel">
+                                <div class="panel-header"><h2>Top Wait Events</h2></div>
+                                <div class="panel-body" style="height: 220px;"><canvas id="iv2-wait-events-chart"></canvas></div>
+                            </div>
+                        </div>
+
+                        <div class="panel mt-4">
+                            <div class="panel-header"><h2>Top SQL (Elapsed Time 기준)</h2></div>
+                            <div class="panel-body">
+                                <div class="table-container">
+                                    <table class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>SQL_ID</th>
+                                                <th>SQL TEXT</th>
+                                                <th style="text-align:right;">실행 횟수</th>
+                                                <th style="text-align:right;">평균 응답(ms)</th>
+                                                <th style="text-align:right;">CPU(%)</th>
+                                                <th>상태</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="iv2-top-sql-tbody">
+                                            <tr><td colspan="6" style="text-align:center;">데이터를 불러오는 중입니다...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="iv2-charts-row">
+                            <div class="panel iv2-chart-panel">
+                                <div class="panel-header"><h2>Lock 추이 (TM / TX)</h2></div>
+                                <div class="panel-body">
+                                    <div style="height: 220px;"><canvas id="iv2-lock-trend-chart"></canvas></div>
+                                    <div class="iv2-lock-current-row">
+                                        <div class="iv2-lock-current-box" id="iv2-lock-tm-box">
+                                            <div class="iv2-lock-current-label">현재 TM Lock 대기</div>
+                                            <div class="iv2-lock-current-value" id="iv2-lock-tm-current">--건</div>
+                                        </div>
+                                        <div class="iv2-lock-current-box" id="iv2-lock-tx-box">
+                                            <div class="iv2-lock-current-label">현재 TX Lock 대기</div>
+                                            <div class="iv2-lock-current-value" id="iv2-lock-tx-current">--건</div>
+                                            <div class="iv2-lock-current-sub" id="iv2-lock-tx-sub"></div>
+                                        </div>
+                                    </div>
+                                    <button id="iv2-incident-action-btn" class="danger-btn admin-only" style="display: none; width: 100%; margin-top: 10px; padding: 8px; border-radius: 4px; font-size: 0.9rem;">⚠ 장애조치 (Holder 세션 자동 Kill)</button>
+                                </div>
+                            </div>
+                            <div class="panel iv2-chart-panel">
+                                <div class="panel-header"><h2>확인 필요 알림 <span class="iv3-alert-count" id="iv2-alert-count">0건</span></h2></div>
+                                <div class="panel-body">
+                                    <ul class="iv2-alert-list" id="iv2-alert-list">
+                                        <li class="iv2-alert-item">데이터를 불러오는 중입니다...</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div><!-- /#dashboard-v2-view -->
+
+                    <div id="dashboard-v3-view" style="display: none;">
+                        <div class="iv3-slim-header">
+                            <div class="iv3-slim-left">
+                                <span class="iv3-breadcrumb">DASHBOARD /</span>
+                                <span class="iv3-instance-chip" id="iv3-instance-name">--</span>
+                                <span class="status-badge offline" id="iv3-status-badge">상태 확인 중</span>
+                                <span class="iv3-meta-text" id="iv3-meta-text"></span>
+                            </div>
+                            <div class="iv3-slim-right">
+                                <span class="iv3-last-updated" id="iv3-last-updated"></span>
+                                <div class="iv-range-switch" id="iv3-range-switch">
+                                    <button type="button" class="iv-range-btn active" data-range="1h">실시간</button>
+                                    <button type="button" class="iv-range-btn" data-range="24h">24시간</button>
+                                    <button type="button" class="iv-range-btn" data-range="7d">7일</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="iv3-bento-grid">
+                            <div class="iv3-main-col">
+                                <div class="panel iv3-hero-card">
+                                    <div class="iv3-hero-gauge">
+                                        <svg viewBox="0 0 160 160" width="160" height="160">
+                                            <circle cx="80" cy="80" r="64" fill="none" stroke="var(--bg-panel)" stroke-width="14"/>
+                                            <circle id="iv3-gauge-arc" cx="80" cy="80" r="64" fill="none" stroke="var(--success)" stroke-width="14"
+                                                    stroke-linecap="round" transform="rotate(-90 80 80)" stroke-dasharray="0 402.12"/>
+                                        </svg>
+                                        <div class="iv3-gauge-center">
+                                            <div class="iv3-gauge-score" id="iv3-gauge-score">--</div>
+                                            <div class="iv3-gauge-label">종합 헬스 스코어</div>
+                                        </div>
+                                    </div>
+                                    <div class="iv3-hero-breakdown" id="iv3-hero-breakdown">
+                                        <div class="iv3-breakdown-row">데이터를 불러오는 중입니다...</div>
+                                    </div>
+                                </div>
+
+                                <div class="panel iv3-trend-card">
+                                    <div class="panel-header iv3-trend-tabs">
+                                        <button type="button" class="iv3-trend-tab active" data-iv3-tab="cpu_dbtime">CPU / DB Time</button>
+                                        <button type="button" class="iv3-trend-tab" data-iv3-tab="wait_events">Wait Events</button>
+                                        <button type="button" class="iv3-trend-tab" data-iv3-tab="lock">TM/TX Lock</button>
+                                    </div>
+                                    <div class="panel-body" style="height: 240px;"><canvas id="iv3-trend-chart"></canvas></div>
+                                </div>
+
+                                <div class="panel">
+                                    <div class="panel-header"><h2>Top SQL (Elapsed Time 기준)</h2></div>
+                                    <div class="panel-body">
+                                        <ul class="iv3-topsql-list" id="iv3-topsql-list">
+                                            <li class="iv3-topsql-row">데이터를 불러오는 중입니다...</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="iv3-sidebar">
+                                <div class="panel iv3-alerts-panel">
+                                    <div class="panel-header"><h2>확인 필요 알림 <span class="iv3-alert-count" id="iv3-alert-count">0건</span></h2></div>
+                                    <div class="panel-body">
+                                        <ul class="iv2-alert-list iv3-alert-list" id="iv3-alert-list">
+                                            <li class="iv2-alert-item">데이터를 불러오는 중입니다...</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <div class="panel">
+                                    <div class="panel-header"><h2>Lock 현황</h2></div>
+                                    <div class="panel-body">
+                                        <div class="iv3-lock-grid">
+                                            <div class="iv3-lock-card" id="iv3-lock-tm">
+                                                <div class="iv3-lock-label">TM Lock</div>
+                                                <div class="iv3-lock-value" id="iv3-lock-tm-value">--</div>
+                                                <div style="height:22px;"><canvas id="iv3-lock-tm-spark"></canvas></div>
+                                            </div>
+                                            <div class="iv3-lock-card" id="iv3-lock-tx">
+                                                <div class="iv3-lock-label">TX Lock</div>
+                                                <div class="iv3-lock-value" id="iv3-lock-tx-value">--</div>
+                                                <div style="height:22px;"><canvas id="iv3-lock-tx-spark"></canvas></div>
+                                            </div>
+                                        </div>
+                                        <div class="iv3-lock-linkline" id="iv3-lock-linkline"></div>
+                                    </div>
+                                </div>
+
+                                <div class="panel">
+                                    <div class="panel-header"><h2>Quick Stats</h2></div>
+                                    <div class="panel-body">
+                                        <div class="iv3-quickstat-row"><span>TPS</span><span id="iv3-qs-tps">--</span></div>
+                                        <div class="iv3-quickstat-row"><span>DB Time (AAS)</span><span id="iv3-qs-aas">--</span></div>
+                                        <div class="iv3-quickstat-row"><span>SGA / PGA</span><span id="iv3-qs-mem">--</span></div>
+                                        <div class="iv3-quickstat-row"><span>가동시간</span><span id="iv3-qs-uptime">--</span></div>
+                                    </div>
+                                </div>
+
+                            </div>
+                        </div>
+
+                        <!-- 클래식 대시보드의 "Active Session 목록" 탭을 그대로 옮겨온 전체 폭 패널
+                             (사용자 요청, 2026-09-17) - 열 구성/체크박스 일괄 Kill까지 동일하게 동작한다.
+                             #dash-sess-tbody와 같은 로직을 쓰되 id만 iv3-full-sess-*로 분리했다(같은
+                             페이지 안에 두 tbody가 동시에 존재하므로 id 충돌 방지). 행 렌더링은
+                             window.dbagentBuildSessionRows(공용 헬퍼, app.js)를 그대로 재사용. -->
+                        <div class="panel mt-4">
+                            <div class="panel-header">
+                                <h2>Active Session 목록</h2>
+                                <div>
+                                    <span class="kill-selected-count admin-only" id="iv3-full-sess-selected-count"></span>
+                                    <button id="iv3-full-sess-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;" disabled>선택 세션 Kill</button>
+                                </div>
+                            </div>
+                            <div class="panel-body">
+                                <div class="table-container" style="max-height: 400px; overflow-y: auto;">
+                                    <table class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th style="width: 40px; text-align: center;"><input type="checkbox" id="iv3-full-sess-select-all"></th>
+                                                <th>Instance Name</th>
+                                                <th>Status</th>
+                                                <th>SID</th>
+                                                <th>Serial#</th>
+                                                <th>Server PID</th>
+                                                <th>Duration Time(sec)</th>
+                                                <th>Session Wait(%)</th>
+                                                <th>SQL ID</th>
+                                                <th>Event Name</th>
+                                                <th>Plan Hash Value</th>
+                                                <th>SQL Text</th>
+                                                <th>Machine Name</th>
+                                                <th>Host User Name</th>
+                                                <th>Oracle User Name</th>
+                                                <th>Program Name</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="iv3-full-sess-tbody">
+                                            <tr><td colspan="16" style="text-align:center;">데이터를 불러오는 중입니다...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div><!-- /#dashboard-v3-view -->
                 </section>
 
                 <!-- SQL Runner Section -->
@@ -1104,7 +1354,26 @@
 
             </main>
     </div>
-    
+
+    <!-- 오라클 인스턴스 대시보드 클래식/신규 전환 아이콘 스위치. .app-container 안(.main-content 형제 포함)에
+         두면 .app-container에 걸린 style="zoom: 90%"가 position:fixed의 containing block을 가로채
+         (.content-section의 fadeIn transform과 같은 계열의 Chrome 버그) 뷰포트가 아니라 zoom 컨테이너의
+         스크롤 흐름에 묶여버려, 마지막 카드(확인 필요 알림) 부근에 붙어버리는 문제가 있었다(사용자 실측,
+         2026-09-16 1차 수정 후에도 재발, 2026-09-16 2차 수정). #change-pwd-modal/#image-modal 등 기존
+         모달들과 같은 레벨(.app-container 바깥, body 직속)로 옮겨서 zoom 영향을 완전히 벗어나게 한다.
+         표시 여부는 JS가 DASHBOARD 탭 활성 상태에 맞춰 토글한다(app.js의 initInstanceDashboardV2). -->
+    <div class="iv2-view-switch" id="iv2-view-switch" style="display: none;">
+        <button type="button" class="iv2-view-btn active" data-iv2-view="legacy" title="클래식 대시보드">
+            <i data-lucide="layout-dashboard"></i>
+        </button>
+        <button type="button" class="iv2-view-btn" data-iv2-view="v2" title="신규 대시보드(스택형, 베타)">
+            <i data-lucide="flask-conical"></i>
+        </button>
+        <button type="button" class="iv2-view-btn" data-iv2-view="v3" title="신규 대시보드(벤토형, 베타)">
+            <i data-lucide="layout-grid"></i>
+        </button>
+    </div>
+
     <div id="image-modal" class="modal" style="display: none; position: fixed; z-index: 9999; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.8);">
         <span class="close-modal" style="position: absolute; top: 15px; right: 35px; color: #f1f1f1; font-size: 40px; font-weight: bold; cursor: pointer;">&times;</span>
         <div id="modal-content" style="margin: auto; display: block; width: 90%; max-width: 1200px; padding: 20px; background: var(--bg-card); border-radius: 8px; margin-top: 50px;">
@@ -1112,6 +1381,6 @@
     </div>
 
 
-    <script src="app.js?v=136"></script>
+    <script src="app.js?v=137"></script>
 </body>
 </html>

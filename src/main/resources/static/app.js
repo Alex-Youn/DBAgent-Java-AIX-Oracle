@@ -2491,6 +2491,48 @@ let layoutHTML = "";
         if (tbody) tbody.innerHTML = `<tr><td colspan="2" style="text-align:center;">${message}</td></tr>`;
     };
 
+    // Active Session 목록 행 HTML을 만드는 공용 헬퍼 - 원래 fetchDashboard() 안의 dash-sess-tbody
+    // 전용 코드였는데, 오라클 인스턴스 대시보드 v3(벤토형) 하단에도 같은 목록을 통째로 옮겨야 해서
+    // (사용자 요청, 2026-09-17) checkboxClass를 매개변수로 뽑아냈다. v3 쪽은 별도 IIFE(스코프가 달라
+    // 이 함수를 직접 참조 못함)라 window에 노출해서 쓴다.
+    function buildSessionRowsHtml(sessions, checkboxClass) {
+        if (!sessions || sessions.length === 0) {
+            return '<tr><td colspan="16" style="text-align:center;">ACTIVE 상태인 세션이 없습니다.</td></tr>';
+        }
+        const maxDuration = sessions.reduce((max, s) => Math.max(max, Number(s.duration_time) || 0), 1);
+        return sessions.map(s => {
+            const durationVal = s.duration_time !== null ? Number(s.duration_time) : 0;
+            const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
+            const durationHtml = s.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
+            let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
+            if (s.session_wait_pct && s.session_wait_pct.includes(',')) {
+                const [cpu, uio, sio, latch, txlock, tmlock, other] = s.session_wait_pct.split(',').map(Number);
+                if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
+                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #22d3ee;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #7c3aed;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #be123c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
+                }
+            }
+            return `<tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-serial="${s.serial || ''}" data-sql_id="${s.sql_id || ''}">
+                <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="${checkboxClass}" data-sid="${s.sid}" data-serial="${s.serial}"></td>
+                <td>${s.db_name || '-'}</td>
+                <td><span class="status-badge online">${s.status}</span></td>
+                <td>${s.sid}</td>
+                <td>${s.serial}</td>
+                <td>${s.server_pid || '-'}</td>
+                <td>${durationHtml}</td>
+                <td>${waitHtml}</td>
+                <td>${s.sql_id || '-'}</td>
+                <td>${s.event_name || '-'}</td>
+                <td>${s.plan_hash_value || '-'}</td>
+                <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${s.sql_text || ''}">${s.sql_text || '-'}</div></td>
+                <td>${s.machine_name || '-'}</td>
+                <td>${s.osuser || '-'}</td>
+                <td>${s.username || '-'}</td>
+                <td>${s.program_name || '-'}</td>
+            </tr>`;
+        }).join('');
+    }
+    window.dbagentBuildSessionRows = buildSessionRowsHtml;
+
     // Called right when a DB is selected, before fetchDashboard() has had a chance to return -
     // this is a loading state, not a real connection failure, so it must not use the error wording.
     function resetAllDashboardWidgets() {
@@ -2803,55 +2845,16 @@ let layoutHTML = "";
                         const activeSess = sessData.filter(s => s && s.status && s.status.trim().toUpperCase() === 'ACTIVE');
                         const tbody = document.getElementById('dash-sess-tbody');
                         if (tbody) {
-                            if (activeSess.length === 0) {
-                                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">ACTIVE 상태인 세션이 없습니다.</td></tr>';
-                                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
-                            } else {
-                                const maxDuration = activeSess.reduce((max, s) => Math.max(max, Number(s.duration_time) || 0), 1);
-                                let html = '';
-                                activeSess.forEach(s => {
-                                    const durationVal = s.duration_time !== null ? Number(s.duration_time) : 0;
-                                    const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
-                                    const durationHtml = s.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
-                                    html += `<tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-serial="${s.serial || ''}" data-sql_id="${s.sql_id || ''}">
-                                        <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="dash-sess-checkbox" data-sid="${s.sid}" data-serial="${s.serial}"></td>
-                                        <td>${s.db_name || '-'}</td>
-                                        <td><span class="status-badge online">${s.status}</span></td>
-                                        <td>${s.sid}</td>
-                                        <td>${s.serial}</td>
-                                        <td>${s.server_pid || '-'}</td>
-                                        <td>${durationHtml}</td>
-                                        <td>${(() => {
-                                            let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
-                                            if (s.session_wait_pct && s.session_wait_pct.includes(',')) {
-                                                const [cpu, uio, sio, latch, txlock, tmlock, other] = s.session_wait_pct.split(',').map(Number);
-                                                if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
-                                                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #22d3ee;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #7c3aed;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #be123c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
-                                                }
-                                            }
-                                            return waitHtml;
-                                        })()}</td>
-                                        <td>${s.sql_id || '-'}</td>
-                                        <td>${s.event_name || '-'}</td>
-                                        <td>${s.plan_hash_value || '-'}</td>
-                                        <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${s.sql_text || ''}">${s.sql_text || '-'}</div></td>
-                                        <td>${s.machine_name || '-'}</td>
-                                        <td>${s.osuser || '-'}</td>
-                                        <td>${s.username || '-'}</td>
-                                        <td>${s.program_name || '-'}</td>
-                                    </tr>`;
-                                });
-                                // Oracle SID는 재사용되므로 SID만으로는 세션을 특정할 수 없다 - SID+SERIAL# 복합키로 대조.
-                                const checkedDashKeys = new Set(Array.from(document.querySelectorAll('.dash-sess-checkbox:checked'))
-                                    .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
-                                tbody.innerHTML = html;
-                                document.querySelectorAll('.dash-sess-checkbox').forEach(cb => {
-                                    if (checkedDashKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
-                                        cb.checked = true;
-                                    }
-                                });
-                                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
-                            }
+                            // Oracle SID는 재사용되므로 SID만으로는 세션을 특정할 수 없다 - SID+SERIAL# 복합키로 대조.
+                            const checkedDashKeys = new Set(Array.from(document.querySelectorAll('.dash-sess-checkbox:checked'))
+                                .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
+                            tbody.innerHTML = buildSessionRowsHtml(activeSess, 'dash-sess-checkbox');
+                            document.querySelectorAll('.dash-sess-checkbox').forEach(cb => {
+                                if (checkedDashKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
+                                    cb.checked = true;
+                                }
+                            });
+                            if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
                         }
                     }
                 } else {
@@ -2993,6 +2996,789 @@ let layoutHTML = "";
         dashRefreshBtn.addEventListener('click', fetchDashboard);
     }
 
+    // ---- Oracle instance dashboard v2/v3 (신규/베타, 2026-09-16) ----
+    // 기존 대시보드(위 dashRefreshBtn/fetchDashboard 등)는 건드리지 않는다 - 화면 하단 스위치로 뷰만
+    // 전환하고, 보이는 뷰의 폴러만 돈다. v2(스택형)/v3(벤토형)는 같은 데이터 계약(instance_overview/
+    // top_sql/active_alerts/top_events/metric_history)을 공유한다(oracle-instance-dashboard-UI-spec_2.md
+    // §0 "두 버전 모두 데이터 소스와 의미는 동일 - 프레젠테이션 레이어만 다르다"). 어떤 뷰를 기본값으로
+    // 할지는 아직 미정이라 localStorage에 마지막 선택을 기억해 두고 다음 방문 때 그대로 이어서 보여준다.
+    (function initInstanceDashboardV2() {
+        const legacyView = document.getElementById('dashboard-legacy-view');
+        const v2View = document.getElementById('dashboard-v2-view');
+        const v3View = document.getElementById('dashboard-v3-view');
+        const switchBtns = document.querySelectorAll('#iv2-view-switch .iv2-view-btn');
+        if (!legacyView || !v2View || switchBtns.length === 0) return;
+
+        let currentView = 'legacy';
+        let iv2PollingTimer = null;
+        let iv3PollingTimer = null;
+        let iv2CpuDbTimeChart = null;
+        let iv2WaitEventsChart = null;
+        let iv2LockTrendChart = null;
+        let iv2Range = '1h';
+        let iv2LastAlerts = [];
+        let iv2LastTmVal = 0;
+        let iv2LastTxVal = 0;
+
+        // v2/v3 공통 - Lock 추이 카드 아래 "현재 TM/TX Lock 대기" 요약 박스(DASHBOARD-UI-1 샘플 목업
+        // 반영, 2026-09-16). tm/tx 값은 metric_history 마지막 포인트, Blocking SID는 active_alerts의
+        // "Blocking Session 감지" 항목이 이미 들고 있는 relatedSid를 그대로 재사용 - 새 조회 없음.
+        function iv2UpdateLockCurrentBoxes() {
+            const tmEl = document.getElementById('iv2-lock-tm-current');
+            const txEl = document.getElementById('iv2-lock-tx-current');
+            if (tmEl) tmEl.textContent = `${iv2LastTmVal}건`;
+            if (txEl) txEl.textContent = `${iv2LastTxVal}건`;
+            const txBox = document.getElementById('iv2-lock-tx-box');
+            if (txBox) txBox.classList.toggle('danger', iv2LastTxVal > 0);
+            const subEl = document.getElementById('iv2-lock-tx-sub');
+            if (subEl) {
+                const blocking = iv2LastAlerts.find(a => a.relatedSid);
+                subEl.textContent = (iv2LastTxVal > 0 && blocking) ? `SID ${blocking.relatedSid} Blocking` : '';
+            }
+        }
+
+        function fetchActiveDashboardView() {
+            if (currentView === 'v2') fetchInstanceDashboardV2();
+            else if (currentView === 'v3') fetchInstanceDashboardV3();
+        }
+
+        function setView(view) {
+            currentView = view;
+            legacyView.style.display = view === 'legacy' ? '' : 'none';
+            v2View.style.display = view === 'v2' ? '' : 'none';
+            if (v3View) v3View.style.display = view === 'v3' ? '' : 'none';
+            switchBtns.forEach(b => b.classList.toggle('active', b.getAttribute('data-iv2-view') === view));
+            try { localStorage.setItem('dbagent.dashboardView', view); } catch (e) { /* private mode 등 - 무시 */ }
+
+            if (iv2PollingTimer) { clearInterval(iv2PollingTimer); iv2PollingTimer = null; }
+            if (iv3PollingTimer) { clearInterval(iv3PollingTimer); iv3PollingTimer = null; }
+            if (view === 'v2') {
+                fetchInstanceDashboardV2();
+                iv2PollingTimer = setInterval(fetchInstanceDashboardV2, 10000);
+            } else if (view === 'v3') {
+                fetchInstanceDashboardV3();
+                iv3PollingTimer = setInterval(fetchInstanceDashboardV3, 10000);
+            }
+        }
+
+        switchBtns.forEach(btn => {
+            btn.addEventListener('click', () => setView(btn.getAttribute('data-iv2-view')));
+        });
+
+        document.querySelectorAll('#iv2-range-switch .iv-range-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                iv2Range = btn.getAttribute('data-range');
+                document.querySelectorAll('#iv2-range-switch .iv-range-btn').forEach(b => b.classList.toggle('active', b === btn));
+                fetchMetricHistoryV2();
+            });
+        });
+
+        function iv2RelativeTime(epochMs) {
+            const diffSec = Math.max(0, Math.round((Date.now() - epochMs) / 1000));
+            if (diffSec < 60) return '방금 전';
+            if (diffSec < 3600) return Math.floor(diffSec / 60) + '분 전';
+            return Math.floor(diffSec / 3600) + '시간 전';
+        }
+
+        function iv2FormatBytes(bytes) {
+            if (!bytes) return '0G';
+            return (bytes / (1024 * 1024 * 1024)).toFixed(1) + 'G';
+        }
+
+        async function fetchInstanceOverviewV2() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/instance_overview?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.error) return;
+
+            const nameEl = document.getElementById('iv2-instance-name');
+            if (nameEl) nameEl.textContent = data.instanceName || '--';
+            const statusBadge = document.getElementById('iv2-status-badge');
+            if (statusBadge) {
+                statusBadge.textContent = data.status || '--';
+                statusBadge.classList.toggle('online', data.status === '정상 운영');
+                statusBadge.classList.toggle('offline', data.status !== '정상 운영');
+            }
+            const tagsEl = document.getElementById('iv2-tags');
+            if (tagsEl) {
+                const version = data.dbVersion ? `Oracle ${data.versionCodename || data.dbVersion}` : '--';
+                tagsEl.innerHTML = [
+                    version,
+                    data.topology || '--',
+                    `가동시간 ${Math.floor(data.uptimeDays || 0)}일`,
+                    `SGA ${iv2FormatBytes(data.sgaBytes)} / PGA ${iv2FormatBytes(data.pgaBytes)}`
+                ].map(t => `<span>${t}</span>`).join('');
+            }
+
+            const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+            setText('iv2-kpi-cpu', `${data.cpuPct ?? '--'}%`);
+            setText('iv2-kpi-mem', `${data.memPct ?? '--'}%`);
+            setText('iv2-kpi-sessions', `${data.activeSessions ?? '--'} / ${data.maxSessions ?? '--'}`);
+            setText('iv2-kpi-aas', `${data.dbTimeAas ?? '--'}`);
+            setText('iv2-kpi-tps', `${data.tps ?? '--'} 건/초`);
+            setText('iv2-kpi-hitratio', `${data.bufferCacheHitRatio ?? '--'}%`);
+        }
+
+        async function fetchTopWaitEventsV2() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/top_events?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            if (!res.ok) return;
+            const events = await res.json();
+            if (!Array.isArray(events)) return;
+            const top5 = events.slice(0, 5);
+            const ctx = document.getElementById('iv2-wait-events-chart');
+            if (!ctx) return;
+            const labels = top5.map(e => e.event);
+            const values = top5.map(e => e.count);
+            if (!iv2WaitEventsChart) {
+                iv2WaitEventsChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: { labels, datasets: [{ label: '세션 수', data: values, backgroundColor: '#3987e5' }] },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: { duration: 0 },
+                        plugins: { legend: { display: false } },
+                        scales: { x: { beginAtZero: true, ticks: { precision: 0 } } }
+                    }
+                });
+            } else {
+                iv2WaitEventsChart.data.labels = labels;
+                iv2WaitEventsChart.data.datasets[0].data = values;
+                iv2WaitEventsChart.update();
+            }
+        }
+
+        async function fetchTopSqlV2() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/top_sql?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            const tbody = document.getElementById('iv2-top-sql-tbody');
+            if (!tbody) return;
+            if (!res.ok) return;
+            const rows = await res.json();
+            if (!Array.isArray(rows) || rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">데이터가 없습니다.</td></tr>';
+                return;
+            }
+            const statusLabel = { tuning_needed: '튜닝 필요', watching: '주시 중', normal: '정상' };
+            tbody.innerHTML = rows.map(r => `
+                <tr>
+                    <td style="font-family: monospace;">${r.sqlId}</td>
+                    <td style="font-family: monospace; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${(r.sqlTextPreview || '').replace(/"/g, '&quot;')}">${r.sqlTextPreview}</td>
+                    <td style="text-align:right;">${r.execCount}</td>
+                    <td style="text-align:right;">${r.avgElapsedMs}</td>
+                    <td style="text-align:right;">${r.cpuPct}</td>
+                    <td><span class="iv2-sql-status ${r.status}">${statusLabel[r.status] || r.status}</span></td>
+                </tr>
+            `).join('');
+        }
+
+        async function fetchActiveAlertsV2() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/active_alerts?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            const listEl = document.getElementById('iv2-alert-list');
+            if (!res.ok) return;
+            const alerts = await res.json();
+            iv2LastAlerts = Array.isArray(alerts) ? alerts : [];
+            const countEl = document.getElementById('iv2-alert-count');
+            if (countEl) countEl.textContent = `${iv2LastAlerts.length}건`;
+            iv2UpdateLockCurrentBoxes();
+            if (!listEl) return;
+            if (iv2LastAlerts.length === 0) {
+                listEl.innerHTML = '<li class="iv2-alert-item info">확인이 필요한 알림이 없습니다.</li>';
+                return;
+            }
+            listEl.innerHTML = iv2LastAlerts.map(a => `
+                <li class="iv2-alert-item ${a.severity}">
+                    <span>${a.message}</span>
+                    <span class="iv2-alert-time">${iv2RelativeTime(a.occurredAt)}</span>
+                </li>
+            `).join('');
+        }
+
+        async function fetchMetricHistoryV2() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/metric_history?db_id=${dbId}&range=${iv2Range}&token=${encodeURIComponent(getToken())}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.error) return;
+
+            const toPoints = (series) => (series || []).map(p => ({ x: p.sampledAt, y: p.value }));
+
+            const cpuCtx = document.getElementById('iv2-cpu-dbtime-chart');
+            if (cpuCtx) {
+                const cpuPoints = toPoints(data.cpu_pct);
+                const aasPoints = toPoints(data.db_time_aas);
+                if (!iv2CpuDbTimeChart) {
+                    iv2CpuDbTimeChart = new Chart(cpuCtx, {
+                        type: 'line',
+                        data: {
+                            datasets: [
+                                { label: 'CPU %', data: cpuPoints, borderColor: '#3987e5', backgroundColor: 'rgba(57,135,229,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2 },
+                                { label: 'DB Time (AAS)', data: aasPoints, borderColor: '#d95926', backgroundColor: 'rgba(217,89,38,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, yAxisID: 'y1' }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: { duration: 0 },
+                            scales: {
+                                x: { type: 'time', time: { unit: 'minute' } },
+                                y: { beginAtZero: true, position: 'left' },
+                                y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false } }
+                            }
+                        }
+                    });
+                } else {
+                    iv2CpuDbTimeChart.data.datasets[0].data = cpuPoints;
+                    iv2CpuDbTimeChart.data.datasets[1].data = aasPoints;
+                    iv2CpuDbTimeChart.update();
+                }
+            }
+
+            const lockCtx = document.getElementById('iv2-lock-trend-chart');
+            if (lockCtx) {
+                const tmPoints = toPoints(data.tm_lock_waiting);
+                const txPoints = toPoints(data.tx_lock_waiting);
+                iv2LastTmVal = tmPoints.length ? tmPoints[tmPoints.length - 1].y : 0;
+                iv2LastTxVal = txPoints.length ? txPoints[txPoints.length - 1].y : 0;
+                iv2UpdateLockCurrentBoxes();
+                if (!iv2LockTrendChart) {
+                    iv2LockTrendChart = new Chart(lockCtx, {
+                        type: 'line',
+                        data: {
+                            datasets: [
+                                { label: 'TM Lock 대기', data: tmPoints, borderColor: '#3987e5', backgroundColor: 'rgba(57,135,229,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true },
+                                { label: 'TX Lock 대기', data: txPoints, borderColor: '#d95926', backgroundColor: 'rgba(217,89,38,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: { duration: 0 },
+                            scales: {
+                                x: { type: 'time', time: { unit: 'minute' } },
+                                y: { beginAtZero: true, ticks: { precision: 0 } }
+                            }
+                        }
+                    });
+                } else {
+                    iv2LockTrendChart.data.datasets[0].data = tmPoints;
+                    iv2LockTrendChart.data.datasets[1].data = txPoints;
+                    iv2LockTrendChart.update();
+                }
+            }
+        }
+
+        // 클래식 대시보드의 "장애발생 가능성" 카드에 숨어있던 장애조치 버튼(사용자 요청, 2026-09-16)을
+        // 신규 뷰에도 넣는다 - 표시 조건(failure_prob 기반 percentage>=80 & 관리자)과 클릭 시 동작(TM
+        // Lock holder만 자동 kill, TX는 절대 대상 아님)을 그대로 재사용한다. 레거시 코드(dashToggleBtn
+        // 근처의 fetchLocks/incidentBtn)는 건드리지 않고 이 IIFE 안에서 동일 로직을 독립적으로 둔다 -
+        // 신규 뷰는 처음부터 레거시와 분리된 채로 만들어 왔으므로 같은 원칙을 유지.
+        function iv2FailurePercentage(count) {
+            if (count === 1) return 30;
+            if (count === 2) return 40;
+            if (count === 3) return 50;
+            if (count === 4) return 60;
+            if (count === 5) return 70;
+            if (count === 6) return 80;
+            if (count >= 7) return 90;
+            return 0;
+        }
+
+        async function fetchIncidentGateV2() {
+            const btn = document.getElementById('iv2-incident-action-btn');
+            if (!btn) return;
+            const dbId = window.currentDbId || '';
+            try {
+                const res = await fetch(`/api/failure_prob?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+                if (!res.ok) { btn.style.display = 'none'; return; }
+                const data = await res.json();
+                const count = (data && data.count !== undefined) ? data.count : 0;
+                const percentage = iv2FailurePercentage(count);
+                btn.style.display = (percentage >= 80 && isAdmin()) ? 'block' : 'none';
+            } catch (e) {
+                btn.style.display = 'none';
+            }
+        }
+
+        document.getElementById('iv2-incident-action-btn')?.addEventListener('click', async () => {
+            const dbId = window.currentDbId || '';
+            try {
+                const tmResponse = await fetch(`/api/tmlock?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+                const tmData = await tmResponse.json();
+                if (!tmResponse.ok || !tmData || tmData.error) {
+                    alert('TM Lock 정보를 가져오지 못했습니다.');
+                    return;
+                }
+                const holders = tmData
+                    .filter(h => h.sid != null && h.serial != null && h.lock_type === 'TM')
+                    .map(h => ({ sid: h.sid, serial: h.serial }));
+                if (holders.length === 0) {
+                    alert('현재 Kill할 TM Lock Holder 세션이 없습니다. (TX 락은 자동조치 대상이 아닙니다)');
+                    return;
+                }
+                if (!confirm(`Blocking 중인 TM Lock Holder 세션 ${holders.length}건을 즉시 Kill 하시겠습니까?`)) return;
+
+                const res = await fetch(`/api/kill_session?db_id=${dbId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessions: holders, token: sessionStorage.getItem('dbagent_token') })
+                });
+                const data = await res.json();
+                if (data.error) {
+                    alert(`장애조치 중 오류: ${data.error}`);
+                    return;
+                }
+                let successCount = 0, failCount = 0;
+                data.results.forEach(r => (r.status === 'killed' ? successCount++ : failCount++));
+                alert(`장애조치 완료:\n성공: ${successCount}건\n실패: ${failCount}건`);
+                fetchInstanceDashboardV2();
+            } catch (e) {
+                alert(`장애조치 처리 중 오류가 발생했습니다: ${e.message}`);
+            }
+        });
+
+        function fetchInstanceDashboardV2() {
+            const dashboardSection = document.getElementById('dashboard');
+            if (!dashboardSection || !dashboardSection.classList.contains('active') || currentView !== 'v2') return;
+            fetchInstanceOverviewV2();
+            fetchTopWaitEventsV2();
+            fetchTopSqlV2();
+            fetchActiveAlertsV2();
+            fetchMetricHistoryV2();
+            fetchIncidentGateV2();
+        }
+
+        // ---- Dashboard v3 (벤토형) ---- 같은 4개 엔드포인트를 v2와 그대로 공유하되, 프레젠테이션만
+        // 다르다(헬스 스코어 게이지 + 탭형 추이차트 + 리스트형 Top SQL + sticky 알림 사이드바 + Lock
+        // 미니 위젯). 각 fetch가 끝날 때마다 iv3RenderAll()을 불러 그 시점까지 모인 캐시 데이터로 다시
+        // 그린다 - 개별 API 하나가 실패/지연되어도 나머지 패널은 정상 표시되게 하기 위함.
+        let iv3Overview = null;
+        let iv3Alerts = [];
+        let iv3TopSql = [];
+        let iv3Sessions = [];
+        let iv3WaitEvents = [];
+        let iv3MetricHistory = null;
+        let iv3HealthCfg = null;
+        let iv3ActiveTab = 'cpu_dbtime';
+        let iv3Range = '1h';
+        let iv3TrendChart = null;
+        let iv3TmSparkChart = null;
+        let iv3TxSparkChart = null;
+
+        function iv3LastValue(series) {
+            if (!series || !series.length) return 0;
+            const v = series[series.length - 1].value;
+            return v == null ? 0 : v;
+        }
+
+        function renderIv3Header() {
+            if (!iv3Overview) return;
+            const data = iv3Overview;
+            const nameEl = document.getElementById('iv3-instance-name');
+            if (nameEl) nameEl.textContent = data.instanceName || '--';
+            const statusBadge = document.getElementById('iv3-status-badge');
+            if (statusBadge) {
+                statusBadge.textContent = data.status || '--';
+                statusBadge.classList.toggle('online', data.status === '정상 운영');
+                statusBadge.classList.toggle('offline', data.status !== '정상 운영');
+            }
+            const metaEl = document.getElementById('iv3-meta-text');
+            if (metaEl) {
+                const version = data.dbVersion ? `Oracle ${data.versionCodename || data.dbVersion}` : '--';
+                metaEl.textContent = `${version} · ${data.topology || '--'} · 가동시간 ${Math.floor(data.uptimeDays || 0)}일`;
+            }
+            const updatedEl = document.getElementById('iv3-last-updated');
+            if (updatedEl) updatedEl.textContent = '방금 갱신됨';
+
+            const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+            setText('iv3-qs-tps', `${data.tps ?? '--'} 건/초`);
+            setText('iv3-qs-aas', `${data.dbTimeAas ?? '--'}`);
+            setText('iv3-qs-mem', `${iv2FormatBytes(data.sgaBytes)} / ${iv2FormatBytes(data.pgaBytes)}`);
+            setText('iv3-qs-uptime', `${Math.floor(data.uptimeDays || 0)}일`);
+        }
+
+        function renderIv3TopSql() {
+            const el = document.getElementById('iv3-topsql-list');
+            if (!el) return;
+            const rows = iv3TopSql;
+            if (!rows.length) { el.innerHTML = '<li class="iv3-topsql-row">데이터가 없습니다.</li>'; return; }
+            const maxMs = Math.max(...rows.map(r => r.avgElapsedMs || 0), 0.0001);
+            const statusColor = { tuning_needed: 'var(--danger)', watching: 'var(--warning)', normal: 'var(--success)' };
+            const statusLabel = { tuning_needed: '튜닝 필요', watching: '주시 중', normal: '정상' };
+            el.innerHTML = rows.map((r, i) => {
+                const pct = Math.round(((r.avgElapsedMs || 0) / maxMs) * 100);
+                return `
+                <li class="iv3-topsql-row">
+                    <span class="iv3-topsql-rank">${String(i + 1).padStart(2, '0')}</span>
+                    <span class="iv2-sql-status ${r.status}">${statusLabel[r.status] || r.status}</span>
+                    <span class="iv3-topsql-sqlid">${r.sqlId}</span>
+                    <span class="iv3-topsql-text" title="${(r.sqlTextPreview || '').replace(/"/g, '&quot;')}">${r.sqlTextPreview}</span>
+                    <span class="iv3-topsql-bar"><span class="iv3-topsql-bar-fill" style="width:${pct}%; background:${statusColor[r.status] || 'var(--primary)'};"></span></span>
+                    <span class="iv3-topsql-elapsed">${r.avgElapsedMs}ms</span>
+                </li>`;
+            }).join('');
+        }
+
+        function renderIv3Alerts() {
+            const listEl = document.getElementById('iv3-alert-list');
+            const countEl = document.getElementById('iv3-alert-count');
+            if (countEl) countEl.textContent = `${iv3Alerts.length}건`;
+            if (!listEl) return;
+            if (!iv3Alerts.length) {
+                listEl.innerHTML = '<li class="iv2-alert-item info">확인이 필요한 알림이 없습니다.</li>';
+                return;
+            }
+            listEl.innerHTML = iv3Alerts.map(a => `
+                <li class="iv2-alert-item ${a.severity}">
+                    <span>${a.message}</span>
+                    <span class="iv2-alert-time">${iv2RelativeTime(a.occurredAt)}</span>
+                </li>
+            `).join('');
+        }
+
+        function iv3RenderSparkline(canvasId, chartRef, values, color) {
+            const ctx = document.getElementById(canvasId);
+            if (!ctx) return chartRef;
+            if (chartRef) {
+                chartRef.data.labels = values.map((_, i) => i);
+                chartRef.data.datasets[0].data = values;
+                chartRef.update();
+                return chartRef;
+            }
+            return new Chart(ctx, {
+                type: 'line',
+                data: { labels: values.map((_, i) => i), datasets: [{ data: values, borderColor: color, borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false }] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: { x: { display: false }, y: { display: false } }
+                }
+            });
+        }
+
+        function renderIv3LockWidget() {
+            const tmSeries = (iv3MetricHistory && iv3MetricHistory.tm_lock_waiting) || [];
+            const txSeries = (iv3MetricHistory && iv3MetricHistory.tx_lock_waiting) || [];
+            const tmVal = iv3LastValue(tmSeries);
+            const txVal = iv3LastValue(txSeries);
+            const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+            setText('iv3-lock-tm-value', tmVal);
+            setText('iv3-lock-tx-value', txVal);
+            const txCard = document.getElementById('iv3-lock-tx');
+            if (txCard) txCard.classList.toggle('danger', txVal > 0);
+
+            iv3TmSparkChart = iv3RenderSparkline('iv3-lock-tm-spark', iv3TmSparkChart, tmSeries.slice(-20).map(p => p.value), '#3987e5');
+            iv3TxSparkChart = iv3RenderSparkline('iv3-lock-tx-spark', iv3TxSparkChart, txSeries.slice(-20).map(p => p.value), '#d95926');
+
+            // Lock Holder/Waiter Tree 바로가기 (spec §2.7) - active_alerts의 "Blocking Session 감지"
+            // 항목이 들고 있는 relatedSid를 그대로 재사용, 새 조회 없음.
+            const linkEl = document.getElementById('iv3-lock-linkline');
+            if (linkEl) {
+                const blocking = iv3Alerts.find(a => a.relatedSid);
+                linkEl.innerHTML = (txVal > 0 && blocking)
+                    ? `SID ${blocking.relatedSid}에서 Blocking 발생 중 → <a href="#" id="iv3-lock-tree-link">Lock Tree 보기</a>`
+                    : '';
+            }
+        }
+
+        function renderIv3Trend() {
+            const ctx = document.getElementById('iv3-trend-chart');
+            if (!ctx) return;
+            if (iv3TrendChart) { iv3TrendChart.destroy(); iv3TrendChart = null; }
+
+            if (iv3ActiveTab === 'wait_events') {
+                iv3TrendChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: { labels: iv3WaitEvents.map(e => e.event), datasets: [{ label: '세션 수', data: iv3WaitEvents.map(e => e.count), backgroundColor: '#3987e5' }] },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: { duration: 0 },
+                        plugins: { legend: { display: false } },
+                        scales: { x: { beginAtZero: true, ticks: { precision: 0 } } }
+                    }
+                });
+                return;
+            }
+
+            const toPoints = (series) => ((series || [])).map(p => ({ x: p.sampledAt, y: p.value }));
+            if (iv3ActiveTab === 'lock') {
+                const tmPoints = toPoints(iv3MetricHistory && iv3MetricHistory.tm_lock_waiting);
+                const txPoints = toPoints(iv3MetricHistory && iv3MetricHistory.tx_lock_waiting);
+                iv3TrendChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        datasets: [
+                            { label: 'TM Lock 대기', data: tmPoints, borderColor: '#3987e5', backgroundColor: 'rgba(57,135,229,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true },
+                            { label: 'TX Lock 대기', data: txPoints, borderColor: '#d95926', backgroundColor: 'rgba(217,89,38,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: { duration: 0 },
+                        scales: { x: { type: 'time', time: { unit: 'minute' } }, y: { beginAtZero: true, ticks: { precision: 0 } } }
+                    }
+                });
+                return;
+            }
+
+            // 기본 탭: cpu_dbtime
+            const cpuPoints = toPoints(iv3MetricHistory && iv3MetricHistory.cpu_pct);
+            const aasPoints = toPoints(iv3MetricHistory && iv3MetricHistory.db_time_aas);
+            iv3TrendChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        { label: 'CPU %', data: cpuPoints, borderColor: '#3987e5', backgroundColor: 'rgba(57,135,229,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2 },
+                        { label: 'DB Time (AAS)', data: aasPoints, borderColor: '#d95926', backgroundColor: 'rgba(217,89,38,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, yAxisID: 'y1' }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    scales: {
+                        x: { type: 'time', time: { unit: 'minute' } },
+                        y: { beginAtZero: true, position: 'left' },
+                        y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false } }
+                    }
+                }
+            });
+        }
+
+        // 헬스 스코어 계산/게이지·브레이크다운 렌더링. 가중치·목표치는 /api/config에서 읽어온다
+        // (dbagent.health-score.* - ConfigController, 하드코딩 금지 원칙). oracle-instance-dashboard-
+        // UI-spec_2.md §5 공식 그대로: 100에서 CPU/메모리 초과분, TX Lock 대기, 알림 심각도별 페널티를 차감.
+        function renderIv3HealthScore() {
+            if (!iv3Overview || !iv3HealthCfg) return;
+            const cfg = iv3HealthCfg;
+            const txLockWaiting = iv3LastValue((iv3MetricHistory && iv3MetricHistory.tx_lock_waiting) || []);
+            const critical = iv3Alerts.filter(a => a.severity === 'critical').length;
+            const warning = iv3Alerts.filter(a => a.severity === 'warning').length;
+            const cpuPct = iv3Overview.cpuPct || 0;
+            const memPct = iv3Overview.memPct || 0;
+            const cpuOver = Math.max(0, cpuPct - cfg.cpuTargetPct);
+            const memOver = Math.max(0, memPct - cfg.memTargetPct);
+            let score = 100
+                - cpuOver * cfg.cpuWeight
+                - memOver * cfg.memWeight
+                - (txLockWaiting > 0 ? txLockWaiting * cfg.txLockPenalty : 0)
+                - (critical * cfg.alertCriticalPenalty + warning * cfg.alertWarningPenalty);
+            score = Math.max(0, Math.min(100, Math.round(score)));
+
+            const circumference = 2 * Math.PI * 64;
+            const dash = circumference * (score / 100);
+            const arc = document.getElementById('iv3-gauge-arc');
+            if (arc) {
+                arc.setAttribute('stroke-dasharray', `${dash.toFixed(2)} ${circumference.toFixed(2)}`);
+                arc.style.stroke = score >= 90 ? 'var(--success)' : score >= 70 ? 'var(--warning)' : 'var(--danger)';
+            }
+            const scoreEl = document.getElementById('iv3-gauge-score');
+            if (scoreEl) scoreEl.textContent = score;
+
+            const maxSessions = iv3Overview.maxSessions;
+            const sessionsPct = maxSessions ? Math.min(100, ((iv3Overview.activeSessions || 0) / maxSessions) * 100) : 0;
+            const hitRatio = iv3Overview.bufferCacheHitRatio;
+            const breakdown = [
+                { label: 'CPU 사용률', value: `${cpuPct}%`, pct: Math.min(100, cpuPct), tone: cpuPct >= cfg.cpuTargetPct ? 'danger' : cpuPct >= cfg.cpuTargetPct * 0.8 ? 'warning' : 'default' },
+                { label: '메모리 사용률', value: `${memPct}%`, pct: Math.min(100, memPct), tone: memPct >= cfg.memTargetPct ? 'danger' : memPct >= cfg.memTargetPct * 0.8 ? 'warning' : 'default' },
+                { label: 'Active Sessions', value: `${iv3Overview.activeSessions ?? '--'}/${maxSessions ?? '--'}`, pct: sessionsPct, tone: sessionsPct >= 80 ? 'danger' : sessionsPct >= 60 ? 'warning' : 'default' },
+                { label: 'Buffer Cache Hit', value: `${hitRatio ?? '--'}%`, pct: hitRatio || 0, tone: (hitRatio ?? 100) < 80 ? 'danger' : (hitRatio ?? 100) < 90 ? 'warning' : 'default' }
+            ];
+            const breakdownEl = document.getElementById('iv3-hero-breakdown');
+            if (breakdownEl) {
+                breakdownEl.innerHTML = breakdown.map(b => `
+                    <div class="iv3-breakdown-row">
+                        <span class="iv3-breakdown-label">${b.label}</span>
+                        <span class="iv3-breakdown-bar"><span class="iv3-breakdown-bar-fill ${b.tone !== 'default' ? b.tone : ''}" style="width:${b.pct}%;"></span></span>
+                        <span class="iv3-breakdown-value">${b.value}</span>
+                    </div>`).join('');
+            }
+        }
+
+        function iv3RenderAll() {
+            renderIv3Header();
+            renderIv3TopSql();
+            renderIv3Alerts();
+            renderIv3LockWidget();
+            renderIv3Trend();
+            renderIv3HealthScore();
+        }
+
+        // 하단 전체 폭 Active Session 목록(클래식 대시보드 탭을 그대로 옮김, 사용자 요청 2026-09-17) -
+        // 좌/우 컬럼 높이 단차를 콘텐츠 축약으로 메우려던 1차 시도(리스트 행)가 부족하다는 피드백을
+        // 받아, 같은 테이블을 통째로 재사용하는 쪽으로 교체했다. 행 HTML은 app.js 상단의 공용 헬퍼
+        // window.dbagentBuildSessionRows(fetchDashboard 쪽 dash-sess-tbody와 동일 로직)를 그대로 쓴다.
+        // 체크박스 상태 보존/Kill 버튼 활성화는 KILL_PANES(전역)에 iv3-full-sess-checkbox 항목을
+        // 추가해 dash-sess-tbody/session-checkbox/tmlock-checkbox와 동일하게 처리되도록 했다.
+        function renderIv3FullSessionTable() {
+            const tbody = document.getElementById('iv3-full-sess-tbody');
+            if (!tbody) return;
+            const checkedKeys = new Set(Array.from(document.querySelectorAll('.iv3-full-sess-checkbox:checked'))
+                .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
+            tbody.innerHTML = window.dbagentBuildSessionRows
+                ? window.dbagentBuildSessionRows(iv3Sessions, 'iv3-full-sess-checkbox')
+                : '<tr><td colspan="16" style="text-align:center;">불러오지 못했습니다.</td></tr>';
+            document.querySelectorAll('.iv3-full-sess-checkbox').forEach(cb => {
+                if (checkedKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
+                    cb.checked = true;
+                }
+            });
+            if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
+        }
+
+        document.querySelectorAll('.iv3-trend-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                iv3ActiveTab = tab.getAttribute('data-iv3-tab');
+                document.querySelectorAll('.iv3-trend-tab').forEach(t => t.classList.toggle('active', t === tab));
+                renderIv3Trend();
+            });
+        });
+
+        document.querySelectorAll('#iv3-range-switch .iv-range-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                iv3Range = btn.getAttribute('data-range');
+                document.querySelectorAll('#iv3-range-switch .iv-range-btn').forEach(b => b.classList.toggle('active', b === btn));
+                fetchMetricHistoryV3();
+            });
+        });
+
+        // Lock 위젯의 "Lock Tree 보기" 링크는 renderIv3LockWidget()이 매 폴링마다 innerHTML로 다시
+        // 그리므로, 매번 리스너를 재등록하는 대신 위임(delegation)으로 한 번만 건다.
+        document.addEventListener('click', (e) => {
+            if (e.target && e.target.id === 'iv3-lock-tree-link') {
+                e.preventDefault();
+                document.querySelector('.nav-item[data-target="tmlock"]')?.click();
+            }
+        });
+
+        async function fetchInstanceOverviewV3() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/instance_overview?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.error) return;
+            iv3Overview = data;
+            iv3RenderAll();
+        }
+
+        async function fetchTopSqlV3() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/top_sql?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            if (!res.ok) return;
+            const rows = await res.json();
+            iv3TopSql = Array.isArray(rows) ? rows : [];
+            iv3RenderAll();
+        }
+
+        async function fetchActiveAlertsV3() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/active_alerts?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            if (!res.ok) return;
+            const alerts = await res.json();
+            iv3Alerts = Array.isArray(alerts) ? alerts : [];
+            iv3RenderAll();
+        }
+
+        async function fetchTopWaitEventsV3() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/top_events?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            if (!res.ok) return;
+            const events = await res.json();
+            iv3WaitEvents = Array.isArray(events) ? events.slice(0, 5) : [];
+            iv3RenderAll();
+        }
+
+        async function fetchMetricHistoryV3() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/metric_history?db_id=${dbId}&range=${iv3Range}&token=${encodeURIComponent(getToken())}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.error) return;
+            iv3MetricHistory = data;
+            iv3RenderAll();
+        }
+
+        async function fetchActiveSessionV3() {
+            const dbId = window.currentDbId || '';
+            const res = await fetch(`/api/session?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            if (!res.ok) return;
+            const rows = await res.json();
+            iv3Sessions = Array.isArray(rows)
+                ? rows.filter(s => s && s.status && s.status.trim().toUpperCase() === 'ACTIVE')
+                : [];
+            // 큰 테이블이라 iv3RenderAll()(다른 4개 fetch가 매번 트리거하는 공용 재렌더)에 얹지 않고
+            // 이 fetch 완료 시점에만 그린다 - 안 그러면 다른 패널 갱신마다 체크박스 상태가 불필요하게
+            // 흔들리고 큰 테이블을 매번 다시 그리게 된다.
+            renderIv3FullSessionTable();
+        }
+        window.dbagentRefreshIv3Sessions = fetchActiveSessionV3; // Kill 성공 후 이 패널만 새로고침하기 위한 훅
+
+        async function ensureIv3HealthConfig() {
+            if (iv3HealthCfg) return;
+            let cfg = {};
+            try {
+                const res = await fetch('/api/config');
+                if (res.ok) cfg = await res.json();
+            } catch (e) { /* 기본값으로 폴백 */ }
+            iv3HealthCfg = {
+                cpuTargetPct: cfg.health_score_cpu_target_pct ?? 80,
+                cpuWeight: cfg.health_score_cpu_weight ?? 1.0,
+                memTargetPct: cfg.health_score_mem_target_pct ?? 85,
+                memWeight: cfg.health_score_mem_weight ?? 1.0,
+                txLockPenalty: cfg.health_score_tx_lock_penalty ?? 5,
+                alertCriticalPenalty: cfg.health_score_alert_critical_penalty ?? 15,
+                alertWarningPenalty: cfg.health_score_alert_warning_penalty ?? 5
+            };
+            iv3RenderAll();
+        }
+
+        function fetchInstanceDashboardV3() {
+            const dashboardSection = document.getElementById('dashboard');
+            if (!dashboardSection || !dashboardSection.classList.contains('active') || currentView !== 'v3') return;
+            ensureIv3HealthConfig();
+            fetchInstanceOverviewV3();
+            fetchTopSqlV3();
+            fetchActiveAlertsV3();
+            fetchTopWaitEventsV3();
+            fetchMetricHistoryV3();
+            fetchActiveSessionV3();
+        }
+
+        let initialView = 'legacy';
+        try {
+            const saved = localStorage.getItem('dbagent.dashboardView');
+            if (saved === 'v2' || saved === 'v3') initialView = saved;
+        } catch (e) { /* ignore */ }
+        setView(initialView);
+
+        // 전환 스위치는 .content-section 바깥(항상 뷰포트 기준 우측하단)에 두었기 때문에, DASHBOARD 탭이
+        // 활성화된 동안에만 보이도록 표시 여부를 직접 관리해야 한다 - .content-section.active의 CSS
+        // display 토글에 더 이상 얹혀갈 수 없다(사용자 실측 버그 수정, 2026-09-16).
+        const iv2SwitchEl = document.getElementById('iv2-view-switch');
+        function syncIv2SwitchVisibility() {
+            const dashboardSection = document.getElementById('dashboard');
+            if (iv2SwitchEl) {
+                iv2SwitchEl.style.display = (dashboardSection && dashboardSection.classList.contains('active')) ? '' : 'none';
+            }
+        }
+        syncIv2SwitchVisibility();
+        document.querySelectorAll('.nav-item[data-target]').forEach(nav => {
+            nav.addEventListener('click', () => {
+                syncIv2SwitchVisibility();
+                if (nav.getAttribute('data-target') === 'dashboard') setTimeout(fetchActiveDashboardView, 50);
+            });
+        });
+    })();
+
     // Dashboard Tabs
     const dashTabBtns = document.querySelectorAll('.dash-tab-btn');
     dashTabBtns.forEach(btn => {
@@ -3057,6 +3843,8 @@ let layoutHTML = "";
                 if (checkboxClass === 'session-checkbox') {
                     const btn = document.getElementById('session-refresh-btn');
                     if (btn) btn.click();
+                } else if (checkboxClass === 'iv3-full-sess-checkbox') {
+                    if (typeof window.dbagentRefreshIv3Sessions === 'function') window.dbagentRefreshIv3Sessions();
                 } else {
                     fetchDashboard();
                 }
@@ -3068,6 +3856,7 @@ let layoutHTML = "";
     
     document.getElementById('dash-kill-btn')?.addEventListener('click', () => killSessions('dash-sess-checkbox'));
     document.getElementById('session-kill-btn')?.addEventListener('click', () => killSessions('session-checkbox'));
+    document.getElementById('iv3-full-sess-kill-btn')?.addEventListener('click', () => killSessions('iv3-full-sess-checkbox'));
 
     document.getElementById('dash-incident-action-btn')?.addEventListener('click', async () => {
         const dbId = window.currentDbId || "";
@@ -3118,7 +3907,11 @@ let layoutHTML = "";
     document.getElementById('dash-select-all-sess')?.addEventListener('change', (e) => {
         document.querySelectorAll('.dash-sess-checkbox').forEach(cb => cb.checked = e.target.checked);
     });
-    
+
+    document.getElementById('iv3-full-sess-select-all')?.addEventListener('change', (e) => {
+        document.querySelectorAll('.iv3-full-sess-checkbox').forEach(cb => cb.checked = e.target.checked);
+    });
+
     document.getElementById('session-select-all')?.addEventListener('change', (e) => {
         document.querySelectorAll('.session-checkbox').forEach(cb => cb.checked = e.target.checked);
     });
@@ -3132,13 +3925,17 @@ let layoutHTML = "";
     // <b>표는 자동 갱신마다 tbody 를 통째로 다시 그린다</b> - 그리는 시점에 개별 체크박스에
     // 리스너를 달면 갱신될 때마다 사라지고, 새 행에는 안 붙는다. 그래서 document 레벨 위임으로
     // 한 번만 걸고, 갱신 직후에도 다시 계산되도록 아래에서 폴링 없이 change 이벤트를 받는다.
-    // 이 화면의 Kill 버튼은 셋이다 - DASHBOARD 탭의 Active Session 목록, Current Session 메뉴,
-    // Lock Holder/Waiter Tree. 셋 다 같은 규칙으로 동작해야 한다(2026-09-06 사용자 지적으로 대시보드
-    // 것이 빠져 있던 것을 보완).
+    // 이 화면의 Kill 버튼은 넷이다 - DASHBOARD 탭의 Active Session 목록, Current Session 메뉴,
+    // Lock Holder/Waiter Tree, 오라클 인스턴스 대시보드 v3(벤토형) 하단 Active Session 목록(2026-09-17
+    // 추가). 넷 다 같은 규칙으로 동작해야 한다(2026-09-06 사용자 지적으로 대시보드 것이 빠져 있던
+    // 것을 보완했던 것과 같은 이유).
     const KILL_PANES = [
         { box: 'dash-sess-checkbox', btn: 'dash-kill-btn',    count: 'dash-selected-count',    all: 'dash-select-all-sess' },
         { box: 'session-checkbox',   btn: 'session-kill-btn', count: 'session-selected-count', all: 'session-select-all'   },
-        { box: 'tmlock-checkbox',    btn: 'tmlock-kill-btn',  count: 'tmlock-selected-count',  all: 'tmlock-select-all'    }
+        { box: 'tmlock-checkbox',    btn: 'tmlock-kill-btn',  count: 'tmlock-selected-count',  all: 'tmlock-select-all'    },
+        // 오라클 인스턴스 대시보드 v3(벤토형) 하단의 Active Session 목록(2026-09-17 추가) - 나머지
+        // 셋과 동일한 규칙으로 동작.
+        { box: 'iv3-full-sess-checkbox', btn: 'iv3-full-sess-kill-btn', count: 'iv3-full-sess-selected-count', all: 'iv3-full-sess-select-all' }
     ];
     function syncKillButtons() {
         KILL_PANES.forEach(p => {
