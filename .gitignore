@@ -27,6 +27,12 @@ build/
 /users.trace.db
 /dist/users.mv.db
 /dist/users.trace.db
+# instance_metric_history 전용 DB(2026-09-18 분리, 원본 DBAgent-Java 대응) - users.mv.db와 같은 이유로
+# 환경마다 달라야 함
+/metrics.mv.db
+/metrics.trace.db
+/dist/metrics.mv.db
+/dist/metrics.trace.db
 /dbagent-java.out.log
 /dbagent-java.err.log
 /dist/dbagent-java.out.log
