@@ -1,6 +1,7 @@
 package com.dbagent.oracle;
 
 import com.dbagent.auth.AuthService;
+import com.dbagent.monitor.InstanceMetricSamplerService;
 import com.dbagent.rdb.RdbConnectionPoolManager;
 import com.dbagent.util.Maps;
 import org.springframework.http.HttpStatus;
@@ -27,13 +28,16 @@ public class DbConfigAdminController {
     private final DatabaseConfigService configService;
     private final OracleConnectionPoolManager poolManager;
     private final RdbConnectionPoolManager rdbPoolManager;
+    private final InstanceMetricSamplerService metricSamplerService;
 
     public DbConfigAdminController(AuthService authService, DatabaseConfigService configService,
-            OracleConnectionPoolManager poolManager, RdbConnectionPoolManager rdbPoolManager) {
+            OracleConnectionPoolManager poolManager, RdbConnectionPoolManager rdbPoolManager,
+            InstanceMetricSamplerService metricSamplerService) {
         this.authService = authService;
         this.configService = configService;
         this.poolManager = poolManager;
         this.rdbPoolManager = rdbPoolManager;
+        this.metricSamplerService = metricSamplerService;
     }
 
     @PostMapping("/api/db_configs")
@@ -42,9 +46,18 @@ public class DbConfigAdminController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Maps.of("success", false, "message", "관리자만 DB를 추가할 수 있습니다."));
         }
-        return ResponseEntity.ok(configService.createInstance(req.groupName(), req.id(), req.name(), req.dbType(),
+        Map<String, Object> result = configService.createInstance(req.groupName(), req.id(), req.name(), req.dbType(),
                 req.host(), req.port(), req.sid(), req.user(), req.password(), req.poolMinIdle(), req.poolMaxSize(),
-                req.accounts(), req.sessionThresholds()));
+                req.accounts(), req.sessionThresholds());
+        if (Boolean.TRUE.equals(result.get("success"))) {
+            // 등록 직후 바로 1회 수집해 둔다(오케스트레이터 요청, 2026-09-18) - 안 그러면 CPU/DB Time·
+            // Lock 추이 그래프가 다음 정기 수집 사이클(기본 60초)까지 완전히 비어 보인다.
+            TargetDbConfig newTarget = configService.resolve(req.id());
+            if (newTarget != null) {
+                metricSamplerService.sampleNowAsync(newTarget);
+            }
+        }
+        return ResponseEntity.ok(result);
     }
 
     @PutMapping("/api/db_configs/{id}")

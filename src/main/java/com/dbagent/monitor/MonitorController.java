@@ -381,23 +381,6 @@ public class MonitorController {
         }
     }
 
-    @GetMapping("/top_sql")
-    public ResponseEntity<Object> topSql(@RequestParam(required = false) String db_id,
-                                          @RequestParam(required = false) String token) {
-        if (!authService.canAccessDb(token, db_id)) {
-            return dbAccessDenied();
-        }
-        TargetDbConfig target = configService.resolve(db_id);
-        if (target == null) {
-            return dbNotFound();
-        }
-        try {
-            return ResponseEntity.ok(monitorService.getTopSql(target));
-        } catch (SQLException e) {
-            return dbError(e);
-        }
-    }
-
     @GetMapping("/active_alerts")
     public ResponseEntity<Object> activeAlerts(@RequestParam(required = false) String db_id,
                                                 @RequestParam(required = false) String token) {

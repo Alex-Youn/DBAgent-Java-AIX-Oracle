@@ -667,6 +667,10 @@ function getToken() {
                             // DB를 바꿔도 지금 보고 있던 메뉴에 그대로 머무르도록 - 대시보드로 강제 이동하지 않음.
                             const activeNav = document.querySelector('.nav-item.active');
                             switchTab(activeNav ? activeNav.getAttribute('data-target') : 'dashboard');
+                            // v2/v3가 보이는 중이면 지금 바로 새 DB로 갱신 - 안 그러면 다음 10초 폴링
+                            // 틱까지 화면이 이전 DB 데이터(또는 최초 진입 시 빈 화면)로 멈춰 있다
+                            // (오케스트레이터 실측, 2026-09-18: "UI-1 초기화면이 너무 늦게 뜬다").
+                            if (typeof window.fetchActiveDashboardView === 'function') window.fetchActiveDashboardView();
                         });
                         
                         instancesDiv.appendChild(instLink);
@@ -1519,6 +1523,9 @@ let layoutHTML = "";
                 })();
             }
         });
+        // 기본값을 자동 갱신 켜짐으로(오케스트레이터 요청, 2026-09-18: "OFF가 디폴트인 것 같은데 ON으로
+        // 해달라") - 대시보드 자동 갱신과 같은 패턴(항상 켜진 채로 시작, 이후 버튼으로 직접 껐다 켰다).
+        tmlockToggleBtn.click();
     }
 
     const tmlockKillBtn = document.getElementById('tmlock-kill-btn');
@@ -2545,6 +2552,15 @@ let layoutHTML = "";
 
     async function fetchDashboard() {
         if (!document.getElementById('dashboard').classList.contains('active')) return;
+        // v2/v3(신규 대시보드)가 보이는 동안은 이 레거시 폴러를 쉰다 - 안 그러면 같은 인스턴스에
+        // 레거시(이 함수, 2초 간격 5종 병렬 fetch)와 v2/v3(10초 간격, 별도 5~6종) 폴링이 동시에 겹쳐
+        // 커넥션 풀을 이중으로 잠식한다(사용자 실측 "신규 대시보드 진입 후 전체 메뉴 먹통" 버그).
+        // 플래그가 아직 없으면(v2/v3 마크업이 없는 페이지 등) 기존과 동일하게 항상 돈다.
+        if (window.dbagentActiveDashboardSubView && window.dbagentActiveDashboardSubView !== 'legacy') return;
+        // DB가 아직 선택되기 전(페이지 막 로드된 시점)이면 db_id=""로 나가는 낭비성 요청을 막는다
+        // (오케스트레이터 실측, 2026-09-18: 로그인 직후 이 폴러의 첫 tick이 setView()보다 먼저 돌아
+        // 5종 API가 전부 빈 db_id로 나가며 각각 커넥션 타임아웃만큼 헛돌았음).
+        if (!window.currentDbId) return;
 
         const host = window.location.hostname || '127.0.0.1';
         const dbId = window.currentDbId || "";
@@ -2999,65 +3015,124 @@ let layoutHTML = "";
     // ---- Oracle instance dashboard v2/v3 (신규/베타, 2026-09-16) ----
     // 기존 대시보드(위 dashRefreshBtn/fetchDashboard 등)는 건드리지 않는다 - 화면 하단 스위치로 뷰만
     // 전환하고, 보이는 뷰의 폴러만 돈다. v2(스택형)/v3(벤토형)는 같은 데이터 계약(instance_overview/
-    // top_sql/active_alerts/top_events/metric_history)을 공유한다(oracle-instance-dashboard-UI-spec_2.md
+    // active_alerts/top_events/metric_history)을 공유한다(Top SQL/Quick Stats 패널은 사용자 요청으로
+    // 2026-09-18 제거, oracle-instance-dashboard-UI-spec_2.md
     // §0 "두 버전 모두 데이터 소스와 의미는 동일 - 프레젠테이션 레이어만 다르다"). 어떤 뷰를 기본값으로
     // 할지는 아직 미정이라 localStorage에 마지막 선택을 기억해 두고 다음 방문 때 그대로 이어서 보여준다.
     (function initInstanceDashboardV2() {
         const legacyView = document.getElementById('dashboard-legacy-view');
         const v2View = document.getElementById('dashboard-v2-view');
-        const v3View = document.getElementById('dashboard-v3-view');
         const switchBtns = document.querySelectorAll('#iv2-view-switch .iv2-view-btn');
         if (!legacyView || !v2View || switchBtns.length === 0) return;
 
         let currentView = 'legacy';
         let iv2PollingTimer = null;
-        let iv3PollingTimer = null;
         let iv2CpuDbTimeChart = null;
         let iv2WaitEventsChart = null;
         let iv2LockTrendChart = null;
+        let iv2TmSparkChart = null;
+        let iv2TxSparkChart = null;
         let iv2Range = '1h';
         let iv2LastAlerts = [];
         let iv2LastTmVal = 0;
         let iv2LastTxVal = 0;
+        // UI-2(v3) Lock 현황 카드처럼 미니 스파크라인을 그리기 위한 클라이언트 쪽 롤링 버퍼 - 서버
+        // 히스토리를 또 조회하지 않고 fetchIncidentGateV2()가 10초마다 받아오는 실시간 값을 그때그때
+        // 쌓아서 쓴다(오케스트레이터 요청, 2026-09-18). 20개 = 폴링 10초 간격 기준 약 3분 20초치.
+        let iv2TmSparkBuffer = [];
+        let iv2TxSparkBuffer = [];
+        const IV2_SPARK_MAX_POINTS = 20;
 
         // v2/v3 공통 - Lock 추이 카드 아래 "현재 TM/TX Lock 대기" 요약 박스(DASHBOARD-UI-1 샘플 목업
-        // 반영, 2026-09-16). tm/tx 값은 metric_history 마지막 포인트, Blocking SID는 active_alerts의
-        // "Blocking Session 감지" 항목이 이미 들고 있는 relatedSid를 그대로 재사용 - 새 조회 없음.
+        // 반영, 2026-09-16 / UI-2 카드 스타일 + 실시간화로 개편, 2026-09-18). tm/tx 값은
+        // fetchIncidentGateV2()가 /api/failure_prob에서 받아오는 실시간 값(장애조치 버튼과 동일 소스),
+        // Blocking SID는 active_alerts의 "Blocking Session 감지" 항목이 이미 들고 있는 relatedSid를
+        // 그대로 재사용 - 새 조회 없음.
+        // 카드가 붉은색으로 바뀌는 임계치 - 장애조치 버튼 임계치(failure_prob 기반, iv2FailurePercentage)와
+        // 완전히 별개(오케스트레이터 지적, 2026-09-18: "1건만 돼도 붉어지는 건 너무 민감하다").
+        const IV2_TM_LOCK_DANGER_THRESHOLD = 6;
+        const IV2_TX_LOCK_DANGER_THRESHOLD = 15;
+
         function iv2UpdateLockCurrentBoxes() {
             const tmEl = document.getElementById('iv2-lock-tm-current');
             const txEl = document.getElementById('iv2-lock-tx-current');
             if (tmEl) tmEl.textContent = `${iv2LastTmVal}건`;
             if (txEl) txEl.textContent = `${iv2LastTxVal}건`;
+            const tmBox = document.getElementById('iv2-lock-tm-box');
+            if (tmBox) tmBox.classList.toggle('danger', iv2LastTmVal >= IV2_TM_LOCK_DANGER_THRESHOLD);
             const txBox = document.getElementById('iv2-lock-tx-box');
-            if (txBox) txBox.classList.toggle('danger', iv2LastTxVal > 0);
+            if (txBox) txBox.classList.toggle('danger', iv2LastTxVal >= IV2_TX_LOCK_DANGER_THRESHOLD);
             const subEl = document.getElementById('iv2-lock-tx-sub');
             if (subEl) {
                 const blocking = iv2LastAlerts.find(a => a.relatedSid);
-                subEl.textContent = (iv2LastTxVal > 0 && blocking) ? `SID ${blocking.relatedSid} Blocking` : '';
+                subEl.textContent = (iv2LastTxVal >= IV2_TX_LOCK_DANGER_THRESHOLD && blocking) ? `SID ${blocking.relatedSid} Blocking` : '';
             }
+        }
+
+        // 미니 스파크라인(값+추세만 보여주는 축 없는 라인차트) 공용 렌더러 - 원래 UI-2(v3) 전용이었지만
+        // UI-2 제거(오케스트레이터 요청, 2026-09-18) 후에도 UI-1의 TM/TX Lock 카드가 계속 쓰므로 이름에서
+        // v3를 뗀다.
+        function renderSparkline(canvasId, chartRef, values, color) {
+            const ctx = document.getElementById(canvasId);
+            if (!ctx) return chartRef;
+            if (chartRef) {
+                chartRef.data.labels = values.map((_, i) => i);
+                chartRef.data.datasets[0].data = values;
+                chartRef.update();
+                return chartRef;
+            }
+            return new Chart(ctx, {
+                type: 'line',
+                data: { labels: values.map((_, i) => i), datasets: [{ data: values, borderColor: color, borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false }] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: { x: { display: false }, y: { display: false } }
+                }
+            });
+        }
+
+        // fetchIncidentGateV2()가 새 실시간 값을 받아올 때만 부른다 - fetchActiveAlertsV2()는 Blocking
+        // SID 라벨만 갱신하려고 iv2UpdateLockCurrentBoxes()를 따로 부르는데, 거기서 이것까지 같이
+        // 부르면 값이 안 바뀌었는데도 스파크라인에 같은 점이 중복으로 찍힌다.
+        function iv2PushLockSpark(tmVal, txVal) {
+            iv2TmSparkBuffer.push(tmVal);
+            iv2TxSparkBuffer.push(txVal);
+            if (iv2TmSparkBuffer.length > IV2_SPARK_MAX_POINTS) iv2TmSparkBuffer.shift();
+            if (iv2TxSparkBuffer.length > IV2_SPARK_MAX_POINTS) iv2TxSparkBuffer.shift();
+            // 색은 Current Session 그래프의 TM/TX LOCK과 동일(오케스트레이터 요청, 2026-09-18) -
+            // 아래 DBMS Lock 추이 그래프 색과 같은 이유(CPU/DB Time 색은 이후 원래대로 Rewind됨).
+            iv2TmSparkChart = renderSparkline('iv2-lock-tm-spark', iv2TmSparkChart, iv2TmSparkBuffer, '#be123c');
+            iv2TxSparkChart = renderSparkline('iv2-lock-tx-spark', iv2TxSparkChart, iv2TxSparkBuffer, '#7c3aed');
         }
 
         function fetchActiveDashboardView() {
             if (currentView === 'v2') fetchInstanceDashboardV2();
-            else if (currentView === 'v3') fetchInstanceDashboardV3();
         }
+        // instLink 클릭 핸들러(이 IIFE 밖, DB 트리 초기화 코드)가 최초 DB 자동선택/전환 직후 바로
+        // 불러 쓰기 위한 훅(오케스트레이터 실측, 2026-09-18) - 안 그러면 v2는 다음 10초 폴링
+        // 틱까지 기다려야 실제 데이터가 뜬다.
+        window.fetchActiveDashboardView = fetchActiveDashboardView;
 
         function setView(view) {
             currentView = view;
             legacyView.style.display = view === 'legacy' ? '' : 'none';
             v2View.style.display = view === 'v2' ? '' : 'none';
-            if (v3View) v3View.style.display = view === 'v3' ? '' : 'none';
             switchBtns.forEach(b => b.classList.toggle('active', b.getAttribute('data-iv2-view') === view));
             try { localStorage.setItem('dbagent.dashboardView', view); } catch (e) { /* private mode 등 - 무시 */ }
 
+            // fetchDashboard()(레거시 2초 폴러)가 이 값을 보고 자기 자신을 쉬게 한다 - 기존 대시보드
+            // 코드는 건드리지 않고, 신규 뷰가 보이는 동안만 레거시 폴링을 멈춰 같은 인스턴스에 두 폴러가
+            // 동시에 부하를 주지 않도록 한다.
+            window.dbagentActiveDashboardSubView = view;
+            if (view === 'legacy') fetchDashboard();
+
             if (iv2PollingTimer) { clearInterval(iv2PollingTimer); iv2PollingTimer = null; }
-            if (iv3PollingTimer) { clearInterval(iv3PollingTimer); iv3PollingTimer = null; }
             if (view === 'v2') {
                 fetchInstanceDashboardV2();
                 iv2PollingTimer = setInterval(fetchInstanceDashboardV2, 10000);
-            } else if (view === 'v3') {
-                fetchInstanceDashboardV3();
-                iv3PollingTimer = setInterval(fetchInstanceDashboardV3, 10000);
             }
         }
 
@@ -3118,7 +3193,25 @@ let layoutHTML = "";
             setText('iv2-kpi-aas', `${data.dbTimeAas ?? '--'}`);
             setText('iv2-kpi-tps', `${data.tps ?? '--'} 건/초`);
             setText('iv2-kpi-hitratio', `${data.bufferCacheHitRatio ?? '--'}%`);
+
+            // CPU/메모리/버퍼캐시 히트율 타일 밑 얇은 진행률 막대(오케스트레이터 요청, 2026-09-18).
+            const setBar = (id, pct, tone) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.style.width = `${Math.max(0, Math.min(100, pct || 0))}%`;
+                el.classList.remove('warning', 'danger');
+                if (tone) el.classList.add(tone);
+            };
+            setBar('iv2-kpi-cpu-bar', data.cpuPct, data.cpuPct >= 90 ? 'danger' : data.cpuPct >= 80 ? 'warning' : null);
+            setBar('iv2-kpi-mem-bar', data.memPct, data.memPct >= 90 ? 'danger' : data.memPct >= 80 ? 'warning' : null);
+            // 히트율은 낮을수록 나쁨 - 클래식 대시보드/구 헬스스코어와 같은 기준(80% 미만 위험, 90% 미만 주의).
+            const hitRatio = data.bufferCacheHitRatio;
+            setBar('iv2-kpi-hitratio-bar', hitRatio, (hitRatio ?? 100) < 80 ? 'danger' : (hitRatio ?? 100) < 90 ? 'warning' : null);
         }
+
+        // 이벤트별로 다른 색(오케스트레이터 요청, 2026-09-18) - buildSessionRowsHtml()의 세션 대기
+        // 유형별 색상표와 같은 팔레트를 재사용해 앱 전체에서 색 의미가 일관되게 한다.
+        const IV2_WAIT_EVENT_COLORS = ['#3987e5', '#d95926', '#22d3ee', '#2ecc71', '#7c3aed', '#be123c', '#808000'];
 
         async function fetchTopWaitEventsV2() {
             const dbId = window.currentDbId || '';
@@ -3131,47 +3224,62 @@ let layoutHTML = "";
             if (!ctx) return;
             const labels = top5.map(e => e.event);
             const values = top5.map(e => e.count);
+            const colors = labels.map((_, i) => IV2_WAIT_EVENT_COLORS[i % IV2_WAIT_EVENT_COLORS.length]);
             if (!iv2WaitEventsChart) {
                 iv2WaitEventsChart = new Chart(ctx, {
                     type: 'bar',
-                    data: { labels, datasets: [{ label: '세션 수', data: values, backgroundColor: '#3987e5' }] },
+                    // maxBarThickness(오케스트레이터 요청, 2026-09-18) - 기본값(flex)은 막대 개수에 따라
+                    // 두께가 자동으로 늘었다 줄었다 해서 1개만 있을 때 유독 두껍게 보였는데, 고정값인
+                    // barThickness를 쓰면 반대로 이벤트가 5개로 늘었을 때 150px 프레임에 안 맞아 막대가
+                    // 겹치고 라벨도 잘리는 버그가 있었다(오케스트레이터 재지적, 2026-09-18). 상한만 두는
+                    // maxBarThickness면 적을 땐 18px로 고정되고, 많을 땐 프레임에 맞게 자동으로 얇아진다.
+                    data: { labels, datasets: [{ label: '세션 수', data: values, backgroundColor: colors, maxBarThickness: 18 }] },
                     options: {
                         indexAxis: 'y',
                         responsive: true,
                         maintainAspectRatio: false,
                         animation: { duration: 0 },
                         plugins: { legend: { display: false } },
-                        scales: { x: { beginAtZero: true, ticks: { precision: 0 } } }
+                        scales: {
+                            x: { beginAtZero: true, ticks: { precision: 0, color: chartLineColor(0.75) } },
+                            // autoSkip:false로 5개까지는 항상 전부 표시(기존엔 겹침 때문에 3개만 보이던 버그).
+                            y: { ticks: { autoSkip: false, color: chartLineColor(0.85), font: { size: 11 } } }
+                        }
                     }
                 });
             } else {
                 iv2WaitEventsChart.data.labels = labels;
                 iv2WaitEventsChart.data.datasets[0].data = values;
+                iv2WaitEventsChart.data.datasets[0].backgroundColor = colors;
                 iv2WaitEventsChart.update();
             }
         }
 
-        async function fetchTopSqlV2() {
+        // 기존 Lock 추이 그래프가 있던 칸에 넣는 압축형 Active Session 목록(오케스트레이터 요청,
+        // 2026-09-18) - 클래식/v3 하단의 16열 테이블은 이 좁은 칸엔 안 맞아서, 알림 리스트와 같은
+        // .iv2-alert-list 카드형 스타일을 재사용한다. 그래야 확인 필요 알림과 max-height/스크롤이
+        // 같아 단차 없이 나란히 붙는다. 클릭하면 다른 세션 테이블들과 동일하게 전역
+        // .clickable-session-row 델리게이트(app.js 하단)가 session-detail.html 팝업을 띄운다.
+        async function fetchActiveSessionV2() {
             const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/top_sql?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            const tbody = document.getElementById('iv2-top-sql-tbody');
-            if (!tbody) return;
+            const res = await fetch(`/api/session?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            const listEl = document.getElementById('iv2-session-list');
+            if (!listEl) return;
             if (!res.ok) return;
             const rows = await res.json();
-            if (!Array.isArray(rows) || rows.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">데이터가 없습니다.</td></tr>';
+            const sessions = Array.isArray(rows)
+                ? rows.filter(s => s && s.status && s.status.trim().toUpperCase() === 'ACTIVE')
+                : [];
+            if (!sessions.length) {
+                listEl.innerHTML = '<li class="iv2-alert-item">ACTIVE 상태인 세션이 없습니다.</li>';
                 return;
             }
-            const statusLabel = { tuning_needed: '튜닝 필요', watching: '주시 중', normal: '정상' };
-            tbody.innerHTML = rows.map(r => `
-                <tr>
-                    <td style="font-family: monospace;">${r.sqlId}</td>
-                    <td style="font-family: monospace; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${(r.sqlTextPreview || '').replace(/"/g, '&quot;')}">${r.sqlTextPreview}</td>
-                    <td style="text-align:right;">${r.execCount}</td>
-                    <td style="text-align:right;">${r.avgElapsedMs}</td>
-                    <td style="text-align:right;">${r.cpuPct}</td>
-                    <td><span class="iv2-sql-status ${r.status}">${statusLabel[r.status] || r.status}</span></td>
-                </tr>
+            listEl.innerHTML = sessions.map(s => `
+                <li class="iv2-alert-item clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-serial="${s.serial || ''}" data-sql_id="${s.sql_id || ''}">
+                    <span style="font-family:monospace; color:var(--primary); flex-shrink:0;">SID ${s.sid}</span>
+                    <span style="flex-shrink:0; color:var(--text-muted);">${s.duration_time ?? '-'}초</span>
+                    <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(s.sql_text || '').replace(/"/g, '&quot;')}">${s.sql_text || s.event_name || '-'}</span>
+                </li>
             `).join('');
         }
 
@@ -3216,6 +3324,8 @@ let layoutHTML = "";
                         type: 'line',
                         data: {
                             datasets: [
+                                // 색은 원래 배색으로 되돌림(오케스트레이터 요청, 2026-09-18 재수정) - Current
+                                // Session 팔레트 준용은 Rewind. CPU%는 파랑, DB Time(AAS)은 주황.
                                 { label: 'CPU %', data: cpuPoints, borderColor: '#3987e5', backgroundColor: 'rgba(57,135,229,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2 },
                                 { label: 'DB Time (AAS)', data: aasPoints, borderColor: '#d95926', backgroundColor: 'rgba(217,89,38,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, yAxisID: 'y1' }
                             ]
@@ -3224,10 +3334,13 @@ let layoutHTML = "";
                             responsive: true,
                             maintainAspectRatio: false,
                             animation: { duration: 0 },
+                            plugins: { legend: { labels: { color: chartLineColor(0.85) } } },
                             scales: {
-                                x: { type: 'time', time: { unit: 'minute' } },
-                                y: { beginAtZero: true, position: 'left' },
-                                y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false } }
+                                // 24시간제로 5분 단위 눈금만 표시(오케스트레이터 요청, 2026-09-18) -
+                                // 실시간(1시간) 범위 기준 12개 눈금(=60분/5분).
+                                x: { type: 'time', time: { unit: 'minute', stepSize: 5, displayFormats: { minute: 'HH:mm' } }, ticks: { color: chartLineColor(0.75) } },
+                                y: { beginAtZero: true, position: 'left', ticks: { color: chartLineColor(0.75) } },
+                                y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: chartLineColor(0.75) } }
                             }
                         }
                     });
@@ -3242,25 +3355,30 @@ let layoutHTML = "";
             if (lockCtx) {
                 const tmPoints = toPoints(data.tm_lock_waiting);
                 const txPoints = toPoints(data.tx_lock_waiting);
-                iv2LastTmVal = tmPoints.length ? tmPoints[tmPoints.length - 1].y : 0;
-                iv2LastTxVal = txPoints.length ? txPoints[txPoints.length - 1].y : 0;
-                iv2UpdateLockCurrentBoxes();
+                // 현재 TM/TX 대기 카드 값은 여기(추이 마지막 포인트, 최대 metric-sample-interval-seconds
+                // 만큼 지연)가 아니라 fetchIncidentGateV2()의 /api/failure_prob 실시간 값으로 채운다
+                // (오케스트레이터 지적, 2026-09-18) - 이 추이 차트 자체는 그대로 유지.
                 if (!iv2LockTrendChart) {
                     iv2LockTrendChart = new Chart(lockCtx, {
                         type: 'line',
                         data: {
                             datasets: [
-                                { label: 'TM Lock 대기', data: tmPoints, borderColor: '#3987e5', backgroundColor: 'rgba(57,135,229,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true },
-                                { label: 'TX Lock 대기', data: txPoints, borderColor: '#d95926', backgroundColor: 'rgba(217,89,38,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true }
+                                // 색은 Current Session 그래프의 TM LOCK/TX LOCK과 동일(오케스트레이터
+                                // 요청, 2026-09-18) - 현재값 카드 스파크라인(iv2PushLockSpark)과도 통일.
+                                { label: 'TM Lock 대기', data: tmPoints, borderColor: '#be123c', backgroundColor: 'rgba(190,18,60,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true },
+                                { label: 'TX Lock 대기', data: txPoints, borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true }
                             ]
                         },
                         options: {
                             responsive: true,
                             maintainAspectRatio: false,
                             animation: { duration: 0 },
+                            plugins: { legend: { labels: { color: chartLineColor(0.85) } } },
                             scales: {
-                                x: { type: 'time', time: { unit: 'minute' } },
-                                y: { beginAtZero: true, ticks: { precision: 0 } }
+                                // 24시간제로 5분 단위 눈금만 표시(오케스트레이터 요청, 2026-09-18) -
+                                // 실시간(1시간) 범위 기준 12개 눈금(=60분/5분).
+                                x: { type: 'time', time: { unit: 'minute', stepSize: 5, displayFormats: { minute: 'HH:mm' } }, ticks: { color: chartLineColor(0.75) } },
+                                y: { beginAtZero: true, ticks: { precision: 0, color: chartLineColor(0.75) } }
                             }
                         }
                     });
@@ -3297,6 +3415,13 @@ let layoutHTML = "";
                 if (!res.ok) { btn.style.display = 'none'; return; }
                 const data = await res.json();
                 const count = (data && data.count !== undefined) ? data.count : 0;
+                // 장애조치 버튼과 같은 응답의 실시간 TM/TX 대기 건수 - "현재 TM/TX Lock 대기" 카드도
+                // 이걸로 채운다(오케스트레이터 지적, 2026-09-18: 버튼은 실시간인데 카드 숫자는 최대
+                // 60초 지연된 추이 샘플이라 서로 어긋났음).
+                iv2LastTmVal = (data && data.tmLockWaiting !== undefined) ? data.tmLockWaiting : 0;
+                iv2LastTxVal = (data && data.txLockWaiting !== undefined) ? data.txLockWaiting : 0;
+                iv2PushLockSpark(iv2LastTmVal, iv2LastTxVal);
+                iv2UpdateLockCurrentBoxes();
                 const percentage = iv2FailurePercentage(count);
                 btn.style.display = (percentage >= 80 && isAdmin()) ? 'block' : 'none';
             } catch (e) {
@@ -3344,419 +3469,22 @@ let layoutHTML = "";
         function fetchInstanceDashboardV2() {
             const dashboardSection = document.getElementById('dashboard');
             if (!dashboardSection || !dashboardSection.classList.contains('active') || currentView !== 'v2') return;
+            // DB가 아직 선택되기 전(페이지 막 로드된 시점)이면 db_id=""로 나가는 낭비성 요청을 막는다
+            // (오케스트레이터 실측, 2026-09-18: 로그인 직후 이 상태로 6개 API가 동시에 나가 각각
+            // 커넥션 타임아웃만큼 헛돌고, 다음 10초 폴링까지 기다려야 실제 데이터가 떴음).
+            if (!window.currentDbId) return;
             fetchInstanceOverviewV2();
             fetchTopWaitEventsV2();
-            fetchTopSqlV2();
             fetchActiveAlertsV2();
             fetchMetricHistoryV2();
             fetchIncidentGateV2();
-        }
-
-        // ---- Dashboard v3 (벤토형) ---- 같은 4개 엔드포인트를 v2와 그대로 공유하되, 프레젠테이션만
-        // 다르다(헬스 스코어 게이지 + 탭형 추이차트 + 리스트형 Top SQL + sticky 알림 사이드바 + Lock
-        // 미니 위젯). 각 fetch가 끝날 때마다 iv3RenderAll()을 불러 그 시점까지 모인 캐시 데이터로 다시
-        // 그린다 - 개별 API 하나가 실패/지연되어도 나머지 패널은 정상 표시되게 하기 위함.
-        let iv3Overview = null;
-        let iv3Alerts = [];
-        let iv3TopSql = [];
-        let iv3Sessions = [];
-        let iv3WaitEvents = [];
-        let iv3MetricHistory = null;
-        let iv3HealthCfg = null;
-        let iv3ActiveTab = 'cpu_dbtime';
-        let iv3Range = '1h';
-        let iv3TrendChart = null;
-        let iv3TmSparkChart = null;
-        let iv3TxSparkChart = null;
-
-        function iv3LastValue(series) {
-            if (!series || !series.length) return 0;
-            const v = series[series.length - 1].value;
-            return v == null ? 0 : v;
-        }
-
-        function renderIv3Header() {
-            if (!iv3Overview) return;
-            const data = iv3Overview;
-            const nameEl = document.getElementById('iv3-instance-name');
-            if (nameEl) nameEl.textContent = data.instanceName || '--';
-            const statusBadge = document.getElementById('iv3-status-badge');
-            if (statusBadge) {
-                statusBadge.textContent = data.status || '--';
-                statusBadge.classList.toggle('online', data.status === '정상 운영');
-                statusBadge.classList.toggle('offline', data.status !== '정상 운영');
-            }
-            const metaEl = document.getElementById('iv3-meta-text');
-            if (metaEl) {
-                const version = data.dbVersion ? `Oracle ${data.versionCodename || data.dbVersion}` : '--';
-                metaEl.textContent = `${version} · ${data.topology || '--'} · 가동시간 ${Math.floor(data.uptimeDays || 0)}일`;
-            }
-            const updatedEl = document.getElementById('iv3-last-updated');
-            if (updatedEl) updatedEl.textContent = '방금 갱신됨';
-
-            const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
-            setText('iv3-qs-tps', `${data.tps ?? '--'} 건/초`);
-            setText('iv3-qs-aas', `${data.dbTimeAas ?? '--'}`);
-            setText('iv3-qs-mem', `${iv2FormatBytes(data.sgaBytes)} / ${iv2FormatBytes(data.pgaBytes)}`);
-            setText('iv3-qs-uptime', `${Math.floor(data.uptimeDays || 0)}일`);
-        }
-
-        function renderIv3TopSql() {
-            const el = document.getElementById('iv3-topsql-list');
-            if (!el) return;
-            const rows = iv3TopSql;
-            if (!rows.length) { el.innerHTML = '<li class="iv3-topsql-row">데이터가 없습니다.</li>'; return; }
-            const maxMs = Math.max(...rows.map(r => r.avgElapsedMs || 0), 0.0001);
-            const statusColor = { tuning_needed: 'var(--danger)', watching: 'var(--warning)', normal: 'var(--success)' };
-            const statusLabel = { tuning_needed: '튜닝 필요', watching: '주시 중', normal: '정상' };
-            el.innerHTML = rows.map((r, i) => {
-                const pct = Math.round(((r.avgElapsedMs || 0) / maxMs) * 100);
-                return `
-                <li class="iv3-topsql-row">
-                    <span class="iv3-topsql-rank">${String(i + 1).padStart(2, '0')}</span>
-                    <span class="iv2-sql-status ${r.status}">${statusLabel[r.status] || r.status}</span>
-                    <span class="iv3-topsql-sqlid">${r.sqlId}</span>
-                    <span class="iv3-topsql-text" title="${(r.sqlTextPreview || '').replace(/"/g, '&quot;')}">${r.sqlTextPreview}</span>
-                    <span class="iv3-topsql-bar"><span class="iv3-topsql-bar-fill" style="width:${pct}%; background:${statusColor[r.status] || 'var(--primary)'};"></span></span>
-                    <span class="iv3-topsql-elapsed">${r.avgElapsedMs}ms</span>
-                </li>`;
-            }).join('');
-        }
-
-        function renderIv3Alerts() {
-            const listEl = document.getElementById('iv3-alert-list');
-            const countEl = document.getElementById('iv3-alert-count');
-            if (countEl) countEl.textContent = `${iv3Alerts.length}건`;
-            if (!listEl) return;
-            if (!iv3Alerts.length) {
-                listEl.innerHTML = '<li class="iv2-alert-item info">확인이 필요한 알림이 없습니다.</li>';
-                return;
-            }
-            listEl.innerHTML = iv3Alerts.map(a => `
-                <li class="iv2-alert-item ${a.severity}">
-                    <span>${a.message}</span>
-                    <span class="iv2-alert-time">${iv2RelativeTime(a.occurredAt)}</span>
-                </li>
-            `).join('');
-        }
-
-        function iv3RenderSparkline(canvasId, chartRef, values, color) {
-            const ctx = document.getElementById(canvasId);
-            if (!ctx) return chartRef;
-            if (chartRef) {
-                chartRef.data.labels = values.map((_, i) => i);
-                chartRef.data.datasets[0].data = values;
-                chartRef.update();
-                return chartRef;
-            }
-            return new Chart(ctx, {
-                type: 'line',
-                data: { labels: values.map((_, i) => i), datasets: [{ data: values, borderColor: color, borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false }] },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: { duration: 0 },
-                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
-                    scales: { x: { display: false }, y: { display: false } }
-                }
-            });
-        }
-
-        function renderIv3LockWidget() {
-            const tmSeries = (iv3MetricHistory && iv3MetricHistory.tm_lock_waiting) || [];
-            const txSeries = (iv3MetricHistory && iv3MetricHistory.tx_lock_waiting) || [];
-            const tmVal = iv3LastValue(tmSeries);
-            const txVal = iv3LastValue(txSeries);
-            const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
-            setText('iv3-lock-tm-value', tmVal);
-            setText('iv3-lock-tx-value', txVal);
-            const txCard = document.getElementById('iv3-lock-tx');
-            if (txCard) txCard.classList.toggle('danger', txVal > 0);
-
-            iv3TmSparkChart = iv3RenderSparkline('iv3-lock-tm-spark', iv3TmSparkChart, tmSeries.slice(-20).map(p => p.value), '#3987e5');
-            iv3TxSparkChart = iv3RenderSparkline('iv3-lock-tx-spark', iv3TxSparkChart, txSeries.slice(-20).map(p => p.value), '#d95926');
-
-            // Lock Holder/Waiter Tree 바로가기 (spec §2.7) - active_alerts의 "Blocking Session 감지"
-            // 항목이 들고 있는 relatedSid를 그대로 재사용, 새 조회 없음.
-            const linkEl = document.getElementById('iv3-lock-linkline');
-            if (linkEl) {
-                const blocking = iv3Alerts.find(a => a.relatedSid);
-                linkEl.innerHTML = (txVal > 0 && blocking)
-                    ? `SID ${blocking.relatedSid}에서 Blocking 발생 중 → <a href="#" id="iv3-lock-tree-link">Lock Tree 보기</a>`
-                    : '';
-            }
-        }
-
-        function renderIv3Trend() {
-            const ctx = document.getElementById('iv3-trend-chart');
-            if (!ctx) return;
-            if (iv3TrendChart) { iv3TrendChart.destroy(); iv3TrendChart = null; }
-
-            if (iv3ActiveTab === 'wait_events') {
-                iv3TrendChart = new Chart(ctx, {
-                    type: 'bar',
-                    data: { labels: iv3WaitEvents.map(e => e.event), datasets: [{ label: '세션 수', data: iv3WaitEvents.map(e => e.count), backgroundColor: '#3987e5' }] },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        animation: { duration: 0 },
-                        plugins: { legend: { display: false } },
-                        scales: { x: { beginAtZero: true, ticks: { precision: 0 } } }
-                    }
-                });
-                return;
-            }
-
-            const toPoints = (series) => ((series || [])).map(p => ({ x: p.sampledAt, y: p.value }));
-            if (iv3ActiveTab === 'lock') {
-                const tmPoints = toPoints(iv3MetricHistory && iv3MetricHistory.tm_lock_waiting);
-                const txPoints = toPoints(iv3MetricHistory && iv3MetricHistory.tx_lock_waiting);
-                iv3TrendChart = new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        datasets: [
-                            { label: 'TM Lock 대기', data: tmPoints, borderColor: '#3987e5', backgroundColor: 'rgba(57,135,229,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true },
-                            { label: 'TX Lock 대기', data: txPoints, borderColor: '#d95926', backgroundColor: 'rgba(217,89,38,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true }
-                        ]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        animation: { duration: 0 },
-                        scales: { x: { type: 'time', time: { unit: 'minute' } }, y: { beginAtZero: true, ticks: { precision: 0 } } }
-                    }
-                });
-                return;
-            }
-
-            // 기본 탭: cpu_dbtime
-            const cpuPoints = toPoints(iv3MetricHistory && iv3MetricHistory.cpu_pct);
-            const aasPoints = toPoints(iv3MetricHistory && iv3MetricHistory.db_time_aas);
-            iv3TrendChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    datasets: [
-                        { label: 'CPU %', data: cpuPoints, borderColor: '#3987e5', backgroundColor: 'rgba(57,135,229,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2 },
-                        { label: 'DB Time (AAS)', data: aasPoints, borderColor: '#d95926', backgroundColor: 'rgba(217,89,38,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, yAxisID: 'y1' }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: { duration: 0 },
-                    scales: {
-                        x: { type: 'time', time: { unit: 'minute' } },
-                        y: { beginAtZero: true, position: 'left' },
-                        y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false } }
-                    }
-                }
-            });
-        }
-
-        // 헬스 스코어 계산/게이지·브레이크다운 렌더링. 가중치·목표치는 /api/config에서 읽어온다
-        // (dbagent.health-score.* - ConfigController, 하드코딩 금지 원칙). oracle-instance-dashboard-
-        // UI-spec_2.md §5 공식 그대로: 100에서 CPU/메모리 초과분, TX Lock 대기, 알림 심각도별 페널티를 차감.
-        function renderIv3HealthScore() {
-            if (!iv3Overview || !iv3HealthCfg) return;
-            const cfg = iv3HealthCfg;
-            const txLockWaiting = iv3LastValue((iv3MetricHistory && iv3MetricHistory.tx_lock_waiting) || []);
-            const critical = iv3Alerts.filter(a => a.severity === 'critical').length;
-            const warning = iv3Alerts.filter(a => a.severity === 'warning').length;
-            const cpuPct = iv3Overview.cpuPct || 0;
-            const memPct = iv3Overview.memPct || 0;
-            const cpuOver = Math.max(0, cpuPct - cfg.cpuTargetPct);
-            const memOver = Math.max(0, memPct - cfg.memTargetPct);
-            let score = 100
-                - cpuOver * cfg.cpuWeight
-                - memOver * cfg.memWeight
-                - (txLockWaiting > 0 ? txLockWaiting * cfg.txLockPenalty : 0)
-                - (critical * cfg.alertCriticalPenalty + warning * cfg.alertWarningPenalty);
-            score = Math.max(0, Math.min(100, Math.round(score)));
-
-            const circumference = 2 * Math.PI * 64;
-            const dash = circumference * (score / 100);
-            const arc = document.getElementById('iv3-gauge-arc');
-            if (arc) {
-                arc.setAttribute('stroke-dasharray', `${dash.toFixed(2)} ${circumference.toFixed(2)}`);
-                arc.style.stroke = score >= 90 ? 'var(--success)' : score >= 70 ? 'var(--warning)' : 'var(--danger)';
-            }
-            const scoreEl = document.getElementById('iv3-gauge-score');
-            if (scoreEl) scoreEl.textContent = score;
-
-            const maxSessions = iv3Overview.maxSessions;
-            const sessionsPct = maxSessions ? Math.min(100, ((iv3Overview.activeSessions || 0) / maxSessions) * 100) : 0;
-            const hitRatio = iv3Overview.bufferCacheHitRatio;
-            const breakdown = [
-                { label: 'CPU 사용률', value: `${cpuPct}%`, pct: Math.min(100, cpuPct), tone: cpuPct >= cfg.cpuTargetPct ? 'danger' : cpuPct >= cfg.cpuTargetPct * 0.8 ? 'warning' : 'default' },
-                { label: '메모리 사용률', value: `${memPct}%`, pct: Math.min(100, memPct), tone: memPct >= cfg.memTargetPct ? 'danger' : memPct >= cfg.memTargetPct * 0.8 ? 'warning' : 'default' },
-                { label: 'Active Sessions', value: `${iv3Overview.activeSessions ?? '--'}/${maxSessions ?? '--'}`, pct: sessionsPct, tone: sessionsPct >= 80 ? 'danger' : sessionsPct >= 60 ? 'warning' : 'default' },
-                { label: 'Buffer Cache Hit', value: `${hitRatio ?? '--'}%`, pct: hitRatio || 0, tone: (hitRatio ?? 100) < 80 ? 'danger' : (hitRatio ?? 100) < 90 ? 'warning' : 'default' }
-            ];
-            const breakdownEl = document.getElementById('iv3-hero-breakdown');
-            if (breakdownEl) {
-                breakdownEl.innerHTML = breakdown.map(b => `
-                    <div class="iv3-breakdown-row">
-                        <span class="iv3-breakdown-label">${b.label}</span>
-                        <span class="iv3-breakdown-bar"><span class="iv3-breakdown-bar-fill ${b.tone !== 'default' ? b.tone : ''}" style="width:${b.pct}%;"></span></span>
-                        <span class="iv3-breakdown-value">${b.value}</span>
-                    </div>`).join('');
-            }
-        }
-
-        function iv3RenderAll() {
-            renderIv3Header();
-            renderIv3TopSql();
-            renderIv3Alerts();
-            renderIv3LockWidget();
-            renderIv3Trend();
-            renderIv3HealthScore();
-        }
-
-        // 하단 전체 폭 Active Session 목록(클래식 대시보드 탭을 그대로 옮김, 사용자 요청 2026-09-17) -
-        // 좌/우 컬럼 높이 단차를 콘텐츠 축약으로 메우려던 1차 시도(리스트 행)가 부족하다는 피드백을
-        // 받아, 같은 테이블을 통째로 재사용하는 쪽으로 교체했다. 행 HTML은 app.js 상단의 공용 헬퍼
-        // window.dbagentBuildSessionRows(fetchDashboard 쪽 dash-sess-tbody와 동일 로직)를 그대로 쓴다.
-        // 체크박스 상태 보존/Kill 버튼 활성화는 KILL_PANES(전역)에 iv3-full-sess-checkbox 항목을
-        // 추가해 dash-sess-tbody/session-checkbox/tmlock-checkbox와 동일하게 처리되도록 했다.
-        function renderIv3FullSessionTable() {
-            const tbody = document.getElementById('iv3-full-sess-tbody');
-            if (!tbody) return;
-            const checkedKeys = new Set(Array.from(document.querySelectorAll('.iv3-full-sess-checkbox:checked'))
-                .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
-            tbody.innerHTML = window.dbagentBuildSessionRows
-                ? window.dbagentBuildSessionRows(iv3Sessions, 'iv3-full-sess-checkbox')
-                : '<tr><td colspan="16" style="text-align:center;">불러오지 못했습니다.</td></tr>';
-            document.querySelectorAll('.iv3-full-sess-checkbox').forEach(cb => {
-                if (checkedKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
-                    cb.checked = true;
-                }
-            });
-            if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
-        }
-
-        document.querySelectorAll('.iv3-trend-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                iv3ActiveTab = tab.getAttribute('data-iv3-tab');
-                document.querySelectorAll('.iv3-trend-tab').forEach(t => t.classList.toggle('active', t === tab));
-                renderIv3Trend();
-            });
-        });
-
-        document.querySelectorAll('#iv3-range-switch .iv-range-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                iv3Range = btn.getAttribute('data-range');
-                document.querySelectorAll('#iv3-range-switch .iv-range-btn').forEach(b => b.classList.toggle('active', b === btn));
-                fetchMetricHistoryV3();
-            });
-        });
-
-        // Lock 위젯의 "Lock Tree 보기" 링크는 renderIv3LockWidget()이 매 폴링마다 innerHTML로 다시
-        // 그리므로, 매번 리스너를 재등록하는 대신 위임(delegation)으로 한 번만 건다.
-        document.addEventListener('click', (e) => {
-            if (e.target && e.target.id === 'iv3-lock-tree-link') {
-                e.preventDefault();
-                document.querySelector('.nav-item[data-target="tmlock"]')?.click();
-            }
-        });
-
-        async function fetchInstanceOverviewV3() {
-            const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/instance_overview?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            if (!res.ok) return;
-            const data = await res.json();
-            if (data.error) return;
-            iv3Overview = data;
-            iv3RenderAll();
-        }
-
-        async function fetchTopSqlV3() {
-            const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/top_sql?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            if (!res.ok) return;
-            const rows = await res.json();
-            iv3TopSql = Array.isArray(rows) ? rows : [];
-            iv3RenderAll();
-        }
-
-        async function fetchActiveAlertsV3() {
-            const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/active_alerts?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            if (!res.ok) return;
-            const alerts = await res.json();
-            iv3Alerts = Array.isArray(alerts) ? alerts : [];
-            iv3RenderAll();
-        }
-
-        async function fetchTopWaitEventsV3() {
-            const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/top_events?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            if (!res.ok) return;
-            const events = await res.json();
-            iv3WaitEvents = Array.isArray(events) ? events.slice(0, 5) : [];
-            iv3RenderAll();
-        }
-
-        async function fetchMetricHistoryV3() {
-            const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/metric_history?db_id=${dbId}&range=${iv3Range}&token=${encodeURIComponent(getToken())}`);
-            if (!res.ok) return;
-            const data = await res.json();
-            if (data.error) return;
-            iv3MetricHistory = data;
-            iv3RenderAll();
-        }
-
-        async function fetchActiveSessionV3() {
-            const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/session?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            if (!res.ok) return;
-            const rows = await res.json();
-            iv3Sessions = Array.isArray(rows)
-                ? rows.filter(s => s && s.status && s.status.trim().toUpperCase() === 'ACTIVE')
-                : [];
-            // 큰 테이블이라 iv3RenderAll()(다른 4개 fetch가 매번 트리거하는 공용 재렌더)에 얹지 않고
-            // 이 fetch 완료 시점에만 그린다 - 안 그러면 다른 패널 갱신마다 체크박스 상태가 불필요하게
-            // 흔들리고 큰 테이블을 매번 다시 그리게 된다.
-            renderIv3FullSessionTable();
-        }
-        window.dbagentRefreshIv3Sessions = fetchActiveSessionV3; // Kill 성공 후 이 패널만 새로고침하기 위한 훅
-
-        async function ensureIv3HealthConfig() {
-            if (iv3HealthCfg) return;
-            let cfg = {};
-            try {
-                const res = await fetch('/api/config');
-                if (res.ok) cfg = await res.json();
-            } catch (e) { /* 기본값으로 폴백 */ }
-            iv3HealthCfg = {
-                cpuTargetPct: cfg.health_score_cpu_target_pct ?? 80,
-                cpuWeight: cfg.health_score_cpu_weight ?? 1.0,
-                memTargetPct: cfg.health_score_mem_target_pct ?? 85,
-                memWeight: cfg.health_score_mem_weight ?? 1.0,
-                txLockPenalty: cfg.health_score_tx_lock_penalty ?? 5,
-                alertCriticalPenalty: cfg.health_score_alert_critical_penalty ?? 15,
-                alertWarningPenalty: cfg.health_score_alert_warning_penalty ?? 5
-            };
-            iv3RenderAll();
-        }
-
-        function fetchInstanceDashboardV3() {
-            const dashboardSection = document.getElementById('dashboard');
-            if (!dashboardSection || !dashboardSection.classList.contains('active') || currentView !== 'v3') return;
-            ensureIv3HealthConfig();
-            fetchInstanceOverviewV3();
-            fetchTopSqlV3();
-            fetchActiveAlertsV3();
-            fetchTopWaitEventsV3();
-            fetchMetricHistoryV3();
-            fetchActiveSessionV3();
+            fetchActiveSessionV2();
         }
 
         let initialView = 'legacy';
         try {
             const saved = localStorage.getItem('dbagent.dashboardView');
-            if (saved === 'v2' || saved === 'v3') initialView = saved;
+            if (saved === 'v2') initialView = saved;
         } catch (e) { /* ignore */ }
         setView(initialView);
 
@@ -3843,8 +3571,6 @@ let layoutHTML = "";
                 if (checkboxClass === 'session-checkbox') {
                     const btn = document.getElementById('session-refresh-btn');
                     if (btn) btn.click();
-                } else if (checkboxClass === 'iv3-full-sess-checkbox') {
-                    if (typeof window.dbagentRefreshIv3Sessions === 'function') window.dbagentRefreshIv3Sessions();
                 } else {
                     fetchDashboard();
                 }
@@ -3856,7 +3582,6 @@ let layoutHTML = "";
     
     document.getElementById('dash-kill-btn')?.addEventListener('click', () => killSessions('dash-sess-checkbox'));
     document.getElementById('session-kill-btn')?.addEventListener('click', () => killSessions('session-checkbox'));
-    document.getElementById('iv3-full-sess-kill-btn')?.addEventListener('click', () => killSessions('iv3-full-sess-checkbox'));
 
     document.getElementById('dash-incident-action-btn')?.addEventListener('click', async () => {
         const dbId = window.currentDbId || "";
@@ -3908,10 +3633,6 @@ let layoutHTML = "";
         document.querySelectorAll('.dash-sess-checkbox').forEach(cb => cb.checked = e.target.checked);
     });
 
-    document.getElementById('iv3-full-sess-select-all')?.addEventListener('change', (e) => {
-        document.querySelectorAll('.iv3-full-sess-checkbox').forEach(cb => cb.checked = e.target.checked);
-    });
-
     document.getElementById('session-select-all')?.addEventListener('change', (e) => {
         document.querySelectorAll('.session-checkbox').forEach(cb => cb.checked = e.target.checked);
     });
@@ -3925,17 +3646,13 @@ let layoutHTML = "";
     // <b>표는 자동 갱신마다 tbody 를 통째로 다시 그린다</b> - 그리는 시점에 개별 체크박스에
     // 리스너를 달면 갱신될 때마다 사라지고, 새 행에는 안 붙는다. 그래서 document 레벨 위임으로
     // 한 번만 걸고, 갱신 직후에도 다시 계산되도록 아래에서 폴링 없이 change 이벤트를 받는다.
-    // 이 화면의 Kill 버튼은 넷이다 - DASHBOARD 탭의 Active Session 목록, Current Session 메뉴,
-    // Lock Holder/Waiter Tree, 오라클 인스턴스 대시보드 v3(벤토형) 하단 Active Session 목록(2026-09-17
-    // 추가). 넷 다 같은 규칙으로 동작해야 한다(2026-09-06 사용자 지적으로 대시보드 것이 빠져 있던
-    // 것을 보완했던 것과 같은 이유).
+    // 이 화면의 Kill 버튼은 셋이다 - DASHBOARD 탭의 Active Session 목록, Current Session 메뉴,
+    // Lock Holder/Waiter Tree. 셋 다 같은 규칙으로 동작해야 한다(2026-09-06 사용자 지적으로 대시보드
+    // 것이 빠져 있던 것을 보완했던 것과 같은 이유).
     const KILL_PANES = [
         { box: 'dash-sess-checkbox', btn: 'dash-kill-btn',    count: 'dash-selected-count',    all: 'dash-select-all-sess' },
         { box: 'session-checkbox',   btn: 'session-kill-btn', count: 'session-selected-count', all: 'session-select-all'   },
-        { box: 'tmlock-checkbox',    btn: 'tmlock-kill-btn',  count: 'tmlock-selected-count',  all: 'tmlock-select-all'    },
-        // 오라클 인스턴스 대시보드 v3(벤토형) 하단의 Active Session 목록(2026-09-17 추가) - 나머지
-        // 셋과 동일한 규칙으로 동작.
-        { box: 'iv3-full-sess-checkbox', btn: 'iv3-full-sess-kill-btn', count: 'iv3-full-sess-selected-count', all: 'iv3-full-sess-select-all' }
+        { box: 'tmlock-checkbox',    btn: 'tmlock-kill-btn',  count: 'tmlock-selected-count',  all: 'tmlock-select-all'    }
     ];
     function syncKillButtons() {
         KILL_PANES.forEach(p => {
@@ -4572,9 +4289,14 @@ function updateHistoryUI(data) {
 
 // Global DB Users loader
 let dbUsersLoaded = false;
+// 이전 요청이 아직 안 끝났으면 새로 안 쏜다(오케스트레이터 실측, 2026-09-18: 아래 "Aggressive DB
+// Users loader"가 1초마다 무조건 재시도하다 보니, DB가 느릴 때 매초 fetch 쌍이 새로 쌓여 - 5초 걸리는
+// 상황이면 5쌍이 동시에 같은 커넥션을 다투는 꼴이었다).
+let dbUsersLoading = false;
 const dbUsersEscapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 async function loadDbUsers(targetDb) {
-    if (!targetDb) return;
+    if (!targetDb || dbUsersLoading) return;
+    dbUsersLoading = true;
     // 사용자 요청(2026-09-14): history_users/history_machines는 서로 독립적인 요청이라 순차 await로
     // 묶을 이유가 없다 - 먼저 둘 다 fetch()만 시작해 두고(요청은 즉시 동시에 나감), 각자의 await/처리는
     // 기존처럼 별도 try/catch로 나눠 에러 처리 독립성은 그대로 유지한다(코드 리뷰 지적, 2026-09-14).
@@ -4639,6 +4361,7 @@ async function loadDbUsers(targetDb) {
             mSelect.style.display = 'inline-block';
         }
     }
+    dbUsersLoading = false;
 }
 
 // Hook into db select change (Safe)

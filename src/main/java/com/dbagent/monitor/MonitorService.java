@@ -30,6 +30,7 @@ public class MonitorService {
 
     private final OracleConnectionPoolManager poolManager;
     private final OracleQueryHelper queryHelper;
+    private final InstanceMetricSamplerService metricSamplerService;
 
     // 코드 리뷰 지적(2026-09-14): 이 값은 SqlQueryService.timeoutSeconds/ExecutionPlanService.timeoutSeconds
     // 처럼 이 코드베이스가 이미 쓰는 관례대로 application.properties로 외부화 - 환경별로(v$lock이 특히
@@ -37,9 +38,11 @@ public class MonitorService {
     @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
     private int lockQueryTimeoutSeconds;
 
-    public MonitorService(OracleConnectionPoolManager poolManager, OracleQueryHelper queryHelper) {
+    public MonitorService(OracleConnectionPoolManager poolManager, OracleQueryHelper queryHelper,
+                           InstanceMetricSamplerService metricSamplerService) {
         this.poolManager = poolManager;
         this.queryHelper = queryHelper;
+        this.metricSamplerService = metricSamplerService;
     }
 
     // ---------------------------------------------------------------- tmlock
@@ -665,44 +668,6 @@ public class MonitorService {
         }
     }
 
-    // -------------------------------------------------------- top_sql (dashboard v2)
-    // 문서(3.6절) 권장대로 "튜닝 필요/주시 중/정상" 상태를 서버에서 임계치로 계산해 내려준다 -
-    // 프론트가 하드코딩된 기준을 갖지 않도록.
-    private static final double TOP_SQL_TUNING_NEEDED_MS = 1000.0;
-    private static final double TOP_SQL_WATCHING_MS = 300.0;
-
-    public List<Map<String, Object>> getTopSql(TargetDbConfig target) throws SQLException {
-        String query = "SELECT * FROM (" +
-                "SELECT sql_id, sql_text, executions, elapsed_time, cpu_time " +
-                "FROM v$sqlarea WHERE executions > 0 ORDER BY elapsed_time DESC" +
-                ") WHERE ROWNUM <= 5";
-        List<Map<String, Object>> rows = new ArrayList<>();
-        try (Connection conn = poolManager.getConnection(target);
-             Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(query)) {
-            while (rs.next()) {
-                long executions = rs.getLong("executions");
-                double elapsedTime = rs.getDouble("elapsed_time");
-                double cpuTime = rs.getDouble("cpu_time");
-                double avgElapsedMs = executions > 0 ? elapsedTime / executions / 1000.0 : 0;
-                double cpuPct = elapsedTime > 0 ? Math.min(100.0, cpuTime * 100.0 / elapsedTime) : 0;
-                String status = avgElapsedMs >= TOP_SQL_TUNING_NEEDED_MS ? "tuning_needed"
-                        : avgElapsedMs >= TOP_SQL_WATCHING_MS ? "watching" : "normal";
-
-                String sqlText = rs.getString("sql_text");
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("sqlId", rs.getString("sql_id"));
-                row.put("sqlTextPreview", sqlText == null ? "" : sqlText.substring(0, Math.min(80, sqlText.length())));
-                row.put("execCount", executions);
-                row.put("avgElapsedMs", Math.round(avgElapsedMs * 100.0) / 100.0);
-                row.put("cpuPct", Math.round(cpuPct * 100.0) / 100.0);
-                row.put("status", status);
-                rows.add(row);
-            }
-        }
-        return rows;
-    }
-
     // ----------------------------------------------------- active_alerts (dashboard v2)
     // TEMP 사용률/Blocking Session/장시간 쿼리 3종만 다룬다 - 문서 예시에 있던 "일일 백업 정상 완료"는
     // RMAN 카탈로그 의존이라 이 테스트 환경에서 검증할 수 없어 제외(2026-09-16). 필요해지면
@@ -726,14 +691,31 @@ public class MonitorService {
             } catch (SQLException ignored) {
             }
 
-            try (ResultSet rs = st.executeQuery(
-                    "SELECT DISTINCT s.sid FROM v$session s " +
-                            "JOIN v$lock l ON s.sid = l.sid JOIN dba_objects o ON l.id1 = o.object_id " +
-                            "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
-                            "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid) AND ROWNUM <= 3")) {
-                while (rs.next()) {
-                    String sid = String.valueOf(rs.getInt("sid"));
-                    alerts.add(alertItem("warning", "Blocking Session 감지(SID " + sid + ")", sid));
+            // 일반(TEMP 아닌) 테이블스페이스 97% 알림(오케스트레이터 요청, 2026-09-18) - 처음엔 여기서
+            // dba_data_files/dba_free_space를 실시간 조회했는데, 폐쇄망 실운영 규모(테이블스페이스/
+            // 데이터파일 수가 이 테스트 환경보다 훨씬 많음)에서 그 딕셔너리 뷰 조인이 무겁게 나와
+            // active_alerts 호출(v2 10초 폴링 + 인스턴스 전환마다 즉시 1회)마다 커넥션을 오래 붙잡았고,
+            // 그게 인스턴스 전환 지연·기존 대시보드 전환 시 busy·간헐적 접속 실패로 번졌다(오케스트레이터
+            // 폐쇄망 실측, 2026-09-18). InstanceMetricSamplerService가 CPU/AAS/Lock과 같은 주기
+            // (metric-sample-interval-seconds)로 이미 같은 쿼리를 백그라운드에서 샘플링해 캐시해 두므로,
+            // 여기서는 그 결과만 읽는다 - 알림 자체는 최대 그 주기(기본 60초)만큼만 늦게 뜬다.
+            alerts.addAll(metricSamplerService.getCachedTablespaceAlerts(target.id()));
+
+            // queryLockWaitSidsByType과 같은 이유로 전용 Statement에 타임아웃을 건다(사용자 실측: 이
+            // 환경 일부 인스턴스에서 v$lock 스캔 자체가 49초까지 걸릴 수 있음) - active_alerts는 v2/v3가
+            // 10초 간격으로 폴링하므로, 캡 없이 두면 스캔이 느려질 때마다 커넥션을 오래 붙잡아 같은
+            // 인스턴스의 다른 요청까지 풀 고갈로 끌고 갈 수 있다.
+            try (Statement lockSt = conn.createStatement()) {
+                lockSt.setQueryTimeout(lockQueryTimeoutSeconds);
+                try (ResultSet rs = lockSt.executeQuery(
+                        "SELECT DISTINCT s.sid FROM v$session s " +
+                                "JOIN v$lock l ON s.sid = l.sid JOIN dba_objects o ON l.id1 = o.object_id " +
+                                "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
+                                "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid) AND ROWNUM <= 3")) {
+                    while (rs.next()) {
+                        String sid = String.valueOf(rs.getInt("sid"));
+                        alerts.add(alertItem("warning", "Blocking Session 감지(SID " + sid + ")", sid));
+                    }
                 }
             } catch (SQLException ignored) {
             }
@@ -1064,6 +1046,10 @@ public class MonitorService {
                 "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid)";
 
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+            // getActiveAlerts()의 v$lock 조인과 같은 이유로 타임아웃을 건다(사용자 실측: 이 환경 일부
+            // 인스턴스에서 v$lock 스캔 자체가 49초까지 걸릴 수 있음) - 이 쿼리도 같은 조인 패턴인데
+            // 빠져 있었다(오케스트레이터 지적, 2026-09-18).
+            st.setQueryTimeout(lockQueryTimeoutSeconds);
             int count;
             try (ResultSet rs = st.executeQuery(query)) {
                 count = rs.next() ? rs.getInt(1) : 0;
@@ -1072,7 +1058,15 @@ public class MonitorService {
                     count = rs.next() ? rs.getInt(1) : 0;
                 }
             }
-            return Maps.of("count", count);
+            // v2 대시보드의 "현재 TM/TX Lock 대기" 카드용 실시간 건수 - 장애조치 버튼(위 count)이 이미
+            // 이 순간의 v$lock을 직접 보고 판단하는데, 화면에 보이는 대기 건수는 최대
+            // metric-sample-interval-seconds(기본 60초)전 샘플 값이라 버튼은 즉시 뜨는데 숫자는
+            // 안 따라오는 불일치가 있었다(오케스트레이터 지적, 2026-09-18). 커넥션이 이미 열려있는
+            // 김에 같은 요청 안에서 같이 구해 추가 API 호출 없이 실시간화한다.
+            Map<String, List<Object>> lockSids = queryLockWaitSidsByType(conn);
+            return Maps.of("count", count,
+                    "tmLockWaiting", lockSids.get("tm").size(),
+                    "txLockWaiting", lockSids.get("tx").size());
         }
     }
 
