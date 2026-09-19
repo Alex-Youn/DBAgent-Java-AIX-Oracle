@@ -1,5 +1,6 @@
 package com.dbagent.oracle;
 
+import com.dbagent.auth.AuthService;
 import com.dbagent.util.Maps;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -18,14 +19,22 @@ public class PoolTestController {
 
     private final DatabaseConfigService configService;
     private final OracleConnectionPoolManager poolManager;
+    private final AuthService authService;
 
-    public PoolTestController(DatabaseConfigService configService, OracleConnectionPoolManager poolManager) {
+    public PoolTestController(DatabaseConfigService configService, OracleConnectionPoolManager poolManager,
+            AuthService authService) {
         this.configService = configService;
         this.poolManager = poolManager;
+        this.authService = authService;
     }
 
     @GetMapping("/api/pool/test")
-    public ResponseEntity<Map<String, Object>> test(@RequestParam("db_id") String dbId) {
+    public ResponseEntity<Map<String, Object>> test(@RequestParam("db_id") String dbId,
+            @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, dbId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(Maps.of("success", false, "message", "해당 DB에 대한 접근 권한이 없습니다."));
+        }
         TargetDbConfig target = configService.resolve(dbId);
         if (target == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)

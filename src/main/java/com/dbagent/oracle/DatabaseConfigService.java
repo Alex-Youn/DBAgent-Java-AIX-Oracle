@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -17,14 +19,18 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** Resolves a db_id to Oracle connection details, backed by databases.json with an oracle.env fallback. */
 @Service
 public class DatabaseConfigService {
+
+    private static final Logger log = LoggerFactory.getLogger(DatabaseConfigService.class);
 
     @Value("${dbagent.databases-config}")
     private String databasesConfigPath;
@@ -47,6 +53,33 @@ public class DatabaseConfigService {
         File file = new File(databasesConfigPath);
         config = file.exists() ? mapper.readTree(file) : mapper.createObjectNode();
         fallback = loadOracleEnvFallback(new File(oracleEnvPath));
+        warnOnDuplicates();
+    }
+
+    // oracle.env 제거 마이그레이션 1단계: id 오타/재사용이나 (host,port,sid) 중복 등록은 예전에도
+    // "엉뚱한 DB에 접속" 사고로 이어졌으므로(설계문서 참고), 기동 시점에 눈에 띄게 경고만 남긴다 -
+    // 기존 동작을 바꾸지 않기 위해 시작을 막지는 않는다.
+    private void warnOnDuplicates() {
+        if (config == null || !config.has("groups")) {
+            return;
+        }
+        Set<String> seenIds = new HashSet<>();
+        Set<String> seenEndpoints = new HashSet<>();
+        for (JsonNode group : config.get("groups")) {
+            for (JsonNode inst : group.path("instances")) {
+                String id = inst.path("id").asText("");
+                if (!Strings.isBlank(id) && !seenIds.add(id)) {
+                    log.warn("databases.json에 중복된 id가 있습니다: {}", id);
+                }
+                String host = inst.path("host").asText("");
+                if (!Strings.isBlank(host)) {
+                    String endpoint = host + ":" + inst.path("port").asInt(1521) + ":" + inst.path("sid").asText("");
+                    if (!seenEndpoints.add(endpoint)) {
+                        log.warn("databases.json에 동일한 (host,port,sid)를 가진 인스턴스가 여러 개 있습니다: {}", endpoint);
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -98,6 +131,7 @@ public class DatabaseConfigService {
                         base.host(),
                         base.port(),
                         base.sid(),
+                        base.connectMode(),
                         base.poolMinIdle(),
                         base.poolMaxSize());
             }
@@ -171,6 +205,7 @@ public class DatabaseConfigService {
                 inst.path("host").asText(""),
                 inst.path("port").asInt(1521),
                 inst.path("sid").asText("ORCL"),
+                inst.path("connect_mode").asText(""),
                 inst.hasNonNull("pool_min_idle") ? inst.path("pool_min_idle").asInt() : null,
                 inst.hasNonNull("pool_max_size") ? inst.path("pool_max_size").asInt() : null);
     }
@@ -246,6 +281,7 @@ public class DatabaseConfigService {
                 kv.getOrDefault("HOST", ""),
                 port,
                 kv.getOrDefault("SID", "ORCL"),
+                "",
                 null,
                 null);
     }

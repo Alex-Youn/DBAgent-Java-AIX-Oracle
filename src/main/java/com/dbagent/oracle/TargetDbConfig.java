@@ -11,12 +11,16 @@ public final class TargetDbConfig {
     private final String host;
     private final int port;
     private final String sid;
+    // null/blank = legacy behavior (host blank -> sid treated as TNS alias, host set -> host:port:sid).
+    // "sid" = explicit host:port:sid; "service" = host:port/service_name (sid field holds the service
+    // name); "descriptor" = sid field holds a full connect descriptor/TNS string, host/port ignored.
+    private final String connectMode;
     // null = not set in databases.json, caller should fall back to the application.properties default.
     private final Integer poolMinIdle;
     private final Integer poolMaxSize;
 
     public TargetDbConfig(String id, String name, String dbType, String user, String password, String host, int port,
-                           String sid, Integer poolMinIdle, Integer poolMaxSize) {
+                           String sid, String connectMode, Integer poolMinIdle, Integer poolMaxSize) {
         this.id = id;
         this.name = name;
         this.dbType = dbType;
@@ -25,6 +29,7 @@ public final class TargetDbConfig {
         this.host = host;
         this.port = port;
         this.sid = sid;
+        this.connectMode = connectMode;
         this.poolMinIdle = poolMinIdle;
         this.poolMaxSize = poolMaxSize;
     }
@@ -59,6 +64,10 @@ public final class TargetDbConfig {
 
     public String sid() {
         return sid;
+    }
+
+    public String connectMode() {
+        return connectMode;
     }
 
     public Integer poolMinIdle() {
