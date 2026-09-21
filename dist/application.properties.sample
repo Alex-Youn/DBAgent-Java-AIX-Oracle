@@ -41,13 +41,6 @@
 #dbagent.auth.session-ttl-days=30
 
 # ── Oracle 대상 설정 ─────────────────────────────────────────────────────
-# 앱 작업 디렉터리 기준 상대 경로.
-#dbagent.databases-config=databases.json
-#dbagent.oracle-env-path=oracle.env
-# tnsnames.ora 가 있는 디렉터리. 인스턴스의 host 가 비어 있을 때(SID/별칭 조회, RAC 포함) 쓴다.
-# 비워두면 oracle.env 의 ORACLE_HOME 에서 {ORACLE_HOME}/network/admin 을 유도한다.
-# ORACLE_HOME 이 가리키지 않는 곳에 tnsnames.ora 가 있을 때만 명시한다.
-#dbagent.oracle.tns-admin=C:/Oracle/docker/network/Admin
 # 새 Oracle 커넥션을 수립하는 최대 시간(ms). 망 지연이 크면 올린다(작으면 정상 DB를 down 으로 오판).
 #dbagent.oracle.connect-timeout-ms=3000
 # 이미 연결된 커넥션에서 쿼리 응답을 기다리는 최대 시간(ms, oracle.net.READ_TIMEOUT).

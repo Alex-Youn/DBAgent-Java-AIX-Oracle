@@ -27,9 +27,8 @@ auth/                          # 로그인/세션 인증
   LoginRequest / TokenRequest / ChangePasswordRequest.java
 
 oracle/                        # 대상 Oracle DB 설정·연결 관리
-  DatabaseConfigService.java   # databases.json 파싱, db_id → 접속정보 resolve, oracle.env 폴백
+  DatabaseConfigService.java   # db_instances 테이블 CRUD, db_id → 접속정보 resolve (blank/미등록 id는 null)
   OracleConnectionPoolManager.java  # db_id별 HikariCP 풀 lazy 생성 + 장애 쿨다운(10s)
-  TnsAdminInitializer.java     # oracle.env의 ORACLE_HOME → tnsnames.ora 경로 자동 유추
   TargetDbConfig.java          # 접속 정보 레코드
   ConfigController.java        # GET /api/config (비밀번호 제외 groups/instances + polling 주기)
   PoolTestController.java      # GET /api/pool/test (연결 풀 동작 확인용)
@@ -98,7 +97,6 @@ aidba/                         # AI DBA (RAG-lite 챗봇)
 |---|---|---|
 | `application.properties` | 서버 포트(8005), 폴링 주기, 커넥션 타임아웃, 풀 크기 기본값, Ollama 설정 등 | `src/main/resources/` (jar 옆에 두면 외부 오버라이드 가능) |
 | `databases.json` | 모니터링 대상 Oracle DB 그룹/인스턴스 목록 (id/host/port/sid/user/password 등) | 앱 작업 디렉터리 |
-| `oracle.env` | `databases.json`에 없을 때의 기본(fallback) 접속정보 + `ORACLE_HOME` (tnsnames.ora 경로 유추용) | 앱 작업 디렉터리 |
 | `users.db` | 로그인 계정 (SQLite, 최초 기동 시 `admin/admin` 자동 생성) | 앱 작업 디렉터리 |
 | `data/oracle_errors.db` | AI DBA용 ORA 에러코드 사전 (SQLite) | `data/` |
 

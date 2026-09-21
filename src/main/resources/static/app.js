@@ -1241,6 +1241,10 @@ let layoutHTML = "";
 
     if (tsRefreshBtn && tsTbody) {
         tsRefreshBtn.addEventListener('click', async () => {
+            if (!window.currentDbId) {
+                tsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 30px;">DB를 먼저 선택해주세요.</td></tr>';
+                return;
+            }
             const icon = tsRefreshBtn.querySelector('i');
             if (icon) icon.classList.add('spinning');
 
@@ -1330,7 +1334,11 @@ let layoutHTML = "";
 
     async function fetchTMLocks() {
         if (!tmlockTbody) return;
-        
+        if (!window.currentDbId) {
+            tmlockTbody.innerHTML = '<tr><td colspan="14" style="text-align:center; padding: 30px;">DB를 먼저 선택해주세요.</td></tr>';
+            return;
+        }
+
         try {
             const icon = tmlockRefreshBtn.querySelector('i');
             if (icon) icon.classList.add('spinning');
@@ -1724,7 +1732,11 @@ let layoutHTML = "";
 
     async function fetchSessions() {
         if (!sessionTbody) return;
-        
+        if (!window.currentDbId) {
+            sessionTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">DB를 먼저 선택해주세요.</td></tr>';
+            return;
+        }
+
         try {
             const icon = sessionRefreshBtn.querySelector('i');
             if (icon) icon.classList.add('spinning');
@@ -3027,6 +3039,16 @@ let layoutHTML = "";
 
         let currentView = 'legacy';
         let iv2PollingTimer = null;
+        // Current Session에서 이미 겪은 것과 같은 유형의 폴링 오버랩 버그(사용자 실측 2026-09-14,
+        // scheduleNextSessionFetch 참고) 방지용. setInterval은 이전 라운드(아래 6개 API) 완료 여부와
+        // 무관하게 무조건 10초마다 새로 쏘므로, 인스턴스 하나가 느려지거나 응답이 안 오면 라운드가
+        // 계속 겹쳐 쌓이면서 브라우저 탭이 먹통이 된다(오케스트레이터 실측 2026-09-21: "다른 DB 접속시
+        // hang → 전체 먹통, 브라우저 재시작하면 정상" - 서버는 멀쩡한데 클라이언트만 죽는 것으로 확인
+        // 되어 서버가 아니라 여기가 원인). 같은 db_id의 이전 라운드가 아직 안 끝났으면 그 db_id의 새
+        // 라운드만 건너뛴다 - db_id 문자열이 아니라 boolean 하나로만 막으면, 느린/멈춘 DB의 라운드가
+        // 끝나기 전까지 "다른" DB로 전환해도 가드에 막혀 전환 자체가 안 되는 회귀가 생긴다(오케스트레이터
+        // 실측 2026-09-22: "두번째 대시보드에서 DB 전환이 안 됨").
+        let iv2FetchInFlightForDbId = null;
         let iv2CpuDbTimeChart = null;
         let iv2WaitEventsChart = null;
         let iv2LockTrendChart = null;
@@ -3266,6 +3288,11 @@ let layoutHTML = "";
             const listEl = document.getElementById('iv2-session-list');
             if (!listEl) return;
             if (!res.ok) return;
+            // 지금 이 목록이 실제로 어느 DB 것인지 눈으로 바로 확인하기 위한 표시(오케스트레이터 요청,
+            // 2026-09-22) - 상단 인스턴스명 배지와 달리 이 fetch가 실제로 성공해서 렌더링될 때만
+            // 갱신되므로, "위는 바뀌었는데 이 목록은 옛날 DB 것"인 상태를 구분할 수 있다.
+            const dbNameEl = document.getElementById('iv2-session-db-name');
+            if (dbNameEl) dbNameEl.textContent = dbId ? `(${dbId})` : '';
             const rows = await res.json();
             const sessions = Array.isArray(rows)
                 ? rows.filter(s => s && s.status && s.status.trim().toUpperCase() === 'ACTIVE')
@@ -3466,19 +3493,28 @@ let layoutHTML = "";
             }
         });
 
-        function fetchInstanceDashboardV2() {
+        async function fetchInstanceDashboardV2() {
             const dashboardSection = document.getElementById('dashboard');
             if (!dashboardSection || !dashboardSection.classList.contains('active') || currentView !== 'v2') return;
             // DB가 아직 선택되기 전(페이지 막 로드된 시점)이면 db_id=""로 나가는 낭비성 요청을 막는다
             // (오케스트레이터 실측, 2026-09-18: 로그인 직후 이 상태로 6개 API가 동시에 나가 각각
             // 커넥션 타임아웃만큼 헛돌고, 다음 10초 폴링까지 기다려야 실제 데이터가 떴음).
-            if (!window.currentDbId) return;
-            fetchInstanceOverviewV2();
-            fetchTopWaitEventsV2();
-            fetchActiveAlertsV2();
-            fetchMetricHistoryV2();
-            fetchIncidentGateV2();
-            fetchActiveSessionV2();
+            const dbId = window.currentDbId;
+            if (!dbId) return;
+            if (iv2FetchInFlightForDbId === dbId) return;
+            iv2FetchInFlightForDbId = dbId;
+            try {
+                await Promise.all([
+                    fetchInstanceOverviewV2(),
+                    fetchTopWaitEventsV2(),
+                    fetchActiveAlertsV2(),
+                    fetchMetricHistoryV2(),
+                    fetchIncidentGateV2(),
+                    fetchActiveSessionV2()
+                ]);
+            } finally {
+                if (iv2FetchInFlightForDbId === dbId) iv2FetchInFlightForDbId = null;
+            }
         }
 
         let initialView = 'legacy';

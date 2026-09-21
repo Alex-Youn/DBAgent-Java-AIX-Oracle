@@ -19,12 +19,18 @@ public final class CreateDbInstanceRequest {
     private final String sid;
     private final String user;
     private final String password;
+    // null/blank = host:port:sid (default). "sid"/"service"/"descriptor" - see
+    // OracleConnectionPoolManager.buildDsn(). Oracle-only; ignored for other db_type values.
+    private final String connectMode;
+    // null/blank = no check - compared against v$instance.instance_name on first connection.
+    // Oracle-only; see TargetDbConfig, PoolTestController.
+    private final String expectedInstanceName;
     private final Integer poolMinIdle;
     private final Integer poolMaxSize;
-    // Extra accounts: each map has "user" and "password" keys - see databases.json's "accounts".
+    // Extra accounts: each map has "user" and "password" keys - see db_instances' "accounts" column.
     private final List<Map<String, String>> accounts;
-    // 5 ascending ints, or null/empty to not override the global default - see databases.json's
-    // "session_thresholds" and DatabaseConfigService.applySessionThresholds.
+    // 5 ascending ints, or null/empty to not override the global default - see db_instances'
+    // "session_thresholds" column and DatabaseConfigService.buildSessionThresholdsJson.
     private final List<Integer> sessionThresholds;
 
     @JsonCreator
@@ -39,6 +45,8 @@ public final class CreateDbInstanceRequest {
             @JsonProperty("sid") String sid,
             @JsonProperty("user") String user,
             @JsonProperty("password") String password,
+            @JsonProperty("connect_mode") String connectMode,
+            @JsonProperty("expected_instance_name") String expectedInstanceName,
             @JsonProperty("pool_min_idle") Integer poolMinIdle,
             @JsonProperty("pool_max_size") Integer poolMaxSize,
             @JsonProperty("accounts") List<Map<String, String>> accounts,
@@ -53,6 +61,8 @@ public final class CreateDbInstanceRequest {
         this.sid = sid;
         this.user = user;
         this.password = password;
+        this.connectMode = connectMode;
+        this.expectedInstanceName = expectedInstanceName;
         this.poolMinIdle = poolMinIdle;
         this.poolMaxSize = poolMaxSize;
         this.accounts = accounts;
@@ -97,6 +107,14 @@ public final class CreateDbInstanceRequest {
 
     public String password() {
         return password;
+    }
+
+    public String connectMode() {
+        return connectMode;
+    }
+
+    public String expectedInstanceName() {
+        return expectedInstanceName;
     }
 
     public Integer poolMinIdle() {

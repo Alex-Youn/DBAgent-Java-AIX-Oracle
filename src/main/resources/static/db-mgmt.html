@@ -160,8 +160,8 @@
                 </div>
                 <div class="field-row">
                     <div class="login-form-group">
-                        <label>Host (Oracle만 비워두면 tnsnames.ora의 SID를 별칭으로 사용)</label>
-                        <input type="text" id="${prefix}-host" autocomplete="off">
+                        <label>Host (필수)</label>
+                        <input type="text" id="${prefix}-host" required autocomplete="off">
                     </div>
                     <div class="login-form-group">
                         <label>Port</label>
@@ -176,6 +176,21 @@
                     <div class="login-form-group">
                         <label>계정</label>
                         <input type="text" id="${prefix}-user" required autocomplete="off">
+                    </div>
+                </div>
+                <div class="field-row" id="${prefix}-connect-mode-row">
+                    <div class="login-form-group">
+                        <label>접속 방식 (Oracle 전용)</label>
+                        <select id="${prefix}-connect-mode">
+                            <option value="">기본 (host:port:SID)</option>
+                            <option value="service">Service Name (host:port/SERVICE)</option>
+                            <option value="descriptor">전체 커넥트 디스크립터 (SID 필드에 직접 입력, host/port 무시)</option>
+                        </select>
+                    </div>
+                    <div class="login-form-group">
+                        <label>예상 인스턴스명 (선택, Oracle 전용)</label>
+                        <input type="text" id="${prefix}-expected-instance-name" autocomplete="off"
+                               placeholder="v$instance.instance_name과 대조 - 잘못된 host/port 등록 방지">
                     </div>
                 </div>
                 <div class="field-row">
@@ -283,13 +298,21 @@
                 const typeSelect = document.getElementById(`${prefix}-dbtype`);
                 const sidLabel = document.getElementById(`${prefix}-sid-label`);
                 const portInput = document.getElementById(`${prefix}-port`);
-                typeSelect.addEventListener('change', () => {
+                const connectModeRow = document.getElementById(`${prefix}-connect-mode-row`);
+                const applyDbType = () => {
                     sidLabel.textContent = typeSelect.value === 'oracle' ? 'SID' : 'Database';
+                    // connect_mode(sid/service/descriptor)는 Oracle 전용 - 다른 엔진은 항상 host:port
+                    // 형태라 이 필드 자체가 의미 없다.
+                    connectModeRow.style.display = typeSelect.value === 'oracle' ? '' : 'none';
+                };
+                typeSelect.addEventListener('change', () => {
+                    applyDbType();
                     const defaultPort = DB_TYPE_DEFAULT_PORT[typeSelect.value];
                     if (defaultPort && Object.values(DB_TYPE_DEFAULT_PORT).includes(parseInt(portInput.value, 10))) {
                         portInput.value = defaultPort;
                     }
                 });
+                applyDbType();
             }
             wireDbTypeFields('new-db');
             wireDbTypeFields('edit-db');
@@ -383,6 +406,8 @@
                     sid: document.getElementById('new-db-sid').value.trim(),
                     user: document.getElementById('new-db-user').value.trim(),
                     password: document.getElementById('new-db-password').value,
+                    connect_mode: document.getElementById('new-db-connect-mode').value,
+                    expected_instance_name: document.getElementById('new-db-expected-instance-name').value.trim(),
                     pool_min_idle: document.getElementById('new-db-pool-min').value ? parseInt(document.getElementById('new-db-pool-min').value, 10) : null,
                     pool_max_size: document.getElementById('new-db-pool-max').value ? parseInt(document.getElementById('new-db-pool-max').value, 10) : null,
                     accounts: collectAccountRows(document.getElementById('new-db-accounts')),
@@ -413,6 +438,9 @@
                 const dbType = inst.db_type || 'oracle';
                 document.getElementById('edit-db-dbtype').value = dbType;
                 document.getElementById('edit-db-sid-label').textContent = dbType === 'oracle' ? 'SID' : 'Database';
+                document.getElementById('edit-db-connect-mode-row').style.display = dbType === 'oracle' ? '' : 'none';
+                document.getElementById('edit-db-connect-mode').value = inst.connect_mode || '';
+                document.getElementById('edit-db-expected-instance-name').value = inst.expected_instance_name || '';
                 document.getElementById('edit-db-host').value = inst.host || '';
                 document.getElementById('edit-db-port').value = inst.port || 1521;
                 document.getElementById('edit-db-sid').value = inst.sid || '';
@@ -447,6 +475,8 @@
                     sid: document.getElementById('edit-db-sid').value.trim(),
                     user: document.getElementById('edit-db-user').value.trim(),
                     password: document.getElementById('edit-db-password').value,
+                    connect_mode: document.getElementById('edit-db-connect-mode').value,
+                    expected_instance_name: document.getElementById('edit-db-expected-instance-name').value.trim(),
                     pool_min_idle: document.getElementById('edit-db-pool-min').value ? parseInt(document.getElementById('edit-db-pool-min').value, 10) : null,
                     pool_max_size: document.getElementById('edit-db-pool-max').value ? parseInt(document.getElementById('edit-db-pool-max').value, 10) : null,
                     accounts: collectAccountRows(document.getElementById('edit-db-accounts')),

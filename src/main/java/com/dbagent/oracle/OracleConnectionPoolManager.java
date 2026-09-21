@@ -147,6 +147,10 @@ public class OracleConnectionPoolManager {
         }
     }
 
+    // oracle.env 제거 마이그레이션 5단계: alias(tnsnames.ora, host 빈값 → sid를 TNS alias로 취급)
+    // 경로 완전 삭제. host는 이제 항상 필수이므로 미지정 connect_mode는 그냥 host:port:sid로
+    // 고정된다 - RAC도 노드별 개별 등록(설계문서 "RAC 대응" 절)이라 failover용 alias가 애초에 필요
+    // 없고, 정말 복잡한 커넥트 디스크립터가 필요하면 connect_mode=descriptor로 표현 가능하다.
     private String buildDsn(TargetDbConfig target) {
         String mode = target.connectMode();
         if (!Strings.isBlank(mode)) {
@@ -161,21 +165,10 @@ public class OracleConnectionPoolManager {
                 case "descriptor":
                     return target.sid();
                 default:
-                    return legacyDsn(target);
+                    return target.host() + ":" + target.port() + ":" + target.sid();
             }
         }
-        return legacyDsn(target);
-    }
-
-    // oracle.env 제거 마이그레이션 이전부터의 기존 동작: connect_mode가 없는 인스턴스는 그대로 이
-    // 규칙을 따른다 (host 있으면 host:port:sid, 없으면 sid를 TNS alias로 취급).
-    private String legacyDsn(TargetDbConfig target) {
-        String host = target.host();
-        if (host != null && !Strings.isBlank(host)) {
-            return host + ":" + target.port() + ":" + target.sid();
-        }
-        // Empty host => treat SID as a TNS alias (tnsnames.ora), same fallback the Python client used.
-        return target.sid();
+        return target.host() + ":" + target.port() + ":" + target.sid();
     }
 
     private HikariDataSource createPool(TargetDbConfig target, String dsn, boolean sysdba) {

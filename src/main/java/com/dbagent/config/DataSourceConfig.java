@@ -64,4 +64,24 @@ public class DataSourceConfig {
     public JdbcTemplate metricsJdbcTemplate(@Qualifier("metricsDataSource") DataSource dataSource) {
         return new JdbcTemplate(dataSource);
     }
+
+    // db_instances(구 databases.json) 전용 H2 - 같은 이유로 users DB/metrics DB와 파일을 분리한다
+    // (oracle.env 제거 마이그레이션 4-1단계, 2026-09-21, 원본 DBAgent-Java 대응 커밋 포팅). 파일은
+    // dbconfig.mv.db가 된다.
+    @Bean(name = "dbConfigDataSourceProperties")
+    @ConfigurationProperties("dbagent.dbconfig.datasource")
+    public DataSourceProperties dbConfigDataSourceProperties() {
+        return new DataSourceProperties();
+    }
+
+    @Bean(name = "dbConfigDataSource")
+    @ConfigurationProperties("dbagent.dbconfig.datasource.hikari")
+    public HikariDataSource dbConfigDataSource(@Qualifier("dbConfigDataSourceProperties") DataSourceProperties properties) {
+        return properties.initializeDataSourceBuilder().type(HikariDataSource.class).build();
+    }
+
+    @Bean(name = "dbConfigJdbcTemplate")
+    public JdbcTemplate dbConfigJdbcTemplate(@Qualifier("dbConfigDataSource") DataSource dataSource) {
+        return new JdbcTemplate(dataSource);
+    }
 }
