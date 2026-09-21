@@ -23,16 +23,12 @@ build/
 # users.mv.db 는 로그인 계정/세션 데이터(H2)라 환경마다 달라야 하는 파일이기도 하다.
 # 주의: data/oracle_errors.mv.db(에러사전)는 정상 데이터이므로 절대 여기 걸리면 안 된다
 #       - 그래서 *.db 같은 넓은 패턴 대신 경로를 하나씩 좁게 지정한다.
-/users.mv.db
+# 2026-09-21부터 users.mv.db/metrics.mv.db/dbconfig.mv.db는 db_config/ 하위로 이동(dist-aix는
+# 위에서 이미 통째로 무시 중이라 별도 처리 불필요).
 /users.trace.db
-/dist/users.mv.db
 /dist/users.trace.db
-# instance_metric_history 전용 DB(2026-09-18 분리, 원본 DBAgent-Java 대응) - users.mv.db와 같은 이유로
-# 환경마다 달라야 함
-/metrics.mv.db
-/metrics.trace.db
-/dist/metrics.mv.db
-/dist/metrics.trace.db
+/db_config/
+/dist/db_config/
 /dbagent-java.out.log
 /dbagent-java.err.log
 /dist/dbagent-java.out.log
@@ -44,3 +40,8 @@ build/
 # data/ 이므로 dist 쪽은 추적하지 않는다(2026-09-11). dist 구성 시 data/ 에서 복사할 것 - jar 복사와 동일하게 수동.
 /dist/data/oracle_errors.mv.db
 /dist/data/oracle_errors.db.sqlite.bak
+
+# 대상 DB 비밀번호 암호화용 마스터 키(6단계, 2026-09-21). 이게 유출되면 암호화가 무의미해지므로
+# 절대 커밋 금지 - 환경마다 자기 키를 자동 생성해서 쓴다(git으로 전파할 대상이 아님).
+dbagent.key
+*.key

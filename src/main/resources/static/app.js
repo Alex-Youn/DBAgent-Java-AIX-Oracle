@@ -3045,10 +3045,13 @@ let layoutHTML = "";
         // 계속 겹쳐 쌓이면서 브라우저 탭이 먹통이 된다(오케스트레이터 실측 2026-09-21: "다른 DB 접속시
         // hang → 전체 먹통, 브라우저 재시작하면 정상" - 서버는 멀쩡한데 클라이언트만 죽는 것으로 확인
         // 되어 서버가 아니라 여기가 원인). 같은 db_id의 이전 라운드가 아직 안 끝났으면 그 db_id의 새
-        // 라운드만 건너뛴다 - db_id 문자열이 아니라 boolean 하나로만 막으면, 느린/멈춘 DB의 라운드가
-        // 끝나기 전까지 "다른" DB로 전환해도 가드에 막혀 전환 자체가 안 되는 회귀가 생긴다(오케스트레이터
-        // 실측 2026-09-22: "두번째 대시보드에서 DB 전환이 안 됨").
-        let iv2FetchInFlightForDbId = null;
+        // 라운드만 건너뛴다.
+        // db_id별 in-flight 여부를 단일 변수(마지막으로 시작한 db_id 하나만 기억)로 막으면, A→B→A로
+        // 빠르게 되돌아갈 때 A의 첫 라운드가 아직 안 끝난 상태에서 두 번째 A 라운드가 또 시작되고,
+        // 그러면 먼저 끝난 첫 라운드의 finally가 "지금 값이 A니까 내 라운드구나"라고 착각해 아직 진행 중인
+        // 두 번째 A 라운드의 in-flight 상태를 지워버린다 - 그 틈에 10초 폴링이 겹쳐 다시 쌓이는 같은
+        // 클래스의 버그가 재현된다. db_id마다 독립적으로 추적해야 해서 Set으로 관리한다.
+        let iv2FetchInFlightDbIds = new Set();
         let iv2CpuDbTimeChart = null;
         let iv2WaitEventsChart = null;
         let iv2LockTrendChart = null;
@@ -3501,8 +3504,8 @@ let layoutHTML = "";
             // 커넥션 타임아웃만큼 헛돌고, 다음 10초 폴링까지 기다려야 실제 데이터가 떴음).
             const dbId = window.currentDbId;
             if (!dbId) return;
-            if (iv2FetchInFlightForDbId === dbId) return;
-            iv2FetchInFlightForDbId = dbId;
+            if (iv2FetchInFlightDbIds.has(dbId)) return;
+            iv2FetchInFlightDbIds.add(dbId);
             try {
                 await Promise.all([
                     fetchInstanceOverviewV2(),
@@ -3513,7 +3516,7 @@ let layoutHTML = "";
                     fetchActiveSessionV2()
                 ]);
             } finally {
-                if (iv2FetchInFlightForDbId === dbId) iv2FetchInFlightForDbId = null;
+                iv2FetchInFlightDbIds.delete(dbId);
             }
         }
 
