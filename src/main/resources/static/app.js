@@ -654,7 +654,6 @@ function getToken() {
                             const svg = instLink.querySelector('.instance-icon-live');
                             if(svg) svg.style.color = 'var(--success)';
                             
-                            if (typeof saveSessionHistorySnapshot === 'function') saveSessionHistorySnapshot(window.currentDbId);
                             window.currentDbId = inst.id;
                             // 상단 타이틀/드롭다운 표시를 지금 고른 DB로 맞춘다. 트리에서 골랐든
                             // 드롭다운에서 골랐든 여기 한 곳을 지나므로 둘이 어긋나지 않는다.
@@ -1587,108 +1586,12 @@ let layoutHTML = "";
     
     let sessionTimer = null;
     let isSessionAutoRefreshing = false;
-    let sessionChart = null;
-    let sessionScatterChart = null;
-    let scatterDataPoints = [];
-    let isScatterBrushBound = false;
-    // Both trend charts (left line chart, right Trace scatter) show this same fixed window with
-    // ticks every 5 minutes (20 ticks total) regardless of the polling interval. Window size is tied
-    // to tick count on purpose - 20 ticks is about what fits without Chart.js's autoSkip thinning them
-    // back out, so halving stepSize (10min -> 5min) halves the window too, not just the tick label.
-    const CHART_WINDOW_MS = 20 * 5 * 60 * 1000;
-    const sessionHistory = {
-        labels: [],
-        activeSessions: [],
-        activeTx: [],
-        parallel: [],
-        txLock: [],
-        tmLock: []
-    };
-
-    // 사용자 요청(2026-09-01): 다른 DB로 갔다가 원래 DB로 돌아와도 Current Session 추이/Trace 그래프가
-    // 유지되게 함 - db_id별로 sessionHistory/scatterDataPoints 스냅샷을 따로 보관해뒀다가, 그 DB로
-    // 돌아오면 그대로 복원한다. 같은 DB 안에서 메뉴만 왔다갔다 하는 경우는 switchTab()이 이미 별도로
-    // 처리 중이라(위 주석 참고) 여기서는 DB 전환(인스턴스 클릭) 케이스만 다룬다.
-    //
-    // 사용자 지적(2026-09-02): 같은 index.html 안에서 DB만 바꾸는 건 유지되는데, Fleet Overview
-    // 화면(fleet-overview.html)에 갔다가 돌아오면 초기화됨 - 이건 FO가 SPA 전환이 아니라 완전히 다른
-    // 페이지로의 실제 이동(location.href)이라 index.html의 JS 컨텍스트 자체가 통째로 파괴/재생성되기
-    // 때문. dbSessionHistoryCache가 메모리 Map이라서 못 버텼던 것 - 같은 탭이 유지되는 동안 살아있는
-    // sessionStorage에 캐시를 함께 영속화해서, 페이지가 다시 로드돼도 저장해둔 스냅샷을 그대로 복원한다.
-    const SESSION_HISTORY_STORAGE_KEY = 'dbagent_session_history_cache';
-
-    function loadSessionHistoryCache() {
-        try {
-            const raw = sessionStorage.getItem(SESSION_HISTORY_STORAGE_KEY);
-            return raw ? new Map(JSON.parse(raw)) : new Map();
-        } catch (e) {
-            return new Map();
-        }
-    }
-
-    function persistSessionHistoryCache() {
-        try {
-            sessionStorage.setItem(SESSION_HISTORY_STORAGE_KEY, JSON.stringify(Array.from(dbSessionHistoryCache.entries())));
-        } catch (e) {
-            // sessionStorage 용량 초과 등으로 실패해도 메모리 캐시(dbSessionHistoryCache)로는 계속
-            // 정상 동작 - 같은 페이지 안에서의 DB 전환 유지 기능만 그대로 살아있으면 되므로 조용히 무시.
-        }
-    }
-
-    const dbSessionHistoryCache = loadSessionHistoryCache();
-
-    function saveSessionHistorySnapshot(dbId) {
-        if (!dbId) return;
-        dbSessionHistoryCache.set(dbId, {
-            sessionHistory: {
-                labels: sessionHistory.labels.slice(),
-                activeSessions: sessionHistory.activeSessions.slice(),
-                activeTx: sessionHistory.activeTx.slice(),
-                parallel: sessionHistory.parallel.slice(),
-                txLock: sessionHistory.txLock.slice(),
-                tmLock: sessionHistory.tmLock.slice()
-            },
-            scatterDataPoints: scatterDataPoints.slice()
-        });
-        persistSessionHistoryCache();
-    }
-
-    // FO 화면으로 넘어가는 링크(사이드바 브랜드 링크, FO 버튼 등)는 여러 곳에서 각자 location.href를
-    // 바꾸므로 매 지점을 다 걸어주는 대신, 페이지를 떠나는 시점(pagehide)에 한 번에 현재 DB의 스냅샷을
-    // 저장한다. 새로고침/탭 종료에도 함께 발생하지만 이건 로그아웃과 달리 그냥 차트 데이터 저장일
-    // 뿐이라 부작용이 없다 - 오히려 새로고침 후에도 그래프가 이어지는 효과.
-    window.addEventListener('pagehide', () => {
-        if (window.currentDbId) saveSessionHistorySnapshot(window.currentDbId);
-    });
-
-    // 사용자 요청(2026-08-31): 추이 그래프와 Trace 그래프의 색상/범례를 동기화하고, 각 계열을 체크박스로
-    // 켜고 끌 수 있게 함. 두 배열의 색상은 반드시 같은 순서로 유지.
-    // 사용자 요청(2026-09-14): (1) 2PC Pending은 추이 그래프에서 제외 - dba_2pc_pending은 보통 이미
-    // 끊어진/고아 상태의 분산 트랜잭션이라 대응되는 v$session 행이 없는 경우가 대부분이라 실시간 세션
-    // 추이와는 성격이 다름(탭 자체는 유지, extra.pending_2pc를 그대로 renderPending2pcTab에 사용).
-    // (2) LOCK WAIT 한 계열을 TX LOCK/TM LOCK 두 계열로 쪼갬 - Active Session 리스트의 Session Wait
-    // 막대가 이미 TX Lock/TM Lock을 구분해서 보여주고 있었는데 그래프 쪽만 합쳐진 보라색 한 계열이라
-    // 색이 어긋나 보였음. 처음엔 막대의 핑크(#e91e63)/빨강(#e74c3c)을 그대로 가져왔으나 사용자 확인
-    // 결과 둘이 육안으로 잘 구분되지 않아, dataviz 스킬의 validate_palette 방식(OKLab ΔE, CVD 시뮬레이션)
-    // 으로 재검증해 보라(#7c3aed)/크림슨(#be123c)으로 교체(2026-09-14) - ΔE 8.5(정상 색각)/5.7(색각이상)
-    // 에서 30.1/28.6으로 개선, 기존 초록/파랑/올리브 계열과도 충돌 없음. 같은 이유로 Session Wait 막대의
-    // CPU 색도 보라(#9b59b6)에서 스카이블루(#22d3ee)로 변경 - TX Lock이 보라를 새로 쓰게 되면서 막대
-    // 안에서 CPU와 겹쳐 보였기 때문(막대 쪽 배색은 위 waitHtml 조립부 참고). 이제 TREND_SERIES 5계열,
-    // SCATTER_CATEGORIES도 동일하게 5계열로 맞춘다.
-    const TREND_SERIES = [
-        { label: 'ACTIVE SESSION', color: '#0ca30c' },
-        { label: 'ACTIVE TRANSACTION', color: '#3987e5' },
-        { label: 'PARALLEL SESSION', color: '#808000' },
-        { label: 'TX LOCK', color: '#7c3aed' },
-        { label: 'TM LOCK', color: '#be123c' }
-    ];
-    const SCATTER_CATEGORIES = [
-        { key: 'active_session', label: 'ACTIVE SESSION', color: '#0ca30c' },
-        { key: 'active_transaction', label: 'ACTIVE TRANSACTION', color: '#3987e5' },
-        { key: 'parallel_session', label: 'PARALLEL SESSION', color: '#808000' },
-        { key: 'tx_lock', label: 'TX LOCK', color: '#7c3aed' },
-        { key: 'tm_lock', label: 'TM LOCK', color: '#be123c' }
-    ];
+    let ashActivityChart = null;
+    let ashTopSqlChart = null;
+    // Trace 산점도(sessionScatterChart)/SCATTER_CATEGORIES/scatterDataPoints와 그 DB 전환 스냅샷
+    // 캐시(dbSessionHistoryCache 등, 사용자 요청 2026-09-01/2026-09-02)는 2026-09-22 4단계에서 Top SQL
+    // Activity Timeline으로 완전 대체되며 전부 제거됨(구현단계 체크리스트 4단계 참고) - showSelected
+    // SessionsPopup()/session-list.html은 History 탭 산점도가 계속 쓰므로 그 경로는 그대로 남아있다.
 
     // 색상박스+글씨로 된 커스텀 범례를 만들고, 클릭할 때마다 on/off 스위치처럼 글씨가 밝아지거나(켜짐)
     // 어두워지며(꺼짐) 해당 Chart.js 데이터셋을 보이거나 숨긴다(사용자 요청 2026-08-31: 체크박스 대신
@@ -1775,329 +1678,12 @@ let layoutHTML = "";
                 }
             });
 
-            const now = new Date();
-            const nowTime = now.getTime();
-            sessionHistory.labels.push(nowTime);
-            sessionHistory.activeSessions.push(activeCount);
-            sessionHistory.activeTx.push(extra.active_transactions.length);
-            sessionHistory.parallel.push(extra.parallel_sessions.length);
-            sessionHistory.txLock.push(extra.tx_lock_count || 0);
-            sessionHistory.tmLock.push(extra.tm_lock_count || 0);
-
-            // Recomputed every fetch (not a fixed constant) since the polling interval is user-adjustable
-            // - always keep enough points to cover the fixed CHART_WINDOW_MS window at the current rate.
-            const refreshMs = (parseInt(sessionIntervalInput.value) || 5) * 1000;
-            const maxDataPoints = Math.max(1, Math.ceil(CHART_WINDOW_MS / refreshMs));
-            if (sessionHistory.labels.length > maxDataPoints) {
-                sessionHistory.labels.shift();
-                sessionHistory.activeSessions.shift();
-                sessionHistory.activeTx.shift();
-                sessionHistory.parallel.shift();
-                sessionHistory.txLock.shift();
-                sessionHistory.tmLock.shift();
-            }
-
-            const ctx = document.getElementById('session-chart');
-            if (ctx) {
-                if (!sessionChart) {
-                    sessionChart = new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels: sessionHistory.labels,
-                            datasets: [
-                                {
-                                    label: 'ACTIVE SESSION',
-                                    data: sessionHistory.activeSessions,
-                                    borderColor: '#0ca30c',
-                                    backgroundColor: 'rgba(12, 163, 12, 0.1)',
-                                    borderWidth: 1.5,
-                                    pointRadius: 1.5,
-                                    pointHoverRadius: 3,
-                                    fill: true,
-                                    tension: 0
-                                },
-                                {
-                                    label: 'ACTIVE TRANSACTION',
-                                    data: sessionHistory.activeTx,
-                                    borderColor: '#3987e5',
-                                    backgroundColor: 'rgba(57, 135, 229, 0.1)',
-                                    borderWidth: 1.5,
-                                    pointRadius: 1.5,
-                                    pointHoverRadius: 3,
-                                    fill: true,
-                                    tension: 0
-                                },
-                                {
-                                    label: 'PARALLEL SESSION',
-                                    data: sessionHistory.parallel,
-                                    borderColor: '#808000',
-                                    backgroundColor: 'rgba(128, 128, 0, 0.1)',
-                                    borderWidth: 1.5,
-                                    pointRadius: 1.5,
-                                    pointHoverRadius: 3,
-                                    fill: true,
-                                    tension: 0
-                                },
-                                {
-                                    label: 'TX LOCK',
-                                    data: sessionHistory.txLock,
-                                    borderColor: '#7c3aed',
-                                    backgroundColor: 'rgba(124, 58, 237, 0.1)',
-                                    borderWidth: 1.5,
-                                    pointRadius: 1.5,
-                                    pointHoverRadius: 3,
-                                    fill: true,
-                                    tension: 0
-                                },
-                                {
-                                    label: 'TM LOCK',
-                                    data: sessionHistory.tmLock,
-                                    borderColor: '#be123c',
-                                    backgroundColor: 'rgba(190, 18, 60, 0.1)',
-                                    borderWidth: 1.5,
-                                    pointRadius: 1.5,
-                                    pointHoverRadius: 3,
-                                    fill: true,
-                                    tension: 0
-                                }
-                            ]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            animation: {
-                                duration: 0 // Disable animation for real-time updates
-                            },
-                            scales: {
-                                x: {
-                                    type: 'time',
-                                    time: {
-                                        unit: 'minute',
-                                        tooltipFormat: 'HH:mm:ss',
-                                        displayFormats: {
-                                            minute: 'HH:mm'
-                                        }
-                                    },
-                                    min: nowTime - CHART_WINDOW_MS,
-                                    max: nowTime,
-                                    // stepSize belongs under ticks (not time) in Chart.js v4's time scale -
-                                    // this is what actually forces exact 10-minute-spaced ticks.
-                                    ticks: { color: chartLineColor(0.8), stepSize: 5, maxRotation: 0, minRotation: 0, font: { size: 13 } },
-                                    grid: { 
-                                        drawOnChartArea: true,
-                                        color: chartLineColor(0.15),
-                                        borderDash: [4, 4]
-                                    },
-                                    border: {
-                                        display: true,
-                                        color: chartLineColor(1),
-                                        width: 2
-                                    }
-                                },
-                                y: {
-                                    beginAtZero: true,
-                                    min: 0,
-                                    ticks: { precision: 0, color: chartLineColor(0.8), font: { size: 13 } },
-                                    grid: {
-                                        drawOnChartArea: true,
-                                        color: chartLineColor(0.15),
-                                        borderDash: [4, 4]
-                                    },
-                                    border: {
-                                        display: true,
-                                        color: chartLineColor(1),
-                                        width: 2
-                                    }
-                                }
-                            },
-                            plugins: {
-                                // 커스텀 체크박스 범례(#session-chart-legend)로 대체 - 기본 범례는 끔.
-                                legend: {
-                                    display: false
-                                },
-                                title: {
-                                    display: true,
-                                    text: '실시간 세션 추이'
-                                },
-                                subtitle: {
-                                    display: true,
-                                    text: 'Transaction / Session Count',
-                                    align: 'start',
-                                    color: chartLineColor(0.8),
-                                    padding: { bottom: 10 }
-                                }
-                            }
-                        }
-                    });
-                    buildChartLegend('session-chart-legend', TREND_SERIES, () => sessionChart);
-                    applyLegendVisibility('session-chart-legend', sessionChart);
-                } else {
-                    sessionChart.options.scales.x.min = nowTime - CHART_WINDOW_MS;
-                    sessionChart.options.scales.x.max = nowTime;
-                    sessionChart.update();
-                }
-            }
-
-            // Independent of sessionChart's init state above, so the Trace scatter chart is created on
-            // the very first fetch too instead of only starting from the second polling cycle.
-            const scatterNowTime = Date.now();
-            // 사용자 요청(2026-08-31): Trace 점(개별 세션)을 추이 그래프와 같은 색으로 카테고리 구분 -
-            // 우선순위 Lock Wait > Active Transaction > Parallel Session > 기본 Active Session (더 급한
-            // 신호가 우선). has_transaction은 이미 getSessions()가 내려주는 필드, parallel/lock은 SID
-            // 집합으로 대조.
-            // 사용자 요청(2026-09-14): Lock Wait를 TX Lock/TM Lock으로 분리 - 한 세션이 이론상 두 집합에
-            // 모두 걸릴 수도 있으나(v$lock에 여러 request row) 드문 경우이므로 TX Lock을 우선한다.
-            const parallelSidSet = new Set((extra.parallel_sessions || []).map(p => p.sid));
-            const txLockSidSet = new Set(extra.tx_lock_sids || []);
-            const tmLockSidSet = new Set(extra.tm_lock_sids || []);
-            data.forEach(s => {
-                if (s && s.status && s.status.trim().toUpperCase() === 'ACTIVE' && s.duration_time !== null) {
-                    // Only add if not exactly identical recently
-                    const lastPoint = scatterDataPoints.length > 0 ? scatterDataPoints[scatterDataPoints.length - 1] : null;
-                    if (!lastPoint || lastPoint.session.sid !== s.sid || lastPoint.y !== Number(s.duration_time)) {
-                        let category = 'active_session';
-                        if (txLockSidSet.has(s.sid)) category = 'tx_lock';
-                        else if (tmLockSidSet.has(s.sid)) category = 'tm_lock';
-                        else if (s.has_transaction) category = 'active_transaction';
-                        else if (parallelSidSet.has(s.sid)) category = 'parallel_session';
-                        scatterDataPoints.push({
-                            x: scatterNowTime,
-                            y: Number(s.duration_time),
-                            session: s,
-                            category
-                        });
-                    }
-                }
-            });
-            // Keep only the fixed CHART_WINDOW_MS window (matches the left trend chart)
-            scatterDataPoints = scatterDataPoints.filter(p => scatterNowTime - p.x <= CHART_WINDOW_MS);
-
-            const scatterCtx = document.getElementById('session-scatter-chart');
-            if (scatterCtx) {
-                if (!sessionScatterChart) {
-                    sessionScatterChart = new Chart(scatterCtx, {
-                        type: 'scatter',
-                        data: {
-                            // 카테고리별 별도 데이터셋 - 체크박스 범례가 데이터셋 단위로 show/hide하므로
-                            // 이렇게 나눠야 "Parallel Session 점만 숨기기" 같은 필터링이 가능해진다.
-                            datasets: SCATTER_CATEGORIES.map(cat => ({
-                                label: cat.label,
-                                data: scatterDataPoints.filter(p => p.category === cat.key),
-                                backgroundColor: cat.color,
-                                borderColor: cat.color,
-                                borderWidth: 2,
-                                pointRadius: 2,
-                                pointHoverRadius: 5,
-                                pointStyle: 'crossRot'
-                            }))
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            animation: false,
-                            scales: {
-                                x: {
-                                    type: 'time',
-                                    position: 'bottom',
-                                    time: {
-                                        unit: 'minute',
-                                        tooltipFormat: 'HH:mm:ss',
-                                        displayFormats: {
-                                            minute: 'HH:mm'
-                                        }
-                                    },
-                                    min: scatterNowTime - CHART_WINDOW_MS,
-                                    max: scatterNowTime,
-                                    border: {
-                                        display: true,
-                                        color: chartLineColor(1),
-                                        width: 1
-                                    },
-                                    // stepSize belongs under ticks (not time) in Chart.js v4's time scale.
-                                    ticks: {
-                                        color: chartLineColor(1),
-                                        stepSize: 5,
-                                        maxRotation: 0,
-                                        font: { size: 13 }
-                                    },
-                                    grid: {
-                                        color: chartLineColor(0.1),
-                                        borderColor: chartLineColor(1),
-                                        tickColor: chartLineColor(1)
-                                    },
-                                    title: { display: false }
-                                },
-                                y: {
-                                    title: { display: false },
-                                    min: 0,
-                                    max: 300,
-                                    border: {
-                                        display: true,
-                                        color: chartLineColor(1),
-                                        width: 1
-                                    },
-                                    ticks: {
-                                        color: chartLineColor(1),
-                                        stepSize: 100,
-                                        font: { size: 13 },
-                                        callback: function(value) {
-                                            return value;
-                                        }
-                                    },
-                                    grid: { 
-                                        color: chartLineColor(0.1),
-                                        borderColor: chartLineColor(1),
-                                        tickColor: chartLineColor(1)
-                                    }
-                                }
-                            },
-                            plugins: {
-                                // 커스텀 체크박스 범례(#scatter-chart-legend)로 대체 - 기본 범례는 끔.
-                                legend: {
-                                    display: false
-                                },
-                                title: {
-                                    display: true,
-                                    text: 'Trace(sec)',
-                                    align: 'start',
-                                    color: chartLineColor(0.7),
-                                    font: { size: 12, weight: 'bold' },
-                                    padding: { top: 0, bottom: 5 }
-                                },
-                                tooltip: {
-                                    callbacks: {
-                                        label: function(ctx) {
-                                            const p = ctx.raw;
-                                            return `SID: ${p.session.sid}, Duration: ${p.y}s, Event: ${p.session.event_name || '-'} [${ctx.dataset.label}]`;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                    buildChartLegend('scatter-chart-legend', SCATTER_CATEGORIES, () => sessionScatterChart);
-                    applyLegendVisibility('scatter-chart-legend', sessionScatterChart);
-                } else if (!window.scatterDragActive) {
-                    // Skip the visual refresh while a brush-selection drag is in progress (see
-                    // initScatterBrush below) - the x-axis window slides forward on every poll tick,
-                    // so a chart.update() mid-drag shifts every dot left out from under the selection
-                    // box the user is still drawing. mouseup's pixel->value conversion reads this same
-                    // chart's live scale, so if it moved mid-drag the selected sessions no longer match
-                    // what was visually boxed. Freezing the render here (data keeps accumulating in
-                    // scatterDataPoints/window.globalScatterDataPoints regardless) keeps what's on
-                    // screen consistent with what mouseup will compute; the next poll after mouseup
-                    // catches the chart up in one jump.
-                    SCATTER_CATEGORIES.forEach((cat, i) => {
-                        sessionScatterChart.data.datasets[i].data = scatterDataPoints.filter(p => p.category === cat.key);
-                    });
-                    const minX = scatterNowTime - CHART_WINDOW_MS;
-                    sessionScatterChart.options.scales.x.min = minX;
-                    sessionScatterChart.options.scales.x.max = scatterNowTime;
-                    sessionScatterChart.update('none');
-                }
-                window.globalSessionScatterChart = sessionScatterChart;
-                window.globalScatterDataPoints = scatterDataPoints;
-            }
+            // 좌측 "실시간 세션 추이" 라인 차트는 2026-09-22 Active Session Wait Class 차트(§0 결정 2 -
+            // 완전 대체)로 교체됨 - sessionHistory 누적/렌더 로직은 fetchAshActivity()로 이전.
+            // 우측 Trace 산점도는 2026-09-22 4단계에서 Top SQL Activity Timeline으로 완전 대체되고
+            // 제거됨(구현단계 체크리스트 4단계) - 드래그→세션 상세는 이제 그 차트 쪽 드래그로 대체
+            // (initAshTopSqlBrush, 아래쪽). showSelectedSessionsPopup()/session-list.html은 History
+            // 탭의 자체 산점도가 계속 쓰므로 그대로 유지.
 
             // Update Table (Only Active Sessions)
             if (activeSessions.length === 0) {
@@ -2336,26 +1922,13 @@ let layoutHTML = "";
         });
     });
 
-    // Called on every DB switch (see the instance-click handler above) - destroys the trend/scatter
-    // charts (Chart.js canvases can't just be repointed at new arrays-in-place after a destroy) and
-    // swaps their backing history arrays for whatever this nextDbId had stored the last time it was
-    // active (dbSessionHistoryCache, saved by saveSessionHistorySnapshot() right before this DB
-    // became current) instead of always wiping to empty - otherwise switching to DB B and back to DB
-    // A would lose A's graph even though nothing about A's monitoring actually stopped. A DB visited
-    // for the first time this session has no cache entry yet, so it still starts empty as before.
+    // Called on every DB switch (see the instance-click handler above) - resets the session table/tabs
+    // to a loading state before re-fetching for the new DB. Active Session Wait Class 차트/Top SQL
+    // Activity Timeline(둘 다 서버 ASH 기반)은 여기서 다루지 않고 fetchAshPanels()가 db_id 변경 시
+    // 독립적으로 다시 그린다 - Trace 산점도는 2026-09-22 4단계에서 제거됨(구현단계 체크리스트 참고).
     function resetSessionMonitor(nextDbId) {
-        if (sessionChart) { sessionChart.destroy(); sessionChart = null; }
-        if (sessionScatterChart) { sessionScatterChart.destroy(); sessionScatterChart = null; }
-
-        const cached = nextDbId ? dbSessionHistoryCache.get(nextDbId) : null;
-        sessionHistory.labels = cached ? cached.sessionHistory.labels.slice() : [];
-        sessionHistory.activeSessions = cached ? cached.sessionHistory.activeSessions.slice() : [];
-        sessionHistory.activeTx = cached ? cached.sessionHistory.activeTx.slice() : [];
-        sessionHistory.parallel = cached ? cached.sessionHistory.parallel.slice() : [];
-        sessionHistory.txLock = cached ? cached.sessionHistory.txLock.slice() : [];
-        sessionHistory.tmLock = cached ? cached.sessionHistory.tmLock.slice() : [];
-        scatterDataPoints = cached ? cached.scatterDataPoints.slice() : [];
-
+        ashSelectedWindow = null; // DB를 바꾸면 이전 드래그 선택은 더 이상 유효하지 않음(§9.1)
+        if (typeof closeAshOtherDrilldown === 'function') closeAshOtherDrilldown();
         if (sessionTbody) sessionTbody.innerHTML = '<tr><td colspan="16" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const activeTxTbody = document.getElementById('sesslist-active-tx-tbody');
         if (activeTxTbody) activeTxTbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
@@ -2365,6 +1938,626 @@ let layoutHTML = "";
         if (pending2pcTbody) pending2pcTbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
 
         fetchSessions();
+        restartAshActivityPolling();
+    }
+
+    // ---- Active Session Wait Class 차트 (설계문서 `Current Session 매뉴 active_session 차트 개편.md`
+    // §0/§2/§3, 1단계 구현 - 2026-09-22, 원본 DBAgent-Java에서 포팅) ----
+    // 팔레트는 §0 결정 3에 따라 신규 색이 아니라 기존 세션별 대기 분해 미니바(waitHtml 조립부,
+    // app.js:2144/2256 부근)와 동일한 색을 그대로 재사용한다. Other만 고정 hex가 아니라 테마 토큰
+    // (--text-muted)을 그대로 따라간다 - 다만 범례는 최초 1회만 그려지므로(buildChartLegend의
+    // container.dataset.built 가드) 차트를 만든 시점의 값으로 고정되고, 이후 테마를 바꿔도 스와치
+    // 색까지 실시간으로 따라가진 않는다(2단계에서 표현 다듬을 때 같이 보완 예정).
+    const ASH_ACTIVITY_CATEGORIES = [
+        { key: 'cpu', label: 'CPU', color: '#22d3ee' },
+        { key: 'latch', label: 'Latch', color: '#808000' },
+        { key: 'user_io', label: 'User I/O', color: '#2ecc71' },
+        { key: 'tx_lock', label: 'TX Lock', color: '#7c3aed' },
+        { key: 'sys_io', label: 'Sys I/O', color: '#e67e22' },
+        { key: 'tm_lock', label: 'TM Lock', color: '#be123c' },
+        { key: 'other', label: 'Other', color: getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim() || '#94a3b8' }
+    ];
+    const ASH_ACTIVITY_POLL_MS = 30000; // 세션 테이블 폴링 주기(사용자 조정 가능)와 무관하게 독립 폴링
+    let ashActivityRangeMinutes = 60;
+    let ashActivityTimer = null;
+    let ashActivityGeneration = 0;
+    // 2단계(표현·접근성, 2026-09-22) 상태 - 전부 재조회 없이 lastAshActivityData로 즉시 다시 그린다.
+    let ashActivityForm = 'area'; // 'area' | 'bar' (§1 뷰 전환)
+    let ashActivityTexture = false; // §2 "고대비 텍스처" 토글
+    let ashActivityShowTable = false; // §2 "표로 보기" 토글
+    let ashActivityChartRenderedForm = null; // 마지막으로 실제 렌더된 form - 바뀌면 destroy 후 재생성
+    let lastAshActivityData = null;
+
+    // 6단계(6시간/24시간, 자체 수집 경로 - 설계문서 §0 결정, 2026-09-22) - 실시간 ASH 조회
+    // (/api/ash_activity, 30분/1시간만 지원)와 자체 수집 조회(/api/metric_history, 이미 60초 샘플러가
+    // instance_metric_history에 쌓고 있는 ash_* metric_name)를 range에 따라 나눈다. 실시간 조회를
+    // 그대로 6시간/24시간까지 늘리지 않는 이유는 채팅에서 오간 성능 비교 그대로 - 무거운 AWR GROUP BY
+    // 스캔이 보는 사람 수만큼 매번 원본 Oracle에 나가는 걸 피하기 위함(이미 InstanceMetricSampler
+    // Service가 v2 대시보드 폴링 부하 사고를 겪고 캐시 샘플링으로 옮긴 것과 같은 이유).
+    const ASH_LONG_RANGE_METRIC_NAMES = ['ash_cpu', 'ash_latch', 'ash_user_io', 'ash_tx_lock', 'ash_system_io', 'ash_tm_lock', 'ash_other', 'ash_cpu_cores'];
+    const ASH_LONG_RANGE_CATEGORY_KEYS = ['ash_cpu', 'ash_latch', 'ash_user_io', 'ash_tx_lock', 'ash_system_io', 'ash_tm_lock', 'ash_other'];
+
+    function isAshLongRange() {
+        return ashActivityRangeMinutes > 60;
+    }
+
+    async function fetchAshActivityFromHistory(myDbId) {
+        const rangeKey = ashActivityRangeMinutes >= 1440 ? '24h' : '6h';
+        const res = await fetch(`/api/metric_history?db_id=${myDbId}&range=${rangeKey}&metrics=${ASH_LONG_RANGE_METRIC_NAMES.join(',')}&token=${encodeURIComponent(getToken())}`);
+        const raw = await res.json();
+        if (!res.ok || raw.error) throw new Error(raw.error || 'metric_history 조회 실패');
+
+        // 8개 시계열(ash_* 7개 + ash_cpu_cores)을 sampledAt 기준으로 합쳐 ash_activity 응답과 같은
+        // {cpu_cores, categories, series} 모양으로 변환 - renderAshActivityChart()가 출처를 몰라도
+        // 되게 한다. 전부 InstanceMetricSamplerService의 같은 recordIfPresent() 호출에서 같은
+        // sampledAt으로 쓰이므로 실제로는 8개 배열의 타임스탬프가 항상 일치하지만, 혹시 몰라
+        // sampledAt을 키로 한 Map으로 맞춰(포지션 의존 없이) 방어적으로 합친다.
+        const seriesMaps = {};
+        ASH_LONG_RANGE_METRIC_NAMES.forEach(name => {
+            seriesMaps[name] = new Map((raw[name] || []).map(pt => [pt.sampledAt, pt.value]));
+        });
+        const timestamps = Array.from(new Set(
+            ASH_LONG_RANGE_METRIC_NAMES.flatMap(name => Array.from(seriesMaps[name].keys()))
+        )).sort((a, b) => a - b);
+
+        let lastCpuCores = 0;
+        const series = timestamps.map(ts => {
+            const values = ASH_LONG_RANGE_CATEGORY_KEYS.map(key => seriesMaps[key].get(ts) || 0);
+            if (seriesMaps['ash_cpu_cores'].has(ts)) lastCpuCores = seriesMaps['ash_cpu_cores'].get(ts);
+            return { time: new Date(ts).toISOString(), values };
+        });
+
+        return {
+            range_minutes: ashActivityRangeMinutes,
+            step_minutes: null, // 자체 수집은 고정 60초 원본 샘플이라 0-패딩 버킷 개념이 없음
+            cpu_cores: lastCpuCores,
+            categories: ['CPU', 'Latch', 'User I/O', 'TX Lock', 'Sys I/O', 'TM Lock', 'Other'],
+            series
+        };
+    }
+
+    async function fetchAshActivity() {
+        const canvas = document.getElementById('ash-activity-chart');
+        if (!canvas || !window.currentDbId) return;
+        const myDbId = window.currentDbId;
+        try {
+            const data = isAshLongRange()
+                ? await fetchAshActivityFromHistory(myDbId)
+                : await (async () => {
+                    const res = await fetch(`/api/ash_activity?db_id=${myDbId}&range_minutes=${ashActivityRangeMinutes}&step_minutes=1&token=${encodeURIComponent(getToken())}`);
+                    const d = await res.json();
+                    if (!res.ok || d.error) throw new Error(d.error || 'ash_activity 조회 실패');
+                    return d;
+                })();
+            // DB를 빠르게 전환하면 늦게 도착한 이전 DB 응답이 새로 선택된 DB 화면을 덮어쓸 수 있어 방어.
+            if (window.currentDbId !== myDbId) return;
+            renderAshActivityChart(data);
+        } catch (err) {
+            console.error('Failed to fetch ash_activity:', err);
+        }
+    }
+
+    function ashSetText(id, text) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    }
+
+    // KPI 행(설계문서 §5) - 현재 AAS(+직전 대비 delta) / CPU 코어 수 / 선택 구간 평균 / 기준선 초과 비율.
+    // 전부 이미 받아온 series에서 클라이언트가 계산 - 별도 API 불필요.
+    function updateAshActivityKpis(data) {
+        const series = data.series || [];
+        const cpuCores = data.cpu_cores || 0;
+        const sums = series.map(pt => pt.values.reduce((a, b) => a + b, 0));
+        const current = sums.length ? sums[sums.length - 1] : 0;
+        const prev = sums.length > 1 ? sums[sums.length - 2] : null;
+        const avg = sums.length ? sums.reduce((a, b) => a + b, 0) / sums.length : 0;
+        const exceedCount = cpuCores > 0 ? sums.filter(s => s > cpuCores).length : 0;
+
+        ashSetText('ash-kpi-current', current.toFixed(2));
+        ashSetText('ash-kpi-cores', String(cpuCores));
+        ashSetText('ash-kpi-avg', avg.toFixed(2));
+        ashSetText('ash-kpi-exceed', cpuCores > 0 ? Math.round(exceedCount / sums.length * 100) + '%' : '–');
+
+        const deltaEl = document.getElementById('ash-kpi-delta');
+        if (deltaEl) {
+            if (prev === null) {
+                deltaEl.textContent = '';
+            } else {
+                const diff = current - prev;
+                const arrow = diff > 0.01 ? '▲' : (diff < -0.01 ? '▼' : '–');
+                // 대기 세션이 늘어나는 쪽(▲)이 주의가 필요한 신호라 danger, 줄어드는 쪽(▼)이 success -
+                // 세션 리스트 등 이 앱의 다른 화면에서 "많을수록 나쁨" 신호에 쓰는 색과 같은 관례.
+                deltaEl.style.color = diff > 0.01 ? 'var(--danger)' : (diff < -0.01 ? 'var(--success)' : 'var(--text-muted)');
+                deltaEl.textContent = `${arrow} ${Math.abs(diff).toFixed(2)} (직전 대비)`;
+            }
+        }
+    }
+
+    // "고대비 텍스처" 토글(설계문서 §2) - CVD/저시력 대응 45°/135° 사선 해치를 CanvasPattern으로 생성.
+    // 목업(active_session_mockup_1.html)의 SVG <pattern> 방식(6x6 타일, 카테고리 인덱스 짝/홀에 따라
+    // 45°/135° 교차)과 같은 개념을 Chart.js/canvas용으로 옮겼다 - 타일 경계에서 대각선이 끊기지 않도록
+    // 모서리에 절반 길이 선을 추가로 그리는 표준 해치 타일링 기법을 쓴다.
+    const ashPatternCache = new Map();
+    function ashStripePattern(hexColor, angleDeg) {
+        const cacheKey = hexColor + ':' + angleDeg;
+        if (ashPatternCache.has(cacheKey)) return ashPatternCache.get(cacheKey);
+        const size = 8;
+        const tile = document.createElement('canvas');
+        tile.width = size;
+        tile.height = size;
+        const tctx = tile.getContext('2d');
+        tctx.fillStyle = hexColor + '2e'; // 옅은 바탕(~18% 불투명) - 텍스처 위에 카테고리색 기미만 남김
+        tctx.fillRect(0, 0, size, size);
+        tctx.strokeStyle = hexColor;
+        tctx.lineWidth = 1.6;
+        tctx.beginPath();
+        if (angleDeg === 45) {
+            tctx.moveTo(0, size); tctx.lineTo(size, 0);
+            tctx.moveTo(-size / 2, size / 2); tctx.lineTo(size / 2, -size / 2);
+            tctx.moveTo(size / 2, size * 1.5); tctx.lineTo(size * 1.5, size / 2);
+        } else {
+            tctx.moveTo(0, 0); tctx.lineTo(size, size);
+            tctx.moveTo(-size / 2, size / 2); tctx.lineTo(size / 2, size * 1.5);
+            tctx.moveTo(size / 2, -size / 2); tctx.lineTo(size * 1.5, size / 2);
+        }
+        tctx.stroke();
+        const pattern = tile.getContext('2d').createPattern(tile, 'repeat');
+        ashPatternCache.set(cacheKey, pattern);
+        return pattern;
+    }
+
+    function buildAshDatasets(data, form, texture) {
+        const isBar = form === 'bar';
+        const categoryDatasets = ASH_ACTIVITY_CATEGORIES.map((cat, i) => {
+            const fillColor = texture
+                ? ashStripePattern(cat.color, i % 2 === 0 ? 45 : 135) // §2: 인접 카테고리와 각도 교차
+                : (cat.color + 'd1'); // ~82% 불투명(설계문서 §2 마크 스펙 fill-opacity 0.82)
+            const base = {
+                label: cat.label,
+                data: data.series.map(pt => ({ x: new Date(pt.time).getTime(), y: pt.values[i] })),
+                borderColor: cat.color,
+                backgroundColor: fillColor,
+                borderWidth: 1,
+                stack: 'ash'
+            };
+            return isBar ? base : Object.assign(base, { pointRadius: 0, fill: true, tension: 0.15 });
+        });
+        // cpu_count 기준선(§3.3) - 스택 대상이 아니라 별도 계열로 얹는다(합산에서 제외되도록 stack 미지정).
+        // 막대형에서도 항상 선으로 그리도록 type을 명시(Chart.js 혼합 차트 - 데이터셋별 type override).
+        const cpuCores = data.cpu_cores || 0;
+        const cpuLine = {
+            type: 'line',
+            label: `CPU 코어 수 (${cpuCores})`,
+            data: data.series.map(pt => ({ x: new Date(pt.time).getTime(), y: cpuCores })),
+            borderColor: chartLineColor(0.6),
+            borderDash: [5, 4],
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill: false,
+            order: -1
+        };
+        return categoryDatasets.concat([cpuLine]);
+    }
+
+    // "표로 보기" 토글(설계문서 §2/§5) - 차트와 같은 series를 텍스트 표로 노출(접근성 대체 경로).
+    function renderAshActivityTable(data) {
+        const tableEl = document.getElementById('ash-activity-table');
+        if (!tableEl) return;
+        const cats = data.categories || [];
+        let html = '<table class="data-table" style="width:100%;"><thead><tr>'
+            + '<th style="text-align:left;">시간</th>'
+            + cats.map(c => `<th style="text-align:right;">${c}</th>`).join('')
+            + '<th style="text-align:right;">합계</th></tr></thead><tbody>';
+        (data.series || []).forEach(pt => {
+            const total = pt.values.reduce((a, b) => a + b, 0);
+            const timeLabel = new Date(pt.time).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+            html += '<tr><td style="text-align:left;">' + timeLabel + '</td>'
+                + pt.values.map(v => `<td style="text-align:right;">${v.toFixed(2)}</td>`).join('')
+                + `<td style="text-align:right; font-weight:600;">${total.toFixed(2)}</td></tr>`;
+        });
+        html += '</tbody></table>';
+        tableEl.innerHTML = html;
+    }
+
+    function renderAshActivityChart(data) {
+        lastAshActivityData = data;
+        updateAshActivityKpis(data);
+
+        const canvas = document.getElementById('ash-activity-chart');
+        const tableEl = document.getElementById('ash-activity-table');
+
+        if (ashActivityShowTable) {
+            if (canvas) canvas.style.display = 'none';
+            if (tableEl) tableEl.style.display = 'block';
+            renderAshActivityTable(data);
+            return; // 차트는 표 모드에서 굳이 갱신하지 않음 - 다음에 차트로 돌아갈 때 최신 데이터로 다시 그림
+        }
+        if (tableEl) tableEl.style.display = 'none';
+        if (!canvas) return;
+        // 표 모드 동안 canvas가 display:none이었다면 Chart.js가 크기를 0으로 캐싱했을 수 있음(기존
+        // 대시보드 탭 전환에서도 같은 이유로 resize() 강제 - 위 "Returning to dashboard" 주석 참고).
+        canvas.style.display = 'block';
+        if (ashActivityChart) ashActivityChart.resize();
+
+        const datasets = buildAshDatasets(data, ashActivityForm, ashActivityTexture);
+
+        // 영역형↔막대형 전환은 Chart.js에서 기존 인스턴스의 type을 안전하게 바꿀 수 없어 destroy 후
+        // 재생성한다(그 외 갱신은 기존 인스턴스에 데이터만 갈아끼움).
+        if (ashActivityChart && ashActivityChartRenderedForm !== ashActivityForm) {
+            ashActivityChart.destroy();
+            ashActivityChart = null;
+        }
+
+        if (!ashActivityChart) {
+            ashActivityChart = new Chart(canvas, {
+                type: ashActivityForm === 'bar' ? 'bar' : 'line',
+                data: { datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: 'minute', tooltipFormat: 'HH:mm', displayFormats: { minute: 'HH:mm' } },
+                            ticks: { color: chartLineColor(0.8), maxRotation: 0, minRotation: 0, font: { size: 13 } },
+                            grid: { drawOnChartArea: true, color: chartLineColor(0.15), borderDash: [4, 4] },
+                            border: { display: true, color: chartLineColor(1), width: 2 }
+                        },
+                        y: {
+                            stacked: true,
+                            beginAtZero: true,
+                            min: 0,
+                            ticks: { precision: 1, color: chartLineColor(0.8), font: { size: 13 } },
+                            grid: { drawOnChartArea: true, color: chartLineColor(0.15), borderDash: [4, 4] },
+                            border: { display: true, color: chartLineColor(1), width: 2 }
+                        }
+                    },
+                    plugins: {
+                        // 커스텀 범례(#ash-activity-legend)로 대체 - 기본 범례는 끔.
+                        legend: { display: false },
+                        title: { display: true, text: 'Active Session Wait Class' },
+                        subtitle: {
+                            display: true,
+                            text: 'AAS(Average Active Sessions)',
+                            align: 'start',
+                            color: chartLineColor(0.8),
+                            padding: { bottom: 10 }
+                        }
+                    }
+                }
+            });
+            ashActivityChartRenderedForm = ashActivityForm;
+            buildChartLegend('ash-activity-legend', ASH_ACTIVITY_CATEGORIES, () => ashActivityChart);
+            applyLegendVisibility('ash-activity-legend', ashActivityChart);
+        } else {
+            ashActivityChart.data.datasets = datasets;
+            ashActivityChart.update();
+        }
+    }
+
+    // ---- Top SQL Activity Timeline (설계문서 §8, 3단계 구현 - 2026-09-22, 원본 DBAgent-Java에서 포팅) ----
+    // §8.1: SQL_ID별 별도 색을 쓰지 않고, 각 Top SQL을 그 SQL의 지배적 대기 카테고리에 매핑해 §2/1단계와
+    // 동일한 hex를 재사용한다(Sys I/O는 제외 - 서버가 이미 그렇게 판정해서 내려줌). 구성 SQL이 폴링마다
+    // 바뀔 수 있어 buildChartLegend의 "최초 1회만 그림" 캐시를 못 쓰고 매번 다시 그리는 전용 렌더러를 쓴다.
+    const ASH_TOPSQL_CATEGORY_COLOR = {};
+    ASH_ACTIVITY_CATEGORIES.forEach(cat => { ASH_TOPSQL_CATEGORY_COLOR[cat.label] = cat.color; });
+    const ASH_TOPSQL_OTHER_COLOR = ASH_ACTIVITY_CATEGORIES.find(c => c.key === 'other').color;
+    // 5단계(Other 드릴다운, 설계문서 §9, 2026-09-22) 상태.
+    let lastAshTopSqlData = null;
+    let ashOtherDrilldownOpen = false;
+    let ashSelectedWindow = null; // {start: Date, end: Date} | null - 드래그 선택 중이면 그 구간, 없으면 null(전체 표시 구간)
+
+    async function fetchAshTopSql() {
+        const canvas = document.getElementById('ash-topsql-chart');
+        if (!canvas || !window.currentDbId) return;
+        // Top SQL Activity Timeline/Other 드릴다운은 6단계(6시간/24시간) 대상이 아님 - SQL_ID 단위
+        // 자체 수집은 카디널리티가 무한정이라 이번 6단계 범위 밖(체크리스트 참고). 실시간(30분/1시간)
+        // 전용으로 남기고, 장기 구간에서는 안내만 보여준다.
+        if (isAshLongRange()) {
+            renderAshTopSqlLongRangeNotice();
+            return;
+        }
+        const myDbId = window.currentDbId;
+        try {
+            const res = await fetch(`/api/ash_top_sql?db_id=${myDbId}&range_minutes=${ashActivityRangeMinutes}&step_minutes=1&token=${encodeURIComponent(getToken())}`);
+            const data = await res.json();
+            if (!res.ok || data.error) throw new Error(data.error || 'ash_top_sql 조회 실패');
+            if (window.currentDbId !== myDbId) return;
+            renderAshTopSqlChart(data);
+        } catch (err) {
+            console.error('Failed to fetch ash_top_sql:', err);
+        }
+    }
+
+    function renderAshTopSqlLongRangeNotice() {
+        if (ashTopSqlChart) { ashTopSqlChart.destroy(); ashTopSqlChart = null; }
+        lastAshTopSqlData = null;
+        if (ashOtherDrilldownOpen) closeAshOtherDrilldown();
+        const legend = document.getElementById('ash-topsql-legend');
+        if (legend) legend.innerHTML = '';
+        const canvas = document.getElementById('ash-topsql-chart');
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+        const container = document.getElementById('ash-topsql-container');
+        if (container && !document.getElementById('ash-topsql-long-range-notice')) {
+            const notice = document.createElement('div');
+            notice.id = 'ash-topsql-long-range-notice';
+            notice.style.cssText = 'position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color: var(--text-muted); font-size:0.85rem; text-align:center; padding:20px;';
+            notice.textContent = 'Top SQL Activity Timeline은 30분/1시간 구간에서만 제공됩니다.';
+            container.appendChild(notice);
+        }
+    }
+
+    function renderAshTopSqlLegend(sqlCategories) {
+        const container = document.getElementById('ash-topsql-legend');
+        if (!container) return;
+        const items = sqlCategories.map(s => ({
+            label: s.module ? `${s.label} (${s.module})` : s.label,
+            color: ASH_TOPSQL_CATEGORY_COLOR[s.category] || ASH_TOPSQL_OTHER_COLOR
+        }));
+        // §9.1: 범례의 Other 항목에 클릭 가능 표시(밑줄 호버 + ▸ 화살표) - 클릭 시 드릴다운 패널 토글.
+        container.innerHTML = items.map(it => `
+            <span style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; color: var(--text-main);">
+                <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${it.color}; flex:none;"></span>
+                ${it.label}
+            </span>
+        `).join('') + `
+            <span id="ash-topsql-other-legend" style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; color: var(--text-main); cursor:pointer;">
+                <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${ASH_TOPSQL_OTHER_COLOR}; flex:none;"></span>
+                <span style="text-decoration: underline dotted;">Other</span>
+                <span style="font-size:0.7rem;">▸</span>
+            </span>
+        `;
+        const otherLegend = document.getElementById('ash-topsql-other-legend');
+        if (otherLegend) {
+            otherLegend.addEventListener('click', () => {
+                if (ashOtherDrilldownOpen) {
+                    closeAshOtherDrilldown();
+                } else {
+                    openAshOtherDrilldown();
+                }
+            });
+        }
+    }
+
+    function renderAshTopSqlChart(data) {
+        const canvas = document.getElementById('ash-topsql-chart');
+        if (!canvas) return;
+        const notice = document.getElementById('ash-topsql-long-range-notice');
+        if (notice) notice.remove();
+        lastAshTopSqlData = data;
+        renderAshTopSqlLegend(data.sql_categories || []);
+
+        const sqlCats = data.sql_categories || [];
+        const datasets = sqlCats.map((s, i) => {
+            const color = ASH_TOPSQL_CATEGORY_COLOR[s.category] || ASH_TOPSQL_OTHER_COLOR;
+            return {
+                label: s.module ? `${s.label} (${s.module})` : s.label,
+                data: data.series.map(pt => ({ x: new Date(pt.time).getTime(), y: pt.values[i] })),
+                borderColor: color,
+                backgroundColor: color + 'd1',
+                borderWidth: 1,
+                pointRadius: 0,
+                fill: true,
+                stack: 'topsql',
+                tension: 0.15
+            };
+        });
+        datasets.push({
+            label: 'Other',
+            data: data.series.map(pt => ({ x: new Date(pt.time).getTime(), y: pt.values[sqlCats.length] })),
+            borderColor: ASH_TOPSQL_OTHER_COLOR,
+            backgroundColor: ASH_TOPSQL_OTHER_COLOR + 'd1',
+            borderWidth: 1,
+            pointRadius: 0,
+            fill: true,
+            stack: 'topsql',
+            tension: 0.15
+        });
+
+        if (!ashTopSqlChart) {
+            ashTopSqlChart = new Chart(canvas, {
+                type: 'line',
+                data: { datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: 'minute', tooltipFormat: 'HH:mm', displayFormats: { minute: 'HH:mm' } },
+                            ticks: { color: chartLineColor(0.8), maxRotation: 0, minRotation: 0, font: { size: 13 } },
+                            grid: { drawOnChartArea: true, color: chartLineColor(0.15), borderDash: [4, 4] },
+                            border: { display: true, color: chartLineColor(1), width: 2 }
+                        },
+                        y: {
+                            stacked: true,
+                            beginAtZero: true,
+                            min: 0,
+                            ticks: { precision: 1, color: chartLineColor(0.8), font: { size: 13 } },
+                            grid: { drawOnChartArea: true, color: chartLineColor(0.15), borderDash: [4, 4] },
+                            border: { display: true, color: chartLineColor(1), width: 2 }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }, // 커스텀 범례(#ash-topsql-legend)로 대체
+                        title: { display: true, text: 'Top SQL Activity Timeline' },
+                        subtitle: {
+                            display: true,
+                            text: 'AAS by SQL_ID (Top 5 + Other)',
+                            align: 'start',
+                            color: chartLineColor(0.8),
+                            padding: { bottom: 10 }
+                        }
+                    }
+                }
+            });
+        } else {
+            // Top5 구성이 폴링마다 바뀔 수 있어(§8.2 - 표시 구간 전체 기준으로만 재산정) 데이터셋 개수
+            // 자체가 매번 달라질 수 있다 - 라벨/범례가 그대로 유지된다는 보장이 없으므로 항상 통째로 교체.
+            ashTopSqlChart.data.datasets = datasets;
+            ashTopSqlChart.update();
+        }
+
+        // §9.1: "시간 범위를 바꾸면 열려 있는 드릴다운 패널도 자동으로 새 범위 기준으로 갱신" - 이
+        // 함수는 매 30초 폴링과 30분/1시간 전환마다 호출되므로 여기 한 곳에 걸어두면 다 커버된다.
+        if (ashOtherDrilldownOpen) refreshAshOtherDrilldown();
+    }
+
+    // "Other" 드릴다운(설계문서 §9, 5단계 - 2026-09-22) - ashSelectedWindow(드래그 선택)가 있으면 그
+    // 구간, 없으면 현재 차트가 보여주는 전체 표시 구간(lastAshTopSqlData.series 첫~끝)을 사용(§9.1).
+    function getAshDrilldownWindow() {
+        if (ashSelectedWindow) return ashSelectedWindow;
+        if (!lastAshTopSqlData || !lastAshTopSqlData.series || lastAshTopSqlData.series.length === 0) return null;
+        const series = lastAshTopSqlData.series;
+        const stepMs = (lastAshTopSqlData.step_minutes || 1) * 60000;
+        return {
+            start: new Date(series[0].time),
+            end: new Date(new Date(series[series.length - 1].time).getTime() + stepMs)
+        };
+    }
+
+    async function fetchAshOtherBreakdown() {
+        if (!window.currentDbId || !lastAshTopSqlData) return;
+        const win = getAshDrilldownWindow();
+        if (!win) return;
+        const startParam = formatAshDateTimeParam(win.start);
+        const endParam = formatAshDateTimeParam(win.end);
+        const excludeIds = (lastAshTopSqlData.sql_categories || []).map(s => s.sql_id).join(',');
+        try {
+            const res = await fetch(`/api/ash_other_breakdown?db_id=${window.currentDbId}&start_time=${encodeURIComponent(startParam)}&end_time=${encodeURIComponent(endParam)}&exclude_sql_ids=${encodeURIComponent(excludeIds)}&token=${encodeURIComponent(getToken())}`);
+            const data = await res.json();
+            if (!res.ok || data.error) throw new Error(data.error || 'ash_other_breakdown 조회 실패');
+            renderAshOtherBreakdownPanel(data, win);
+        } catch (err) {
+            console.error('Failed to fetch ash_other_breakdown:', err);
+        }
+    }
+
+    function renderAshOtherBreakdownPanel(data, win) {
+        const summaryEl = document.getElementById('ash-other-drilldown-summary');
+        const listEl = document.getElementById('ash-other-drilldown-list');
+        const tailEl = document.getElementById('ash-other-drilldown-tail');
+        if (!summaryEl || !listEl || !tailEl) return;
+
+        const fmtTime = (d) => d.toTimeString().slice(0, 5);
+        summaryEl.textContent = `선택 구간 ${fmtTime(win.start)} ~ ${fmtTime(win.end)} · Other 합계 AAS ${data.other_total_aas.toFixed(2)}`;
+
+        const items = data.items || [];
+        if (items.length === 0) {
+            listEl.innerHTML = '<div style="color: var(--text-muted); padding: 10px 0;">이 구간에는 Other로 뭉친 SQL이 없습니다.</div>';
+        } else {
+            const maxPct = Math.max(...items.map(it => it.pct)); // §9.3: 막대 길이는 1위 값을 100%로 한 상대값
+            listEl.innerHTML = items.map((it, i) => {
+                const color = ASH_TOPSQL_CATEGORY_COLOR[it.category] || ASH_TOPSQL_OTHER_COLOR;
+                const barPct = maxPct > 0 ? (it.pct / maxPct) * 100 : 0;
+                return `
+                    <div style="display:flex; align-items:center; gap:8px; padding:4px 0; font-size:0.82rem;">
+                        <span style="width:20px; color: var(--text-muted); text-align:right;">${i + 1}.</span>
+                        <span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:${color}; flex:none;"></span>
+                        <span style="width:90px; color: var(--text-main); font-family: monospace;">${it.label}</span>
+                        <span style="flex:1; background: var(--bg-card); border-radius:3px; height:14px; overflow:hidden;">
+                            <span style="display:block; width:${barPct}%; height:100%; background:${color};"></span>
+                        </span>
+                        <span style="width:50px; text-align:right; color: var(--text-main);">${it.pct.toFixed(1)}%</span>
+                        <span style="width:70px; color: var(--text-secondary);">${it.category}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        tailEl.textContent = data.tail_count > 0
+            ? `이 외 ${data.tail_count}개 SQL이 약 ${data.tail_aas.toFixed(2)} AAS를 차지 (개별 미표시)`
+            : '';
+    }
+
+    function openAshOtherDrilldown() {
+        ashOtherDrilldownOpen = true;
+        const panel = document.getElementById('ash-other-drilldown');
+        if (panel) panel.style.display = 'block';
+        fetchAshOtherBreakdown();
+    }
+
+    function closeAshOtherDrilldown() {
+        ashOtherDrilldownOpen = false;
+        const panel = document.getElementById('ash-other-drilldown');
+        if (panel) panel.style.display = 'none';
+    }
+
+    function refreshAshOtherDrilldown() {
+        fetchAshOtherBreakdown();
+    }
+
+    const ashOtherDrilldownCloseBtn = document.getElementById('ash-other-drilldown-close');
+    if (ashOtherDrilldownCloseBtn) {
+        ashOtherDrilldownCloseBtn.addEventListener('click', closeAshOtherDrilldown);
+    }
+
+    // Active Session Wait Class 차트 + Top SQL Activity Timeline(3단계) - 같은 range를 공유하는
+    // companion 위젯이라 같은 30초 루프에서 함께 갱신한다(§8 "나란히 배치" 요구사항).
+    function fetchAshPanels() {
+        return Promise.all([fetchAshActivity(), fetchAshTopSql()]);
+    }
+
+    function scheduleNextAshActivityFetch(generation) {
+        ashActivityTimer = setTimeout(async () => {
+            await fetchAshPanels();
+            if (generation === ashActivityGeneration) {
+                scheduleNextAshActivityFetch(generation);
+            }
+        }, ASH_ACTIVITY_POLL_MS);
+    }
+
+    // DB 전환/구간(30분↔1시간) 변경 시 호출 - 기존 30초 루프를 무효화(세대 증가)하고 즉시 1회 조회 후
+    // 새 루프를 시작한다. fetchSessions()의 sessionRefreshGeneration과 같은 기법.
+    function restartAshActivityPolling() {
+        clearTimeout(ashActivityTimer);
+        const generation = ++ashActivityGeneration;
+        fetchAshPanels().then(() => {
+            if (generation === ashActivityGeneration) {
+                scheduleNextAshActivityFetch(generation);
+            }
+        });
+    }
+
+    document.querySelectorAll('[data-ash-range]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('[data-ash-range]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            ashActivityRangeMinutes = parseInt(btn.getAttribute('data-ash-range'), 10) || 60;
+            ashSelectedWindow = null; // 구간을 바꾸면 이전 드래그 선택은 더 이상 유효하지 않음(§9.1)
+            restartAshActivityPolling();
+        });
+    });
+
+    // 영역형↔막대형/텍스처/표 보기는 서버 재조회 없이 lastAshActivityData로 즉시 다시 그린다.
+    document.querySelectorAll('[data-ash-form]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('[data-ash-form]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            ashActivityForm = btn.getAttribute('data-ash-form') === 'bar' ? 'bar' : 'area';
+            if (lastAshActivityData) renderAshActivityChart(lastAshActivityData);
+        });
+    });
+    const ashTextureToggle = document.getElementById('ash-texture-toggle');
+    if (ashTextureToggle) {
+        ashTextureToggle.addEventListener('change', () => {
+            ashActivityTexture = ashTextureToggle.checked;
+            if (lastAshActivityData) renderAshActivityChart(lastAshActivityData);
+        });
+    }
+    const ashTableToggle = document.getElementById('ash-table-toggle');
+    if (ashTableToggle) {
+        ashTableToggle.addEventListener('change', () => {
+            ashActivityShowTable = ashTableToggle.checked;
+            if (lastAshActivityData) renderAshActivityChart(lastAshActivityData);
+        });
     }
 
     // Dashboard Logic
@@ -3886,114 +4079,102 @@ function scatterPointerToLocal(e, container) {
     return { x, y };
 }
 
-// Scatter Brush Selection Logic
-(function initScatterBrush() {
-    const scatterContainer = document.getElementById('scatter-container');
-    const selectionBox = document.getElementById('scatter-selection-box');
+// Drag-select on the Top SQL Activity Timeline (설계문서 §8.4, 4단계 - 2026-09-22, 기존 Trace 산점도의
+// drag-brush를 대체). 세로 밴드로 시간 구간만 선택한다(값 축은 무관 - 위 History 탭 산점도의 2D 박스
+// 선택과 다른 이유는 이 차트가 누적 영역이라 y값이 "그 시점의 합계"이지 세션 하나하나의 좌표가 아니라서).
+// §0/체크리스트 검토 결과 기존 /api/history_sessions는 재사용하지 않기로 함 - getHistorySessions()는
+// "성능 이력 조회" 화면 전용으로 elapsed>=3초 AND exec_count>=100 튜닝 후보 필터가 걸려 있어, 일반
+// 드래그 드릴다운(§8.4 의도)에 쓰면 대부분의 정상적인 드래그가 "결과 없음"으로 나온다 - 그래서 같은
+// 필터 없이 구간 내 세션을 그대로 보여주는 /api/ash_session_detail을 새로 추가했다(getAshSessionDetail).
+(function initAshTopSqlBrush() {
+    const container = document.getElementById('ash-topsql-container');
+    const selectionBox = document.getElementById('ash-topsql-selection-box');
     let isDragging = false;
-    let startX, startY;
+    let startX = 0;
 
-    if (scatterContainer && selectionBox && !window.isScatterBrushBound) {
-        window.isScatterBrushBound = true;
-        
-        scatterContainer.addEventListener('mousedown', (e) => {
-            if (e.target.id !== 'session-scatter-chart') return;
-            isDragging = true;
-            // Freezes the live chart render (see the polling code around window.scatterDragActive)
-            // so the axis window doesn't slide out from under the box while the user is still dragging.
-            window.scatterDragActive = true;
-            const p = scatterPointerToLocal(e, scatterContainer);
-            startX = p.x;
-            startY = p.y;
+    if (!container || !selectionBox || window.isAshTopSqlBrushBound) return;
+    window.isAshTopSqlBrushBound = true;
 
-            selectionBox.style.left = startX + 'px';
-            selectionBox.style.top = startY + 'px';
-            selectionBox.style.width = '0px';
-            selectionBox.style.height = '0px';
-            selectionBox.style.display = 'block';
-        });
+    container.addEventListener('mousedown', (e) => {
+        if (e.target.id !== 'ash-topsql-chart') return;
+        isDragging = true;
+        const p = scatterPointerToLocal(e, container);
+        startX = p.x;
+        selectionBox.style.left = startX + 'px';
+        selectionBox.style.top = '0px';
+        selectionBox.style.width = '0px';
+        selectionBox.style.height = '100%';
+        selectionBox.style.display = 'block';
+    });
 
-        window.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            const p = scatterPointerToLocal(e, scatterContainer);
-            const currentX = p.x;
-            const currentY = p.y;
+    window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const p = scatterPointerToLocal(e, container);
+        const left = Math.min(startX, p.x);
+        selectionBox.style.left = left + 'px';
+        selectionBox.style.width = Math.abs(p.x - startX) + 'px';
+    });
 
-            const left = Math.min(startX, currentX);
-            const top = Math.min(startY, currentY);
-            const width = Math.abs(currentX - startX);
-            const height = Math.abs(currentY - startY);
-            
-            selectionBox.style.left = left + 'px';
-            selectionBox.style.top = top + 'px';
-            selectionBox.style.width = width + 'px';
-            selectionBox.style.height = height + 'px';
-        });
-        
-        window.addEventListener('mouseup', (e) => {
-            if (!isDragging) return;
-            isDragging = false;
-            // Cleared before every early return below so the live chart never stays frozen past the
-            // drag that set window.scatterDragActive in mousedown.
-            window.scatterDragActive = false;
-            selectionBox.style.display = 'none';
+    window.addEventListener('mouseup', async (e) => {
+        if (!isDragging) return;
+        isDragging = false;
+        selectionBox.style.display = 'none';
+        if (!ashTopSqlChart) return;
 
-            if (!window.globalSessionScatterChart) return;
+        const p = scatterPointerToLocal(e, container);
+        const endX = p.x;
+        if (Math.abs(endX - startX) < 5) return; // 클릭과 구분 - 최소 드래그 폭
 
-            const p = scatterPointerToLocal(e, scatterContainer);
-            const endX = p.x;
-            const endY = p.y;
-
-            if (Math.abs(endX - startX) < 5 && Math.abs(endY - startY) < 5) return;
-
-            // Points render as a 'crossRot' mark (pointRadius 2 + borderWidth 2, ~4px half-extent) but
-            // the filter below only tests each point's exact center coordinate. A mark whose crossed
-            // lines are visibly inside the drawn selection box was still getting dropped whenever its
-            // center sat a few px outside - pad the box by the mark's visual half-extent so "the dot
-            // looks selected" and "the dot IS selected" agree.
-            const HIT_PAD = 6;
-            const left = Math.min(startX, endX) - HIT_PAD;
-            const right = Math.max(startX, endX) + HIT_PAD;
-            const top = Math.min(startY, endY) - HIT_PAD;
-            const bottom = Math.max(startY, endY) + HIT_PAD;
-
-            try {
-                const xAxis = window.globalSessionScatterChart.scales.x;
-                const yAxis = window.globalSessionScatterChart.scales.y;
-                
-                const valX1 = xAxis.getValueForPixel(left);
-                const valX2 = xAxis.getValueForPixel(right);
-                const valY1 = yAxis.getValueForPixel(bottom); 
-                const valY2 = yAxis.getValueForPixel(top);    
-                
-                const minX = Math.min(valX1, valX2);
-                const maxX = Math.max(valX1, valX2);
-                const minY = Math.min(valY1, valY2);
-                const maxY = Math.max(valY1, valY2);
-                
-                if (!window.globalScatterDataPoints) return;
-                
-                const selectedPoints = (window.globalScatterDataPoints || []).filter(pt =>
-                    pt.x >= minX && pt.x <= maxX && pt.y >= minY && pt.y <= maxY
-                );
-
-                // Deduplicate by SID (to show latest for each SID in the box)
-                const uniqueSessions = {};
-                selectedPoints.forEach(pt => {
-                    uniqueSessions[pt.session.sid] = pt.session;
-                });
-                
-                const finalSessions = Object.values(uniqueSessions);
-                
-                if (finalSessions.length > 0) {
-                    showSelectedSessionsPopup(finalSessions);
-                }
-            } catch(err) {
-                console.error("Brush selection error", err);
-            }
-        });
-    }
+        try {
+            const xAxis = ashTopSqlChart.scales.x;
+            const val1 = xAxis.getValueForPixel(Math.min(startX, endX));
+            const val2 = xAxis.getValueForPixel(Math.max(startX, endX));
+            if (val1 == null || val2 == null) return;
+            // §9.1: Other 드릴다운이 열려 있으면 새 드래그 구간 기준으로 같이 갱신(패널이 열려 있는
+            // 동안은 패널이 캔버스를 덮어 새로 드래그할 수 없으므로, 실제로는 "드래그 후 Other를 열면
+            // 이미 이 구간 기준"이 되는 경로로 동작한다).
+            ashSelectedWindow = { start: new Date(val1), end: new Date(val2) };
+            if (ashOtherDrilldownOpen) refreshAshOtherDrilldown();
+            await fetchAshSessionDetailForDrag(new Date(val1), new Date(val2));
+        } catch (err) {
+            console.error('Top SQL brush selection error', err);
+        }
+    });
 })();
+
+function formatAshDateTimeParam(date) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// 드래그로 뽑은 시간 구간의 실제 세션 목록을 조회해 기존 산점도-드래그와 같은 팝업(showSelectedSessions
+// Popup/session-list.html)으로 보여준다 - /api/ash_session_detail이 이미 session-list.html이 기대하는
+// 필드명(sid/serial/sql_id/capture_time/duration_time/program_name/username/db_name)으로 내려주므로
+// 별도 매핑이 필요 없다(command/osuser는 ASH에 없는 정보라 비워두면 팝업이 '-'로 표시).
+async function fetchAshSessionDetailForDrag(startDate, endDate) {
+    if (!window.currentDbId) return;
+    if (endDate.getTime() - startDate.getTime() < 60000) {
+        // 드래그 폭이 1분 미만이면 버킷 하나도 안 걸릴 수 있어 최소 1분 폭을 보장.
+        endDate = new Date(startDate.getTime() + 60000);
+    }
+    const startParam = formatAshDateTimeParam(startDate);
+    const endParam = formatAshDateTimeParam(endDate);
+    try {
+        const res = await fetch(`/api/ash_session_detail?db_id=${window.currentDbId}&start_time=${encodeURIComponent(startParam)}&end_time=${encodeURIComponent(endParam)}&token=${encodeURIComponent(getToken())}`);
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            console.error('ash_session_detail 조회 실패:', data && data.error);
+            return;
+        }
+        if (data.length > 0) {
+            showSelectedSessionsPopup(data);
+        } else {
+            alert('선택한 구간(' + startParam.replace('T', ' ') + ' ~ ' + endParam.replace('T', ' ') + ')에 해당하는 세션이 없습니다.');
+        }
+    } catch (err) {
+        console.error('Failed to fetch ash_session_detail:', err);
+    }
+}
 
 // Drag-selecting on the Trace scatter (or the History tab's scatter) used to render this list into
 // the shared #image-modal in-page. Moved to a real OS window (session-list.html) so it can be dragged

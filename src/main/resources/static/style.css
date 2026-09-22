@@ -1029,6 +1029,17 @@ body {
 .iv2-kpi-bar-fill.warning { background: var(--warning); }
 .iv2-kpi-bar-fill.danger { background: var(--danger); }
 
+/* Current Session "Active Session Wait Class" 차트 KPI 행 (2단계, 2026-09-22) - .iv2-kpi-tile/
+   -label/-value는 재사용하되 4열 그리드는 이 화면 전용(.iv2-kpi-row는 6열 고정이라 그대로 못 씀). */
+#ash-activity-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+}
+#ash-activity-kpi-row .iv2-kpi-tile { padding: 10px 14px; }
+#ash-activity-kpi-row .iv2-kpi-value { font-size: 1.15rem; }
+
 .iv2-charts-row {
     display: grid;
     gap: 16px;

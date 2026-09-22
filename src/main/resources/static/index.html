@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=42">
+    <link rel="stylesheet" href="style.css?v=43">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=12"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -953,18 +953,82 @@
                             </div>
                         </div>
                         <div class="panel-body">
-                            <div style="display: flex; gap: 20px; margin-bottom: 20px; height: 330px;">
+                            <div style="display: flex; gap: 20px; margin-bottom: 20px; height: 430px;">
+                                <!-- Active Session Wait Class 차트 (설계문서 `Current Session 매뉴 active_session
+                                     차트 개편.md` 1단계, 2026-09-22) - 기존 실시간 세션 추이 라인 차트를 대체.
+                                     ash_activity API를 독립적으로 폴링하며, session-refresh-interval(위 세션
+                                     테이블 폴링 주기)과는 무관하게 30초 간격으로 갱신된다. -->
                                 <div style="flex: 1; display: flex; flex-direction: column;">
-                                    <div id="session-chart-legend" style="display: flex; gap: 14px; flex-wrap: wrap; padding: 2px 8px 6px; margin-left: 1cm;"></div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between; padding: 2px 8px 6px; margin-left: 1cm; flex-wrap: wrap; gap: 8px;">
+                                        <div id="ash-activity-legend" style="display: flex; gap: 14px; flex-wrap: wrap;"></div>
+                                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                            <div class="iv-range-switch">
+                                                <button type="button" class="iv-range-btn active" data-ash-form="area">영역형</button>
+                                                <button type="button" class="iv-range-btn" data-ash-form="bar">막대형</button>
+                                            </div>
+                                            <div class="iv-range-switch">
+                                                <button type="button" class="iv-range-btn" data-ash-range="30">30분</button>
+                                                <button type="button" class="iv-range-btn active" data-ash-range="60">1시간</button>
+                                                <!-- 6시간/24시간(6단계, 자체 수집 경로 - 2026-09-22) - instance_metric_history의
+                                                     ash_* 샘플을 읽음. Top SQL Activity Timeline은 이 두 구간에서 지원 안 함. -->
+                                                <button type="button" class="iv-range-btn" data-ash-range="360">6시간</button>
+                                                <button type="button" class="iv-range-btn" data-ash-range="1440">24시간</button>
+                                            </div>
+                                            <label style="display: flex; align-items: center; gap: 4px; font-size: 0.78rem; color: var(--text-secondary); cursor: pointer; white-space: nowrap;">
+                                                <input type="checkbox" id="ash-texture-toggle"> 고대비 텍스처
+                                            </label>
+                                            <label style="display: flex; align-items: center; gap: 4px; font-size: 0.78rem; color: var(--text-secondary); cursor: pointer; white-space: nowrap;">
+                                                <input type="checkbox" id="ash-table-toggle"> 표로 보기
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <!-- KPI 행(설계문서 §5) - 현재 AAS(+직전 대비 delta) / CPU 코어 수 / 선택 구간
+                                         평균 / 기준선 초과 비율. 타일 스타일은 v2 대시보드의 .iv2-kpi-tile 재사용,
+                                         4열 그리드만 이 화면 전용(#ash-activity-kpi-row, style.css 참고). -->
+                                    <div id="ash-activity-kpi-row" style="margin-left: 1cm;">
+                                        <div class="iv2-kpi-tile">
+                                            <div class="iv2-kpi-label">현재 AAS</div>
+                                            <div class="iv2-kpi-value" id="ash-kpi-current">–</div>
+                                            <div id="ash-kpi-delta" style="font-size: 0.75rem; margin-top: 4px;"></div>
+                                        </div>
+                                        <div class="iv2-kpi-tile">
+                                            <div class="iv2-kpi-label">CPU 코어 수</div>
+                                            <div class="iv2-kpi-value" id="ash-kpi-cores">–</div>
+                                        </div>
+                                        <div class="iv2-kpi-tile">
+                                            <div class="iv2-kpi-label">선택 구간 평균</div>
+                                            <div class="iv2-kpi-value" id="ash-kpi-avg">–</div>
+                                        </div>
+                                        <div class="iv2-kpi-tile">
+                                            <div class="iv2-kpi-label">기준선 초과 비율</div>
+                                            <div class="iv2-kpi-value" id="ash-kpi-exceed">–</div>
+                                        </div>
+                                    </div>
                                     <div style="flex: 1; position: relative; min-height: 0;">
-                                        <canvas id="session-chart"></canvas>
+                                        <canvas id="ash-activity-chart"></canvas>
+                                        <div id="ash-activity-table" class="table-container" style="display: none; position: absolute; inset: 0; overflow: auto; background: var(--bg-panel);"></div>
                                     </div>
                                 </div>
+                                <!-- Top SQL Activity Timeline (설계문서 §8, 4단계 - 2026-09-22) - Active
+                                     Session Wait Class 차트와 같은 range(30분/1시간)를 공유하고 같은 30초
+                                     폴링에 얹혀간다. 4단계에서 기존 Trace 산점도를 여기로 완전 대체했다
+                                     (§8.4 드래그→세션 상세, 구현단계 체크리스트 참고). -->
                                 <div style="flex: 1; display: flex; flex-direction: column;">
-                                    <div id="scatter-chart-legend" style="display: flex; gap: 14px; flex-wrap: wrap; padding: 2px 8px 6px; margin-left: 1.5cm;"></div>
-                                    <div style="flex: 1; position: relative; min-height: 0;" id="scatter-container">
-                                        <canvas id="session-scatter-chart"></canvas>
-                                        <div id="scatter-selection-box" style="position: absolute; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10;"></div>
+                                    <div id="ash-topsql-legend" style="display: flex; gap: 14px; flex-wrap: wrap; padding: 2px 8px 6px; margin-left: 1.5cm;"></div>
+                                    <div style="flex: 1; position: relative; min-height: 0;" id="ash-topsql-container">
+                                        <canvas id="ash-topsql-chart"></canvas>
+                                        <div id="ash-topsql-selection-box" style="position: absolute; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10;"></div>
+                                        <!-- "Other" 드릴다운 패널(설계문서 §9, 5단계 - 2026-09-22) - 범례의 Other
+                                             항목 클릭 시 차트 위에 펼쳐짐(§9.3 "차트 카드 안에 순위 패널"). -->
+                                        <div id="ash-other-drilldown" class="table-container" style="display: none; position: absolute; inset: 0; overflow: auto; background: var(--bg-panel); padding: 12px; z-index: 20;">
+                                            <div style="display: flex; align-items: center; justify-content: space-between;">
+                                                <strong style="color: var(--text-main);">Other 안의 SQL 순위</strong>
+                                                <button type="button" id="ash-other-drilldown-close" class="secondary-btn" style="padding: 3px 10px; font-size: 0.78rem;">닫기</button>
+                                            </div>
+                                            <div id="ash-other-drilldown-summary" style="font-size: 0.8rem; color: var(--text-secondary); margin: 6px 0 12px;"></div>
+                                            <div id="ash-other-drilldown-list"></div>
+                                            <div id="ash-other-drilldown-tail" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 8px;"></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1225,6 +1289,6 @@
     </div>
 
 
-    <script src="app.js?v=152"></script>
+    <script src="app.js?v=158"></script>
 </body>
 </html>

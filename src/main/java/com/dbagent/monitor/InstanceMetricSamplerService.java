@@ -10,6 +10,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -71,6 +72,12 @@ public class InstanceMetricSamplerService {
     @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
     private int lockQueryTimeoutSeconds;
 
+    // ash_* 계열(아래 sampleOne() 참고) 카운트를 AAS로 정규화할 때 쓰는 창 길이 - sampleAll()의
+    // @Scheduled 주기(fixedDelayString)와 반드시 같은 값이어야 한다(그래야 "최근 N초"에 실제로 샘플링
+    // 공백이 안 생김). 두 곳이 같은 프로퍼티 키를 읽으므로 값이 어긋날 일은 없다.
+    @Value("${dbagent.monitor.metric-sample-interval-seconds:60}")
+    private int sampleIntervalSeconds;
+
     public InstanceMetricSamplerService(OracleConnectionPoolManager poolManager, DatabaseConfigService configService,
                                          InstanceMetricHistoryService historyService) {
         this.poolManager = poolManager;
@@ -111,12 +118,22 @@ public class InstanceMetricSamplerService {
                 .thenAccept(this::recordIfPresent);
     }
 
+    // Active Session Wait Class 차트 6단계(6시간/24시간, 자체 수집 경로 - 2026-09-22)용 metric_name
+    // 7개 - MonitorService.getAshActivity()가 쓰는 내부 카테고리 키(cpu/latch/user_io/tx_lock/
+    // system_io/tm_lock/other, ashCategoryAas 배열과 같은 순서)에 "ash_" 접두사만 붙인다.
+    private static final String[] ASH_METRIC_NAMES =
+            {"ash_cpu", "ash_latch", "ash_user_io", "ash_tx_lock", "ash_system_io", "ash_tm_lock", "ash_other"};
+
     private void recordIfPresent(SampleResult r) {
         if (r == null) return;
         historyService.record(r.instanceId, "cpu_pct", r.sampledAt, r.cpuPct);
         historyService.record(r.instanceId, "db_time_aas", r.sampledAt, r.dbTimeAas);
         historyService.record(r.instanceId, "tm_lock_waiting", r.sampledAt, r.tmLockWaiting);
         historyService.record(r.instanceId, "tx_lock_waiting", r.sampledAt, r.txLockWaiting);
+        historyService.record(r.instanceId, "ash_cpu_cores", r.sampledAt, r.cpuCores);
+        for (int i = 0; i < ASH_METRIC_NAMES.length; i++) {
+            historyService.record(r.instanceId, ASH_METRIC_NAMES[i], r.sampledAt, r.ashCategoryAas[i]);
+        }
     }
 
     private SampleResult sampleOne(TargetDbConfig target, long sampledAt) {
@@ -150,6 +167,55 @@ public class InstanceMetricSamplerService {
                 log.debug("Lock wait sampling skipped for db_id={}: {}", target.id(), lockScanFailed.toString());
             }
 
+            // Active Session Wait Class 차트 6시간/24시간 구간(설계문서 §0 결정 6단계, 자체 수집 경로,
+            // 2026-09-22)용 ASH 카테고리 샘플링 - MonitorService.getAshActivity()와 완전히 같은 CASE
+            // 판정 기준을 그대로 복사해서 쓴다(두 경로가 같은 시간대를 조금이라도 다르게 분류하면
+            // 30분/1시간 실시간 뷰와 6시간/24시간 자체 수집 뷰의 숫자가 어긋나 보이므로 반드시 일치시켜야
+            // 함). "최근 sampleIntervalSeconds초" 창을 매 사이클 집계해 근사 AAS로 저장 - v$active_
+            // session_history가 인메모리 최근 데이터만 담고 있어 조회 자체는 가볍다(대시보드 v2가 겪은
+            // dba_data_files류의 무거운 딕셔너리 조인과는 다름, 위 TABLESPACE_CRITICAL_PCT 주석 참고).
+            double[] ashCategoryAas = new double[7]; // cpu, latch, user_io, tx_lock, sys_io, tm_lock, other
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT category, COUNT(*) AS cnt FROM (" +
+                            "SELECT " +
+                            "CASE " +
+                            "WHEN h.session_state = 'ON CPU' THEN 'cpu' " +
+                            "WHEN h.wait_class = 'User I/O' THEN 'user_io' " +
+                            "WHEN h.wait_class = 'System I/O' THEN 'system_io' " +
+                            "WHEN h.event LIKE 'latch%' THEN 'latch' " +
+                            "WHEN h.event LIKE 'enq: TX%' THEN 'tx_lock' " +
+                            "WHEN h.event LIKE 'enq: TM%' THEN 'tm_lock' " +
+                            "WHEN h.wait_class NOT IN ('User I/O', 'System I/O', 'Idle') THEN 'other' " +
+                            "ELSE NULL " +
+                            "END AS category " +
+                            "FROM v$active_session_history h " +
+                            "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
+                            "WHERE h.sample_time >= SYSDATE - (? / 86400) " +
+                            "AND h.session_type = 'FOREGROUND' " +
+                            "AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ")" +
+                            ") WHERE category IS NOT NULL GROUP BY category")) {
+                ps.setQueryTimeout(lockQueryTimeoutSeconds);
+                ps.setInt(1, sampleIntervalSeconds);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        long cnt = rs.getLong("cnt");
+                        double aas = Math.round((cnt / (double) sampleIntervalSeconds) * 100.0) / 100.0;
+                        switch (rs.getString("category")) {
+                            case "cpu": ashCategoryAas[0] = aas; break;
+                            case "latch": ashCategoryAas[1] = aas; break;
+                            case "user_io": ashCategoryAas[2] = aas; break;
+                            case "tx_lock": ashCategoryAas[3] = aas; break;
+                            case "system_io": ashCategoryAas[4] = aas; break;
+                            case "tm_lock": ashCategoryAas[5] = aas; break;
+                            case "other": ashCategoryAas[6] = aas; break;
+                            default: break;
+                        }
+                    }
+                }
+            } catch (SQLException ashScanFailed) {
+                log.debug("ASH category sampling skipped for db_id={}: {}", target.id(), ashScanFailed.toString());
+            }
+
             try (Statement tsSt = conn.createStatement()) {
                 tsSt.setQueryTimeout(lockQueryTimeoutSeconds);
                 List<Map<String, Object>> tsAlerts = new ArrayList<>();
@@ -179,7 +245,8 @@ public class InstanceMetricSamplerService {
                 log.debug("Tablespace usage sampling skipped for db_id={}: {}", target.id(), tablespaceScanFailed.toString());
             }
 
-            return new SampleResult(target.id(), sampledAt, cpuPct, dbTimeAas, tmLockWaiting, txLockWaiting);
+            return new SampleResult(target.id(), sampledAt, cpuPct, dbTimeAas, tmLockWaiting, txLockWaiting,
+                    numCpus, ashCategoryAas);
         } catch (Exception e) {
             log.warn("Instance metric sampling failed for db_id={}: {}", target.id(), e.toString());
             return null;
@@ -189,6 +256,11 @@ public class InstanceMetricSamplerService {
     /** MonitorService.getActiveAlerts()가 실시간 조회 대신 읽는 마지막 샘플링 결과. */
     List<Map<String, Object>> getCachedTablespaceAlerts(String dbId) {
         return tablespaceAlertsCache.getOrDefault(dbId, Collections.emptyList());
+    }
+
+    // MonitorService.monitoringAccountLiteral()과 동일 - 클래스가 달라 공유 못 하므로 그대로 복사.
+    private String monitoringAccountLiteral(TargetDbConfig target) {
+        return "'" + target.user().toUpperCase().replace("'", "''") + "'";
     }
 
     // sampleOne()의 오라클 조회 결과를 SQLite 기록 없이 들고만 있는 값 객체 - 기록은 sampleAll()이
@@ -201,15 +273,19 @@ public class InstanceMetricSamplerService {
         final double dbTimeAas;
         final int tmLockWaiting;
         final int txLockWaiting;
+        final double cpuCores;
+        final double[] ashCategoryAas; // cpu, latch, user_io, tx_lock, sys_io, tm_lock, other (6단계, 2026-09-22)
 
         SampleResult(String instanceId, long sampledAt, double cpuPct, double dbTimeAas,
-                     int tmLockWaiting, int txLockWaiting) {
+                     int tmLockWaiting, int txLockWaiting, double cpuCores, double[] ashCategoryAas) {
             this.instanceId = instanceId;
             this.sampledAt = sampledAt;
             this.cpuPct = cpuPct;
             this.dbTimeAas = dbTimeAas;
             this.tmLockWaiting = tmLockWaiting;
             this.txLockWaiting = txLockWaiting;
+            this.cpuCores = cpuCores;
+            this.ashCategoryAas = ashCategoryAas;
         }
     }
 }

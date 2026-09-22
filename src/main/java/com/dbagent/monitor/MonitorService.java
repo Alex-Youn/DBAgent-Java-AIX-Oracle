@@ -15,7 +15,12 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +42,11 @@ public class MonitorService {
     // 느린 인스턴스 등) 재빌드 없이 조정 가능해야 한다.
     @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
     private int lockQueryTimeoutSeconds;
+
+    // ASH 시간대별 집계(getAshActivity)는 v$lock류보다 스캔 범위가 넓어(최근 N분 전체 샘플) lock-query-
+    // timeout-seconds(3초, 락 조회 전용값)보다 여유를 둔다 - 별도 프로퍼티로 분리.
+    @Value("${dbagent.monitor.ash-activity-query-timeout-seconds:10}")
+    private int ashActivityQueryTimeoutSeconds;
 
     public MonitorService(OracleConnectionPoolManager poolManager, OracleQueryHelper queryHelper,
                            InstanceMetricSamplerService metricSamplerService) {
@@ -247,6 +257,496 @@ public class MonitorService {
                 row.put("osuser", rs.getString("osuser"));
                 row.put("capture_time", rs.getString("capture_time"));
                 sessions.add(row);
+            }
+        }
+        return sessions;
+    }
+
+    // ---------------------------------------------------------------- ash_activity
+    // "Current Session" 화면의 Active Session Wait Class 차트(설계문서 `Current Session 매뉴
+    // active_session 차트 개편.md` §0/§2/§3, 2026-09-22 1단계 - 원본 DBAgent-Java에서 포팅) 데이터
+    // 소스. v$active_session_history를 §3.1 분류 기준(session_state/event 패턴 - WAIT_CLASS 자체는
+    // 쓰지 않음. getSessions()/queryActiveTransactions()의 세션별 wait% 분해와 같은 판정 기준이나,
+    // 그쪽은 "세션별 최근 1분의 카테고리 비중"이고 이건 "시간 버킷별 카테고리 합계"라 집계 모양이
+    // 달라 SQL 조각을 공유하지 않음)으로 시간 버킷×카테고리 집계한다.
+    // gv$는 쓰지 않는다(2026-09-06 RAC 원칙 확정 - 접속 인스턴스 기준만, MonitorController 상단 주석 참고).
+    public Map<String, Object> getAshActivity(TargetDbConfig target, int rangeMinutes, int stepMinutes) throws SQLException {
+        String[] categoryLabels = {"CPU", "Latch", "User I/O", "TX Lock", "Sys I/O", "TM Lock", "Other"};
+        // 버그 수정(2026-09-22, code-inspector 점검): 아래 CASE 문은 System I/O를 'system_io'로
+        // 분류하는데 이 배열은 'sys_io'를 쓰고 있어 raw 맵에서 절대 안 걸려 Sys I/O가 항상 0으로
+        // 표시되고 있었다(6단계 자체 수집 경로는 처음부터 'system_io'로 일치해서 영향 없었음).
+        String[] categoryKeys = {"cpu", "latch", "user_io", "tx_lock", "system_io", "tm_lock", "other"};
+
+        String query = "SELECT TO_CHAR(bucket_time, 'YYYY-MM-DD\"T\"HH24:MI:\"00\"') AS bucket_label, category, COUNT(*) AS cnt " +
+                "FROM (" +
+                // sample_time은 TIMESTAMP라 TIMESTAMP - TIMESTAMP는 INTERVAL(NUMBER 연산 불가, ORA-00932)이
+                // 되므로 기존 코드 관례(getHistorySessions 등)처럼 CAST(... AS DATE)로 맞춘 뒤 계산한다.
+                "SELECT TRUNC(CAST(h.sample_time AS DATE)) + FLOOR((CAST(h.sample_time AS DATE) - TRUNC(CAST(h.sample_time AS DATE))) * 1440 / ?) * (? / 1440) AS bucket_time, " +
+                "CASE " +
+                "WHEN h.session_state = 'ON CPU' THEN 'cpu' " +
+                "WHEN h.wait_class = 'User I/O' THEN 'user_io' " +
+                "WHEN h.wait_class = 'System I/O' THEN 'system_io' " +
+                "WHEN h.event LIKE 'latch%' THEN 'latch' " +
+                "WHEN h.event LIKE 'enq: TX%' THEN 'tx_lock' " +
+                "WHEN h.event LIKE 'enq: TM%' THEN 'tm_lock' " +
+                "WHEN h.wait_class NOT IN ('User I/O', 'System I/O', 'Idle') THEN 'other' " +
+                "ELSE NULL " +
+                "END AS category " +
+                "FROM v$active_session_history h " +
+                "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
+                "WHERE h.sample_time >= SYSDATE - (? / 1440) " +
+                "AND h.session_type = 'FOREGROUND' " +
+                "AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ")" +
+                ") WHERE category IS NOT NULL " +
+                "GROUP BY bucket_time, category " +
+                "ORDER BY bucket_time";
+
+        Map<String, Map<String, Long>> raw = new LinkedHashMap<>();
+        int cpuCores = 0;
+        LocalDateTime dbNow;
+        try (Connection conn = poolManager.getConnection(target)) {
+            try (PreparedStatement ps = conn.prepareStatement(query)) {
+                ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                ps.setInt(1, stepMinutes);
+                ps.setInt(2, stepMinutes);
+                ps.setInt(3, rangeMinutes);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        raw.computeIfAbsent(rs.getString("bucket_label"), k -> new LinkedHashMap<>())
+                                .put(rs.getString("category"), rs.getLong("cnt"));
+                    }
+                }
+            }
+            // 코어 수는 기존 v2 대시보드가 이미 쓰는 값을 그대로 재사용(v$osstat.NUM_CPUS,
+            // InstanceMetricSamplerService와 동일 쿼리). v$parameter.cpu_count를 별도로 쓰면 화면마다
+            // "코어 수"가 두 값으로 갈리는 문제가 생기므로 통일한다(design-advisor 검토 2026-09-22 지적).
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
+                if (rs.next()) cpuCores = rs.getInt(1);
+            }
+            // 0-패딩 버킷 경계는 반드시 DB 서버의 시각(SYSDATE) 기준이어야 한다 - 로컬 실측(2026-09-22,
+            // 도커 Oracle 컨테이너는 UTC, 이 JVM은 KST)에서 LocalDateTime.now()(JVM/OS 시계)로 계산했더니
+            // 위 쿼리가 실제로 반환한 bucket_label(SYSDATE 기준)과 약 9시간 어긋나 raw 맵에 아무 것도
+            // 매칭되지 않고 항상 0으로만 채워지는 버그가 있었다 - DB 커넥션에서 직접 SYSDATE를 읽어와야
+            // 컨테이너/앱 서버 시간대가 달라도(폐쇄망 환경 포함) 항상 SQL과 같은 기준으로 맞아떨어진다.
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT SYSDATE FROM dual")) {
+                rs.next();
+                dbNow = rs.getTimestamp(1).toLocalDateTime();
+            }
+        }
+
+        // 0-패딩: 샘플이 전혀 없는 버킷/카테고리도 빠짐없이 0으로 채워 누적 영역 차트가 항상 길이 7의
+        // values 배열을 받도록 보장한다(설계문서 §4 데이터 계약의 공백 - 1단계 체크리스트 항목).
+        List<String> bucketLabels = generateAshBucketLabels(dbNow, rangeMinutes, stepMinutes);
+        List<Map<String, Object>> series = new ArrayList<>(bucketLabels.size());
+        double divisor = stepMinutes * 60.0; // ASH는 1초 간격 샘플링 - 버킷 내 카운트/버킷 초 수 = 근사 AAS
+        for (String label : bucketLabels) {
+            Map<String, Long> counts = raw.getOrDefault(label, Collections.emptyMap());
+            List<Double> values = new ArrayList<>(categoryKeys.length);
+            for (String key : categoryKeys) {
+                long cnt = counts.getOrDefault(key, 0L);
+                values.add(Math.round((cnt / divisor) * 100.0) / 100.0);
+            }
+            Map<String, Object> point = new LinkedHashMap<>();
+            point.put("time", label);
+            point.put("values", values);
+            series.add(point);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("range_minutes", rangeMinutes);
+        result.put("step_minutes", stepMinutes);
+        result.put("cpu_cores", cpuCores);
+        result.put("categories", Arrays.asList(categoryLabels));
+        result.put("series", series);
+        return result;
+    }
+
+    // ---------------------------------------------------------------- ash_top_sql
+    // Top SQL Activity Timeline(설계문서 §8, 3단계 - 2026-09-22, 원본 DBAgent-Java에서 포팅) - Active
+    // Session Wait Class 차트 옆에 나란히 배치하는 companion 위젯. Top 5 SQL_ID는 §8.2대로 표시 구간
+    // 전체 기준 1회만 산정. 각 SQL의 "지배적인 대기 카테고리"는 §8.1대로 getAshActivity()와 같은 CASE
+    // 판정 기준을 SQL_ID 단위로 다시 집계해서 구한다(Sys I/O는 제외 - 특정 SQL_ID에 자연스럽게 귀속되지
+    // 않는 백그라운드 프로세스 대기이기 때문, §8.1 참고).
+    // `FETCH FIRST n ROWS ONLY`(12c+) 대신 ROWNUM을 쓴다 - 코드베이스 기존 관례가 압도적으로 ROWNUM이고
+    // (getSessions 등), 폐쇄망 대상 Oracle 최소 버전이 아직 확인되지 않았다(체크리스트 참고).
+    public Map<String, Object> getAshTopSql(TargetDbConfig target, int rangeMinutes, int stepMinutes) throws SQLException {
+        String monitoringFilter = "AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ") ";
+
+        List<Map<String, Object>> topSql = new ArrayList<>();
+        LocalDateTime dbNow;
+        try (Connection conn = poolManager.getConnection(target)) {
+            String topSqlQuery = "SELECT sql_id, module FROM (" +
+                    "SELECT h.sql_id AS sql_id, MAX(h.module) AS module, COUNT(*) AS cnt " +
+                    "FROM v$active_session_history h " +
+                    "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
+                    "WHERE h.sample_time >= SYSDATE - (? / 1440) " +
+                    "AND h.session_type = 'FOREGROUND' " +
+                    "AND h.sql_id IS NOT NULL " +
+                    monitoringFilter +
+                    "GROUP BY h.sql_id ORDER BY cnt DESC" +
+                    ") WHERE ROWNUM <= 5";
+            try (PreparedStatement ps = conn.prepareStatement(topSqlQuery)) {
+                ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                ps.setInt(1, rangeMinutes);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("sql_id", rs.getString("sql_id"));
+                        row.put("module", rs.getString("module"));
+                        topSql.add(row);
+                    }
+                }
+            }
+
+            if (!topSql.isEmpty()) {
+                List<String> sqlIds = new ArrayList<>();
+                for (Map<String, Object> row : topSql) sqlIds.add((String) row.get("sql_id"));
+                String placeholders = String.join(",", Collections.nCopies(sqlIds.size(), "?"));
+
+                // §8.1 카테고리 판정(Sys I/O 제외) - sql_id별 카테고리 샘플 수를 구해 Java에서 최빈값을 뽑는다.
+                Map<String, String> dominantCategory = new LinkedHashMap<>();
+                String categoryQuery = "SELECT sql_id, category, cnt FROM (" +
+                        "SELECT h.sql_id AS sql_id, " +
+                        "CASE " +
+                        "WHEN h.session_state = 'ON CPU' THEN 'CPU' " +
+                        "WHEN h.event LIKE 'latch%' THEN 'Latch' " +
+                        "WHEN h.wait_class = 'User I/O' THEN 'User I/O' " +
+                        "WHEN h.event LIKE 'enq: TX%' THEN 'TX Lock' " +
+                        "WHEN h.event LIKE 'enq: TM%' THEN 'TM Lock' " +
+                        "ELSE NULL END AS category, " +
+                        "COUNT(*) AS cnt " +
+                        "FROM v$active_session_history h " +
+                        "WHERE h.sample_time >= SYSDATE - (? / 1440) " +
+                        "AND h.sql_id IN (" + placeholders + ") " +
+                        "GROUP BY h.sql_id, CASE " +
+                        "WHEN h.session_state = 'ON CPU' THEN 'CPU' " +
+                        "WHEN h.event LIKE 'latch%' THEN 'Latch' " +
+                        "WHEN h.wait_class = 'User I/O' THEN 'User I/O' " +
+                        "WHEN h.event LIKE 'enq: TX%' THEN 'TX Lock' " +
+                        "WHEN h.event LIKE 'enq: TM%' THEN 'TM Lock' " +
+                        "ELSE NULL END" +
+                        ") WHERE category IS NOT NULL ORDER BY sql_id, cnt DESC";
+                try (PreparedStatement ps = conn.prepareStatement(categoryQuery)) {
+                    ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                    int idx = 1;
+                    ps.setInt(idx++, rangeMinutes);
+                    for (String sqlId : sqlIds) ps.setString(idx++, sqlId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            // ORDER BY sql_id, cnt DESC라 각 sql_id의 첫 행이 최빈 카테고리 - 이미 있으면 건너뜀.
+                            dominantCategory.putIfAbsent(rs.getString("sql_id"), rs.getString("category"));
+                        }
+                    }
+                }
+                for (Map<String, Object> row : topSql) {
+                    String sqlId = (String) row.get("sql_id");
+                    // 5개 카테고리(§8.1) 전부 밖인 SQL(예: 표본이 전부 System I/O/Idle뿐)은 Other로 갈음.
+                    String category = dominantCategory.getOrDefault(sqlId, "Other");
+                    // 오케스트레이터 요청(2026-09-22): label을 SQL_ID 축약형("SQL-BU6BGF")이 아니라
+                    // 카테고리명 그대로 표시 - 범례/차트에서 바로 "CPU"/"Latch" 식으로 보이게 한다.
+                    row.put("label", category);
+                    row.put("category", category);
+                }
+            }
+
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT SYSDATE FROM dual")) {
+                rs.next();
+                dbNow = rs.getTimestamp(1).toLocalDateTime();
+            }
+
+            List<String> bucketLabels = generateAshBucketLabels(dbNow, rangeMinutes, stepMinutes);
+            List<Map<String, Object>> series = new ArrayList<>(bucketLabels.size());
+            double divisor = stepMinutes * 60.0;
+
+            if (topSql.isEmpty()) {
+                // 이 구간에 sql_id가 붙은 FOREGROUND 샘플 자체가 없었다는 뜻 - Other도 항상 0.
+                for (String label : bucketLabels) {
+                    Map<String, Object> point = new LinkedHashMap<>();
+                    point.put("time", label);
+                    point.put("values", Collections.singletonList(0.0));
+                    series.add(point);
+                }
+            } else {
+                List<String> sqlIds = new ArrayList<>();
+                for (Map<String, Object> row : topSql) sqlIds.add((String) row.get("sql_id"));
+                String placeholders = String.join(",", Collections.nCopies(sqlIds.size(), "?"));
+
+                String seriesQuery = "SELECT TO_CHAR(bucket_time, 'YYYY-MM-DD\"T\"HH24:MI:\"00\"') AS bucket_label, bucket_key, COUNT(*) AS cnt " +
+                        "FROM (" +
+                        "SELECT TRUNC(CAST(h.sample_time AS DATE)) + FLOOR((CAST(h.sample_time AS DATE) - TRUNC(CAST(h.sample_time AS DATE))) * 1440 / ?) * (? / 1440) AS bucket_time, " +
+                        "CASE WHEN h.sql_id IN (" + placeholders + ") THEN h.sql_id ELSE 'OTHER' END AS bucket_key " +
+                        "FROM v$active_session_history h " +
+                        "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
+                        "WHERE h.sample_time >= SYSDATE - (? / 1440) " +
+                        "AND h.session_type = 'FOREGROUND' " +
+                        "AND h.sql_id IS NOT NULL " +
+                        monitoringFilter +
+                        ") GROUP BY bucket_time, bucket_key ORDER BY bucket_time";
+
+                Map<String, Map<String, Long>> raw = new LinkedHashMap<>();
+                try (PreparedStatement ps = conn.prepareStatement(seriesQuery)) {
+                    ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                    int idx = 1;
+                    ps.setInt(idx++, stepMinutes);
+                    ps.setInt(idx++, stepMinutes);
+                    for (String sqlId : sqlIds) ps.setString(idx++, sqlId);
+                    ps.setInt(idx++, rangeMinutes);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            raw.computeIfAbsent(rs.getString("bucket_label"), k -> new LinkedHashMap<>())
+                                    .put(rs.getString("bucket_key"), rs.getLong("cnt"));
+                        }
+                    }
+                }
+
+                for (String label : bucketLabels) {
+                    Map<String, Long> counts = raw.getOrDefault(label, Collections.emptyMap());
+                    List<Double> values = new ArrayList<>(sqlIds.size() + 1);
+                    for (String sqlId : sqlIds) {
+                        long cnt = counts.getOrDefault(sqlId, 0L);
+                        values.add(Math.round((cnt / divisor) * 100.0) / 100.0);
+                    }
+                    long otherCnt = counts.getOrDefault("OTHER", 0L);
+                    values.add(Math.round((otherCnt / divisor) * 100.0) / 100.0);
+                    Map<String, Object> point = new LinkedHashMap<>();
+                    point.put("time", label);
+                    point.put("values", values);
+                    series.add(point);
+                }
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("range_minutes", rangeMinutes);
+            result.put("step_minutes", stepMinutes);
+            result.put("sql_categories", topSql);
+            result.put("series", series);
+            return result;
+        }
+    }
+
+    // ---------------------------------------------------------------- ash_other_breakdown
+    // "Other" 드릴다운(설계문서 §9, 5단계 - 2026-09-22, 원본 DBAgent-Java에서 포팅) - Top SQL 그래프의
+    // Other(Top5 밖 전체)를 클릭했을 때, 그 안에 뭉쳐 있던 SQL들의 순위를 다시 펼쳐 보여준다. §9.2
+    // 방식대로 이미 프론트가 들고 있는 Top5 SQL_ID 목록을 그대로 제외 목록으로 받는다(서버가 재산정
+    // 하지 않음 - 프론트 차트와 항상 같은 Top5 기준을 쓰기 위해). excludeSqlIds는 0~5개 아무 길이나
+    // 올 수 있으므로("Top5 미만" 케이스, 체크리스트 5단계 항목) NOT IN 절의 바인드 개수를 항상 실제
+    // 길이에 맞춰 동적으로 만든다 - 고정 5개를 가정한 §9.2 예시 쿼리를 그대로 쓰면 Top5가 5개 미만일
+    // 때 바인드 개수 불일치로 깨진다.
+    public Map<String, Object> getAshOtherBreakdown(TargetDbConfig target, String startTime, String endTime, List<String> excludeSqlIds) throws SQLException {
+        String monitoringFilter = "AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ") ";
+        String excludeClause = "";
+        if (excludeSqlIds != null && !excludeSqlIds.isEmpty()) {
+            String placeholders = String.join(",", Collections.nCopies(excludeSqlIds.size(), "?"));
+            excludeClause = "AND h.sql_id NOT IN (" + placeholders + ") ";
+        }
+
+        // SUM(cnt)/COUNT(*) OVER ()는 ROW_NUMBER로 상위 10건만 골라내는 바깥 WHERE 필터보다 먼저(같은
+        // 뷰 안에서) 계산되므로, 반환되는 10행 각각이 이미 "tail 전체"의 합계/개수를 들고 있다 - 즉
+        // 이 한 번의 쿼리로 상위 10건 랭킹과 "표시 안 된 나머지" 집계(§9.3 "이 외 N개 SQL...")를
+        // 동시에 구할 수 있어 쿼리를 2번 돌릴 필요가 없다.
+        String query = "WITH tail AS (" +
+                "SELECT h.sql_id AS sql_id, COUNT(*) AS cnt " +
+                "FROM v$active_session_history h " +
+                "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
+                "WHERE h.sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') " +
+                "AND h.session_type = 'FOREGROUND' " +
+                "AND h.sql_id IS NOT NULL " +
+                excludeClause +
+                monitoringFilter +
+                "GROUP BY h.sql_id" +
+                ") SELECT sql_id, cnt, total_cnt, distinct_count FROM (" +
+                "SELECT sql_id, cnt, " +
+                "SUM(cnt) OVER () AS total_cnt, " +
+                "COUNT(*) OVER () AS distinct_count, " +
+                "ROW_NUMBER() OVER (ORDER BY cnt DESC) AS rn " +
+                "FROM tail" +
+                ") WHERE rn <= 10 ORDER BY rn";
+
+        List<Map<String, Object>> items = new ArrayList<>();
+        long totalCnt = 0;
+        long distinctCount = 0;
+        try (Connection conn = poolManager.getConnection(target)) {
+            try (PreparedStatement ps = conn.prepareStatement(query)) {
+                ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                int idx = 1;
+                ps.setString(idx++, startTime);
+                ps.setString(idx++, endTime);
+                if (excludeSqlIds != null) {
+                    for (String sqlId : excludeSqlIds) ps.setString(idx++, sqlId);
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("sql_id", rs.getString("sql_id"));
+                        row.put("cnt", rs.getLong("cnt"));
+                        items.add(row);
+                        totalCnt = rs.getLong("total_cnt");
+                        distinctCount = rs.getLong("distinct_count");
+                    }
+                }
+            }
+
+            if (!items.isEmpty()) {
+                List<String> shownIds = new ArrayList<>();
+                for (Map<String, Object> row : items) shownIds.add((String) row.get("sql_id"));
+                String placeholders = String.join(",", Collections.nCopies(shownIds.size(), "?"));
+
+                // §3.1과 같은 판정 기준(Sys I/O 제외, §8.1) - getAshTopSql()의 카테고리 조회와 동일 패턴.
+                Map<String, String> dominantCategory = new LinkedHashMap<>();
+                String categoryQuery = "SELECT sql_id, category, cnt FROM (" +
+                        "SELECT h.sql_id AS sql_id, " +
+                        "CASE " +
+                        "WHEN h.session_state = 'ON CPU' THEN 'CPU' " +
+                        "WHEN h.event LIKE 'latch%' THEN 'Latch' " +
+                        "WHEN h.wait_class = 'User I/O' THEN 'User I/O' " +
+                        "WHEN h.event LIKE 'enq: TX%' THEN 'TX Lock' " +
+                        "WHEN h.event LIKE 'enq: TM%' THEN 'TM Lock' " +
+                        "ELSE NULL END AS category, " +
+                        "COUNT(*) AS cnt " +
+                        "FROM v$active_session_history h " +
+                        "WHERE h.sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') " +
+                        "AND h.sql_id IN (" + placeholders + ") " +
+                        "GROUP BY h.sql_id, CASE " +
+                        "WHEN h.session_state = 'ON CPU' THEN 'CPU' " +
+                        "WHEN h.event LIKE 'latch%' THEN 'Latch' " +
+                        "WHEN h.wait_class = 'User I/O' THEN 'User I/O' " +
+                        "WHEN h.event LIKE 'enq: TX%' THEN 'TX Lock' " +
+                        "WHEN h.event LIKE 'enq: TM%' THEN 'TM Lock' " +
+                        "ELSE NULL END" +
+                        ") WHERE category IS NOT NULL ORDER BY sql_id, cnt DESC";
+                try (PreparedStatement ps = conn.prepareStatement(categoryQuery)) {
+                    ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                    int idx = 1;
+                    ps.setString(idx++, startTime);
+                    ps.setString(idx++, endTime);
+                    for (String sqlId : shownIds) ps.setString(idx++, sqlId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            dominantCategory.putIfAbsent(rs.getString("sql_id"), rs.getString("category"));
+                        }
+                    }
+                }
+
+                long shownCnt = 0;
+                for (Map<String, Object> row : items) {
+                    String sqlId = (String) row.get("sql_id");
+                    long cnt = (Long) row.get("cnt");
+                    shownCnt += cnt;
+                    // 오케스트레이터 요청(2026-09-22): label을 SQL_ID 축약형이 아니라 카테고리명 그대로
+                    // 표시 - getAshTopSql()과 동일 규칙(순위 리스트에서 "SQL-XXXXXX" 대신 "CPU"/"Latch" 식).
+                    String category = dominantCategory.getOrDefault(sqlId, "Other");
+                    row.put("label", category);
+                    row.put("category", category);
+                    row.put("pct", totalCnt > 0 ? Math.round((cnt / (double) totalCnt) * 1000.0) / 10.0 : 0.0);
+                    row.remove("cnt");
+                }
+                // §9.3 "이 외 N개 SQL이 약 X AAS를 차지" - 표시된 상위 10건을 뺀 나머지.
+                long tailCnt = totalCnt - shownCnt;
+                long tailCount = distinctCount - items.size();
+                double divisor = windowSeconds(startTime, endTime);
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("window_start", startTime);
+                result.put("window_end", endTime);
+                result.put("other_total_aas", divisor > 0 ? Math.round((totalCnt / divisor) * 100.0) / 100.0 : 0.0);
+                result.put("items", items);
+                result.put("tail_count", Math.max(0, tailCount));
+                result.put("tail_aas", divisor > 0 ? Math.round((Math.max(0, tailCnt) / divisor) * 100.0) / 100.0 : 0.0);
+                return result;
+            }
+        }
+
+        Map<String, Object> emptyResult = new LinkedHashMap<>();
+        emptyResult.put("window_start", startTime);
+        emptyResult.put("window_end", endTime);
+        emptyResult.put("other_total_aas", 0.0);
+        emptyResult.put("items", items);
+        emptyResult.put("tail_count", 0);
+        emptyResult.put("tail_aas", 0.0);
+        return emptyResult;
+    }
+
+    // startTime/endTime('yyyy-MM-dd"T"HH24:MI' 형식) 사이 초 단위 길이 - ASH 1초 샘플링 기준으로
+    // count를 AAS로 정규화할 때 쓴다(getAshOtherBreakdown 전용 - 다른 곳은 고정 step 버킷이라
+    // stepMinutes*60을 그대로 쓰면 되지만, 여긴 임의 길이의 드래그 구간이라 직접 계산해야 함).
+    private double windowSeconds(String startTime, String endTime) {
+        try {
+            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm");
+            LocalDateTime start = LocalDateTime.parse(startTime, fmt);
+            LocalDateTime end = LocalDateTime.parse(endTime, fmt);
+            return Math.max(1, Duration.between(start, end).getSeconds());
+        } catch (Exception e) {
+            return 60.0;
+        }
+    }
+
+    // 0-패딩 버킷 시작/끝 계산 - getAshActivity()/getAshTopSql()이 공유한다(DB의 SYSDATE 기준이어야
+    // 하는 이유는 getAshActivity() 쪽 주석 참고 - 로컬 테스트에서 실제로 겪은 시간대 불일치 버그).
+    private List<String> generateAshBucketLabels(LocalDateTime dbNow, int rangeMinutes, int stepMinutes) {
+        int totalMinutesToday = dbNow.getHour() * 60 + dbNow.getMinute();
+        int flooredTotalMinutes = (totalMinutesToday / stepMinutes) * stepMinutes;
+        LocalDateTime endBucket = dbNow.toLocalDate().atStartOfDay().plusMinutes(flooredTotalMinutes);
+        int bucketCount = (int) Math.ceil(rangeMinutes / (double) stepMinutes);
+        LocalDateTime startBucket = endBucket.minusMinutes((long) stepMinutes * (bucketCount - 1));
+        DateTimeFormatter labelFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:00");
+        List<String> labels = new ArrayList<>(bucketCount);
+        for (int i = 0; i < bucketCount; i++) {
+            labels.add(startBucket.plusMinutes((long) stepMinutes * i).format(labelFmt));
+        }
+        return labels;
+    }
+
+    // ---------------------------------------------------------------- ash_session_detail
+    // Top SQL Activity Timeline 드래그→세션 상세(설계문서 §8.4, 4단계 - 2026-09-22, 원본
+    // DBAgent-Java에서 포팅)의 데이터 소스. 기존 getHistorySessions()(/api/history_sessions, "성능
+    // 이력 조회" 화면용)를 재사용하지 않는다 - 그 쿼리는 elapsed>=3초 AND exec_count>=100인 "튜닝
+    // 후보"만 걸러내는 화면 전용 필터가 있어서, 일반적인 드래그 드릴다운에 쓰면 대부분 빈 결과가
+    // 나온다(4단계 착수 전 검토에서 발견). 그래서 같은 필터 없이 구간 내 세션을 SID당 최신 샘플 1건으로
+    // 보여주는 전용 쿼리를 새로 둔다. 응답 필드명은 session-list.html이 그대로 기대하는 이름(sid/
+    // serial/sql_id/capture_time/duration_time/program_name/username/db_name)과 맞춰, 프론트에서
+    // 별도 매핑 없이 기존 showSelectedSessionsPopup()에 바로 넘길 수 있게 한다.
+    public List<Map<String, Object>> getAshSessionDetail(TargetDbConfig target, String startTime, String endTime) throws SQLException {
+        // getHistorySessions()와 동일한 NVL(sql_exec_start, sample_time)/sample_time 기준 경과시간
+        // 계산 - design-advisor 검토(2026-09-22)가 지적한 "SYSDATE 기준으로 계산하면 과거 구간의
+        // 경과시간이 부풀려진다"는 결함을 처음부터 피한다.
+        String query = "SELECT sid, serial, sql_id, event_name, capture_time, duration_time, program_name, username, db_name FROM (" +
+                "SELECT h.session_id AS sid, h.session_serial# AS serial, h.sql_id AS sql_id, " +
+                "NVL(h.event, 'ON CPU') AS event_name, " +
+                "TO_CHAR(h.sample_time, 'YYYY-MM-DD HH24:MI:SS') AS capture_time, " +
+                "ROUND((CAST(h.sample_time AS DATE) - CAST(NVL(h.sql_exec_start, h.sample_time) AS DATE)) * 86400, 2) AS duration_time, " +
+                "h.program AS program_name, u.username AS username, " +
+                "(SELECT instance_name FROM v$instance) AS db_name, " +
+                "ROW_NUMBER() OVER (PARTITION BY h.session_id ORDER BY h.sample_time DESC) AS rn " +
+                "FROM v$active_session_history h " +
+                "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
+                "WHERE h.sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') " +
+                "AND h.session_type = 'FOREGROUND' " +
+                "AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ")" +
+                ") WHERE rn = 1 ORDER BY capture_time DESC";
+
+        List<Map<String, Object>> sessions = new ArrayList<>();
+        try (Connection conn = poolManager.getConnection(target);
+             PreparedStatement ps = conn.prepareStatement(query)) {
+            ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+            ps.setString(1, startTime);
+            ps.setString(2, endTime);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("sid", rs.getObject("sid"));
+                    row.put("serial", rs.getObject("serial"));
+                    row.put("sql_id", rs.getString("sql_id"));
+                    row.put("event_name", rs.getString("event_name"));
+                    row.put("capture_time", rs.getString("capture_time"));
+                    Object duration = rs.getObject("duration_time");
+                    row.put("duration_time", duration == null ? 0 : Math.max(0, ((Number) duration).doubleValue()));
+                    row.put("program_name", rs.getString("program_name"));
+                    row.put("username", rs.getString("username"));
+                    row.put("db_name", rs.getString("db_name"));
+                    sessions.add(row);
+                }
             }
         }
         return sessions;

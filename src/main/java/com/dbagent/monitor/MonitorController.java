@@ -91,7 +91,10 @@ public class MonitorController {
     }
 
     private long metricHistoryRangeMillis(String range) {
+        // "6h"는 Active Session Wait Class 차트 6단계(설계문서 §0 결정, 자체 수집 경로 -
+        // 2026-09-22)가 추가 - 기존 1h/24h/7d(v2 CpuDbTimeLineChart/LockTrendChart)는 그대로.
         switch (range) {
+            case "6h": return TimeUnit.HOURS.toMillis(6);
             case "24h": return TimeUnit.HOURS.toMillis(24);
             case "7d": return TimeUnit.DAYS.toMillis(7);
             default: return TimeUnit.HOURS.toMillis(1);
@@ -165,6 +168,61 @@ public class MonitorController {
         }
         try {
             return ResponseEntity.ok(monitorService.getSessionExtra(target));
+        } catch (SQLException e) {
+            return dbError(e);
+        }
+    }
+
+    // "Current Session" 화면 Active Session Wait Class 차트(설계문서 `Current Session 매뉴
+    // active_session 차트 개편.md` 1단계, 2026-09-22 - 원본 DBAgent-Java에서 포팅) - 30분/1시간만
+    // 지원. 6시간/24시간(AWR 소스)은 문서 §0 결정에 따라 이후 단계(6단계)에서 추가 예정이라 여기서는
+    // 명시적으로 거부한다.
+    @GetMapping("/ash_activity")
+    public ResponseEntity<Object> ashActivity(@RequestParam(required = false) String db_id,
+                                               @RequestParam(required = false) String token,
+                                               @RequestParam(name = "range_minutes", required = false, defaultValue = "60") int rangeMinutes,
+                                               @RequestParam(name = "step_minutes", required = false, defaultValue = "1") int stepMinutes) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        if (rangeMinutes != 30 && rangeMinutes != 60) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "range_minutes must be 30 or 60 (1단계 구현 범위)"));
+        }
+        if (stepMinutes != 1) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "step_minutes must be 1 (1단계 구현 범위)"));
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null) {
+            return dbNotFound();
+        }
+        try {
+            return ResponseEntity.ok(monitorService.getAshActivity(target, rangeMinutes, stepMinutes));
+        } catch (SQLException e) {
+            return dbError(e);
+        }
+    }
+
+    // Top SQL Activity Timeline(설계문서 §8, 3단계 - 2026-09-22) - ash_activity와 같은 range/step 제약.
+    @GetMapping("/ash_top_sql")
+    public ResponseEntity<Object> ashTopSql(@RequestParam(required = false) String db_id,
+                                             @RequestParam(required = false) String token,
+                                             @RequestParam(name = "range_minutes", required = false, defaultValue = "60") int rangeMinutes,
+                                             @RequestParam(name = "step_minutes", required = false, defaultValue = "1") int stepMinutes) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        if (rangeMinutes != 30 && rangeMinutes != 60) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "range_minutes must be 30 or 60 (1단계 구현 범위)"));
+        }
+        if (stepMinutes != 1) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "step_minutes must be 1 (1단계 구현 범위)"));
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null) {
+            return dbNotFound();
+        }
+        try {
+            return ResponseEntity.ok(monitorService.getAshTopSql(target, rangeMinutes, stepMinutes));
         } catch (SQLException e) {
             return dbError(e);
         }
@@ -597,6 +655,66 @@ public class MonitorController {
         }
         try {
             return ResponseEntity.ok(monitorService.getHistorySessions(target, startTime, endTime, users, machines));
+        } catch (SQLException e) {
+            return dbError(e);
+        }
+    }
+
+    // Top SQL Activity Timeline 드래그→세션 상세(설계문서 §8.4, 4단계 - 2026-09-22). getHistorySessions와
+    // 달리 튜닝 후보 필터(elapsed>=3초, exec_count>=100)가 없다 - 왜 재사용하지 않았는지는
+    // MonitorService.getAshSessionDetail() 주석 참고.
+    @GetMapping("/ash_session_detail")
+    public ResponseEntity<Object> ashSessionDetail(
+            @RequestParam(required = false) String db_id,
+            @RequestParam(required = false) String token,
+            @RequestParam(name = "start_time", required = false) String startTime,
+            @RequestParam(name = "end_time", required = false) String endTime) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        if (startTime == null || endTime == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "start_time and end_time are required"));
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null) {
+            return dbNotFound();
+        }
+        try {
+            return ResponseEntity.ok(monitorService.getAshSessionDetail(target, startTime, endTime));
+        } catch (SQLException e) {
+            return dbError(e);
+        }
+    }
+
+    // "Other" 드릴다운(설계문서 §9, 5단계 - 2026-09-22) - exclude_sql_ids는 프론트가 이미 들고 있는
+    // Top SQL Activity Timeline의 sql_categories 목록을 그대로 콤마로 이어 붙여 보낸다(§9.2 - 서버가
+    // Top5를 다시 산정하지 않고 프론트와 같은 기준을 그대로 씀). 0~5개 아무 길이나 허용.
+    @GetMapping("/ash_other_breakdown")
+    public ResponseEntity<Object> ashOtherBreakdown(
+            @RequestParam(required = false) String db_id,
+            @RequestParam(required = false) String token,
+            @RequestParam(name = "start_time", required = false) String startTime,
+            @RequestParam(name = "end_time", required = false) String endTime,
+            @RequestParam(name = "exclude_sql_ids", required = false) String excludeSqlIds) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return dbAccessDenied();
+        }
+        if (startTime == null || endTime == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "start_time and end_time are required"));
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null) {
+            return dbNotFound();
+        }
+        List<String> excludeList = new ArrayList<>();
+        if (excludeSqlIds != null && !Strings.isBlank(excludeSqlIds)) {
+            for (String id : excludeSqlIds.split(",")) {
+                String trimmed = id.trim();
+                if (!trimmed.isEmpty()) excludeList.add(trimmed);
+            }
+        }
+        try {
+            return ResponseEntity.ok(monitorService.getAshOtherBreakdown(target, startTime, endTime, excludeList));
         } catch (SQLException e) {
             return dbError(e);
         }
