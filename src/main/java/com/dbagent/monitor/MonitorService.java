@@ -678,9 +678,20 @@ public class MonitorService {
     public List<Map<String, Object>> getActiveAlerts(TargetDbConfig target) throws SQLException {
         List<Map<String, Object>> alerts = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+            // v$lock 스캔 전용 lockSt에만 타임아웃이 걸려 있고 이 st(temp tablespace 스캔, 장시간 쿼리
+            // 카운트)엔 없었다 - 오케스트레이터 실측(2026-09-22, patent_integ_1/2): 다른 API는 전부
+            // 정상인데 active_alerts만 계속 pending으로 남아 v2 in-flight 가드(iv2FetchInFlightDbIds)가
+            // 영원히 안 풀리고 그 DB 전체 화면이 먹통이 됨 - 네트워크 read timeout(60초)만으로는 부족해서
+            // 같은 짧은 타임아웃을 여기도 건다. 타임아웃 나면 SQLException으로 dbError() 응답이 나가
+            // 프런트 finally가 가드를 정상적으로 풀어준다(영구 hang보다 "그 알림만 잠깐 비어보임"이 낫다).
+            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            // v$temp_space_header 대신 dba_temp_free_space 사용(오케스트레이터 지적, 2026-09-22): 전자는
+            // 파일 헤더의 익스텐트 하이워터마크 기준이라 TEMP 세그먼트가 반납된 뒤에도 안 줄어드는 등
+            // 실제 사용량과 어긋날 수 있다. 후자(allocated_space - free_space)가 실사용량 기준.
             try (ResultSet rs = st.executeQuery(
-                    "SELECT tablespace_name, ROUND(SUM(bytes_used) / SUM(bytes_used + bytes_free) * 100, 1) as pct " +
-                            "FROM v$temp_space_header GROUP BY tablespace_name")) {
+                    "SELECT tablespace_name, " +
+                            "ROUND((GREATEST(allocated_space - free_space, 0) / NULLIF(allocated_space, 0)) * 100, 1) as pct " +
+                            "FROM dba_temp_free_space")) {
                 while (rs.next()) {
                     double pct = rs.getDouble("pct");
                     if (pct >= TEMP_TABLESPACE_CRITICAL_PCT) {
@@ -708,8 +719,13 @@ public class MonitorService {
             try (Statement lockSt = conn.createStatement()) {
                 lockSt.setQueryTimeout(lockQueryTimeoutSeconds);
                 try (ResultSet rs = lockSt.executeQuery(
+                        // dba_objects join 제거(오케스트레이터 실측, 2026-09-22, 11g patent_integ_1/2):
+                        // 이 쿼리는 o의 컬럼을 하나도 안 쓰는데(TM lock은 항상 실제 object에 걸리므로
+                        // object 존재 확인 자체가 불필요), 딕셔너리 뷰 조인만 더해 11g에서 이 쿼리가
+                        // 아예 응답 없이 블로킹되는 원인이었다(SQL*Plus로 직접 실행해도 무응답 확인,
+                        // dba_objects join 빼고 실행하면 빠름).
                         "SELECT DISTINCT s.sid FROM v$session s " +
-                                "JOIN v$lock l ON s.sid = l.sid JOIN dba_objects o ON l.id1 = o.object_id " +
+                                "JOIN v$lock l ON s.sid = l.sid " +
                                 "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
                                 "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid) AND ROWNUM <= 3")) {
                     while (rs.next()) {
@@ -1036,12 +1052,15 @@ public class MonitorService {
 
     // ----------------------------------------------------------- failure_prob
     public Map<String, Object> getFailureProb(TargetDbConfig target) throws SQLException {
+        // dba_objects join 제거(오케스트레이터 실측, 2026-09-22, 11g patent_integ_1/2) - getActiveAlerts()의
+        // 같은 패턴 쿼리와 동일한 이유: o의 컬럼을 하나도 안 쓰면서 딕셔너리 뷰 조인만 더해 11g에서
+        // 무응답으로 블로킹되던 원인이었다.
         String query = "SELECT count(distinct s.sid) FROM v$session s " +
-                "JOIN v$lock l ON s.sid = l.sid JOIN dba_objects o ON l.id1 = o.object_id " +
+                "JOIN v$lock l ON s.sid = l.sid " +
                 "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
                 "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_instance = s.inst_id AND w.blocking_session = s.sid)";
         String fallbackQuery = "SELECT /*+ rule */ count(distinct s.sid) FROM v$session s " +
-                "JOIN v$lock l ON s.sid = l.sid JOIN dba_objects o ON l.id1 = o.object_id " +
+                "JOIN v$lock l ON s.sid = l.sid " +
                 "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
                 "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid)";
 

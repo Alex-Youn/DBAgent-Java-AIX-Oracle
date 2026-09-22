@@ -381,6 +381,34 @@ public class MonitorController {
         }
     }
 
+    // fleet_status와 같은 이유로 같은 패턴(withTimeout + 전용 executor + db_id별 in-flight dedupe)을
+    // 쓴다 - 오케스트레이터 실측(2026-09-22, 11g 인스턴스 patent_integ_1/2): getActiveAlerts() 내부
+    // v$lock/dba_objects 조인 쿼리가 락 대기로 블로킹되면 이미 걸려 있던 Statement.setQueryTimeout()도
+    // 취소를 못 시킨다(SQL*Plus로 직접 돌려도 응답 없음 확인) - JDBC 레벨 쿼리 타임아웃은 세션이 CPU를
+    // 쓰며 도는 동안만 신뢰할 수 있고, 락 대기로 멈춰있으면 취소 신호 자체가 처리 안 된다. v2가 10초
+    // 간격으로 폴링하는데 이 하나가 안 풀리면 iv2FetchInFlightDbIds 가드가 영원히 안 풀려 그 DB 전체
+    // 화면이 먹통된다 - 그래서 쿼리를 못 끊는 대신 "호출자가 기다리는 것"만이라도 끊는다.
+    private static final ExecutorService ACTIVE_ALERTS_EXECUTOR = Executors.newCachedThreadPool();
+
+    @Value("${dbagent.monitor.active-alerts-timeout-seconds:5}")
+    private long activeAlertsTimeoutSeconds;
+
+    private final Map<String, CompletableFuture<List<Map<String, Object>>>> activeAlertsInFlight = new ConcurrentHashMap<>();
+
+    private CompletableFuture<List<Map<String, Object>>> activeAlertsFor(TargetDbConfig target) {
+        return activeAlertsInFlight.computeIfAbsent(target.id(), id -> {
+            CompletableFuture<List<Map<String, Object>>> f = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return monitorService.getActiveAlerts(target);
+                } catch (SQLException e) {
+                    throw new CompletionException(e);
+                }
+            }, ACTIVE_ALERTS_EXECUTOR);
+            f.whenComplete((result, error) -> activeAlertsInFlight.remove(id, f));
+            return f;
+        });
+    }
+
     @GetMapping("/active_alerts")
     public ResponseEntity<Object> activeAlerts(@RequestParam(required = false) String db_id,
                                                 @RequestParam(required = false) String token) {
@@ -392,9 +420,24 @@ public class MonitorController {
             return dbNotFound();
         }
         try {
-            return ResponseEntity.ok(monitorService.getActiveAlerts(target));
-        } catch (SQLException e) {
-            return dbError(e);
+            List<Map<String, Object>> alerts =
+                    withTimeout(activeAlertsFor(target), activeAlertsTimeoutSeconds, TimeUnit.SECONDS).join();
+            return ResponseEntity.ok(alerts);
+        } catch (CompletionException ex) {
+            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            if (cause instanceof TimeoutException) {
+                // getActiveAlerts() 내부의 개별 쿼리 3개도 각자 실패하면 그 알림만 조용히 생략하는
+                // 정책이다(코드 내 catch(SQLException ignored) 참고) - 여기서도 같은 정책을 outer
+                // 레벨에서 한 번 더 적용: "못 걷었다"를 "알림 없음"으로 접는다. 안 풀린 쿼리 자체는
+                // ACTIVE_ALERTS_EXECUTOR 스레드에서 계속 돌다가 나중에 끝나든 안 끝나든 다음 폴링과는
+                // 무관하다(활성 alert dedupe map에서 이미 빠짐).
+                log.warn("active_alerts timed out after {}s for db_id={}", activeAlertsTimeoutSeconds, db_id);
+                return ResponseEntity.ok(Lists.of());
+            }
+            if (cause instanceof SQLException) {
+                return dbError((SQLException) cause);
+            }
+            throw ex;
         }
     }
 
@@ -483,6 +526,27 @@ public class MonitorController {
         }
     }
 
+    // active_alerts와 같은 이유(같은 v$lock 조인 패턴, 같은 Promise.all에 걸린 v2 위젯)로 같은 패턴을
+    // 쓴다 - dba_objects join은 제거했지만(MonitorService.getFailureProb), 다른 환경에서 또 다른 원인
+    // 으로 느려질 가능성까지 막으려면 호출자 쪽 타임아웃도 필요하다.
+    private static final ExecutorService FAILURE_PROB_EXECUTOR = Executors.newCachedThreadPool();
+
+    private final Map<String, CompletableFuture<Map<String, Object>>> failureProbInFlight = new ConcurrentHashMap<>();
+
+    private CompletableFuture<Map<String, Object>> failureProbFor(TargetDbConfig target) {
+        return failureProbInFlight.computeIfAbsent(target.id(), id -> {
+            CompletableFuture<Map<String, Object>> f = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return monitorService.getFailureProb(target);
+                } catch (SQLException e) {
+                    throw new CompletionException(e);
+                }
+            }, FAILURE_PROB_EXECUTOR);
+            f.whenComplete((result, error) -> failureProbInFlight.remove(id, f));
+            return f;
+        });
+    }
+
     @GetMapping("/failure_prob")
     public ResponseEntity<Object> failureProb(@RequestParam(required = false) String db_id,
                                                @RequestParam(required = false) String token) {
@@ -494,9 +558,22 @@ public class MonitorController {
             return dbNotFound();
         }
         try {
-            return ResponseEntity.ok(monitorService.getFailureProb(target));
-        } catch (SQLException e) {
-            return dbError(e);
+            Map<String, Object> result =
+                    withTimeout(failureProbFor(target), activeAlertsTimeoutSeconds, TimeUnit.SECONDS).join();
+            return ResponseEntity.ok(result);
+        } catch (CompletionException ex) {
+            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            if (cause instanceof TimeoutException) {
+                // 장애조치 버튼은 "이상 없음"보다 "판단 보류"가 안전하다 - count=0으로 응답하면 실제
+                // 장애가 있어도 버튼이 숨어 놓친 것처럼 보인다. !res.ok 경로(app.js fetchIncidentGateV2)를
+                // 타게 해서 버튼을 숨기고 다음 폴링에서 다시 시도하게 한다.
+                log.warn("failure_prob timed out after {}s for db_id={}", activeAlertsTimeoutSeconds, db_id);
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Maps.of("error", "조회 시간 초과"));
+            }
+            if (cause instanceof SQLException) {
+                return dbError((SQLException) cause);
+            }
+            throw ex;
         }
     }
 

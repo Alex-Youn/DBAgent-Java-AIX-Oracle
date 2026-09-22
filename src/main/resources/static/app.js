@@ -3059,6 +3059,14 @@ let layoutHTML = "";
         let iv2TxSparkChart = null;
         let iv2Range = '1h';
         let iv2LastAlerts = [];
+        let iv2LastInstanceName = '';
+        // iv2LastInstanceName이 어느 db_id에서 채워진 값인지 - DB 전환 직후엔 fetchInstanceOverviewV2()와
+        // fetchActiveSessionV2()가 같은 Promise.all로 동시에 새 dbId를 요청하지만 응답 처리 순서는 보장되지
+        // 않는다(오케스트레이터 실측, 2026-09-22) - fetchActiveSessionV2()가 먼저 끝나면 아직 이전 DB의
+        // instanceName이 남아있는 iv2LastInstanceName을 그대로 보여줘 "세션 목록은 새 DB인데 라벨은 옛
+        // DB"인 상태가 잠깐 뜬다. dbId가 일치할 때만 신뢰하고, 다르면(=아직 새 DB 값으로 안 채워짐) 값이
+        // 없는 것처럼 취급해 로그인 직후 첫 폴링과 동일한 정책(비워두고 다음 폴링에 채움)을 적용한다.
+        let iv2LastInstanceNameDbId = '';
         let iv2LastTmVal = 0;
         let iv2LastTxVal = 0;
         // UI-2(v3) Lock 현황 카드처럼 미니 스파크라인을 그리기 위한 클라이언트 쪽 롤링 버퍼 - 서버
@@ -3185,15 +3193,48 @@ let layoutHTML = "";
             return (bytes / (1024 * 1024 * 1024)).toFixed(1) + 'G';
         }
 
+        // 6개 v2 위젯 fetch가 fetchInstanceDashboardV2()의 Promise.all로 묶여있어, 그 중 하나가 응답
+        // 없이 멈추면 iv2FetchInFlightDbIds 가드가 영원히 안 풀려 그 DB 전체 화면이 먹통된다(오케스트
+        // 레이터 실측, 2026-09-22: activeAlerts가 특정 인스턴스에서 pending 상태로 무한 대기). 백엔드
+        // 쪽 쿼리에 타임아웃을 걸었지만(MonitorService.getActiveAlerts), 브라우저 fetch()엔 원래
+        // 타임아웃이 없어서 이중 방어로 8초(10초 폴링 주기보다 짧게)에서 끊는다.
+        function iv2Fetch(url) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8000);
+            return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+        }
+
+        // fetchInstanceOverviewV2()와 fetchActiveSessionV2()가 둘 다 iv2-session-db-name을 그리는데,
+        // 각자 자기 완료 시점에 딱 한 번만 그리고 끝나면 둘 중 먼저 끝난 쪽 기준으로 그 사이클이
+        // 굳어버린다 - instance_overview가 하위 쿼리 9개라 session보다 항상 느려서(오케스트레이터
+        // 실측, 2026-09-22: DB 전환해도 라벨이 다음 10초 폴링까지 안 뜸), session이 먼저 끝나 아직 안
+        // 채워진 값으로 빈 라벨을 그린 뒤, instance_overview가 나중에 값을 채워도 재렌더링할 계기가
+        // 없었다. 둘 다 완료 시점에 이 함수를 불러 "지금 window.currentDbId 기준 최신값"으로 다시
+        // 그리게 하면, 둘 중 나중에 끝나는 쪽이 항상 최종 렌더를 맡아 그 사이클 안에 수렴한다.
+        function iv2RenderSessionDbNameLabel() {
+            const dbNameEl = document.getElementById('iv2-session-db-name');
+            if (!dbNameEl) return;
+            const dbId = window.currentDbId || '';
+            const liveName = (iv2LastInstanceNameDbId === dbId) ? iv2LastInstanceName : '';
+            dbNameEl.textContent = liveName ? `(${liveName})` : '';
+        }
+
         async function fetchInstanceOverviewV2() {
             const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/instance_overview?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            const res = await iv2Fetch(`/api/instance_overview?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
             if (!res.ok) return;
             const data = await res.json();
             if (data.error) return;
 
             const nameEl = document.getElementById('iv2-instance-name');
             if (nameEl) nameEl.textContent = data.instanceName || '--';
+            // Active Session 목록 라벨(fetchActiveSessionV2)이 공유하는 라이브 인스턴스명 - 세션 유무와
+            // 무관하게 매 폴링마다 조회되는 이 API가 유일하게 신뢰 가능한 소스다(오케스트레이터 실측,
+            // 2026-09-22: /api/session은 ACTIVE 세션이 0건이면 응답 배열이 비어서 db_name을 못 읽고
+            // dbId로 도로 폴백했었다).
+            iv2LastInstanceName = data.instanceName || '';
+            iv2LastInstanceNameDbId = dbId;
+            iv2RenderSessionDbNameLabel();
             const statusBadge = document.getElementById('iv2-status-badge');
             if (statusBadge) {
                 statusBadge.textContent = data.status || '--';
@@ -3240,7 +3281,7 @@ let layoutHTML = "";
 
         async function fetchTopWaitEventsV2() {
             const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/top_events?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            const res = await iv2Fetch(`/api/top_events?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
             if (!res.ok) return;
             const events = await res.json();
             if (!Array.isArray(events)) return;
@@ -3287,16 +3328,18 @@ let layoutHTML = "";
         // .clickable-session-row 델리게이트(app.js 하단)가 session-detail.html 팝업을 띄운다.
         async function fetchActiveSessionV2() {
             const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/session?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            const res = await iv2Fetch(`/api/session?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
             const listEl = document.getElementById('iv2-session-list');
             if (!listEl) return;
             if (!res.ok) return;
-            // 지금 이 목록이 실제로 어느 DB 것인지 눈으로 바로 확인하기 위한 표시(오케스트레이터 요청,
-            // 2026-09-22) - 상단 인스턴스명 배지와 달리 이 fetch가 실제로 성공해서 렌더링될 때만
-            // 갱신되므로, "위는 바뀌었는데 이 목록은 옛날 DB 것"인 상태를 구분할 수 있다.
-            const dbNameEl = document.getElementById('iv2-session-db-name');
-            if (dbNameEl) dbNameEl.textContent = dbId ? `(${dbId})` : '';
             const rows = await res.json();
+            // 지금 이 목록이 실제로 어느 DB 것인지 눈으로 바로 확인하기 위한 표시 - 실제 렌더링은
+            // iv2RenderSessionDbNameLabel() 공유 함수가 한다(위 선언부 주석 참고). 여기서도 한 번 더
+            // 불러주는 이유: fetchInstanceOverviewV2()가 이미 먼저 끝나 값을 채워놨을 수도 있는데, 그때
+            // 라벨을 그릴 계기가 이 fetch뿐이었을 수 있어서다(반대로 이 fetch가 먼저 끝나면 아직 값이
+            // 없어 빈 라벨로 그려졌다가, fetchInstanceOverviewV2()가 끝나며 다시 불러 올바른 값으로
+            // 덮어쓴다 - 두 fetch 중 나중에 끝나는 쪽이 항상 최종 렌더를 맡는다).
+            iv2RenderSessionDbNameLabel();
             const sessions = Array.isArray(rows)
                 ? rows.filter(s => s && s.status && s.status.trim().toUpperCase() === 'ACTIVE')
                 : [];
@@ -3315,7 +3358,7 @@ let layoutHTML = "";
 
         async function fetchActiveAlertsV2() {
             const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/active_alerts?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+            const res = await iv2Fetch(`/api/active_alerts?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
             const listEl = document.getElementById('iv2-alert-list');
             if (!res.ok) return;
             const alerts = await res.json();
@@ -3338,7 +3381,7 @@ let layoutHTML = "";
 
         async function fetchMetricHistoryV2() {
             const dbId = window.currentDbId || '';
-            const res = await fetch(`/api/metric_history?db_id=${dbId}&range=${iv2Range}&token=${encodeURIComponent(getToken())}`);
+            const res = await iv2Fetch(`/api/metric_history?db_id=${dbId}&range=${iv2Range}&token=${encodeURIComponent(getToken())}`);
             if (!res.ok) return;
             const data = await res.json();
             if (data.error) return;
@@ -3441,7 +3484,7 @@ let layoutHTML = "";
             if (!btn) return;
             const dbId = window.currentDbId || '';
             try {
-                const res = await fetch(`/api/failure_prob?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+                const res = await iv2Fetch(`/api/failure_prob?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
                 if (!res.ok) { btn.style.display = 'none'; return; }
                 const data = await res.json();
                 const count = (data && data.count !== undefined) ? data.count : 0;
