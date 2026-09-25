@@ -795,9 +795,13 @@ function getToken() {
         if (targetId === 'tablespace') {
             const btn = document.getElementById('tablespace-refresh-btn');
             if (btn) {
-                // Ensure we don't spam clicks if already fetching
+                // 같은 DB를 이미 조회 중이면 중복 클릭하지 않는다. 다만 조회 중인 DB와 지금 고른 DB가
+                // 다르면(체크리스트 7-1, 2026-09-25) 새 DB로 반드시 다시 요청한다 - 예전엔 "조회 중"이면
+                // 무조건 건너뛰어, 이전 DB 조회가 늦게 끝나며 그 값(전체 할당량/사용량/사용률 포함)이
+                // 새 DB 화면에 남는 버그가 있었다. 늦게 온 이전 DB 응답은 클릭 핸들러가 버린다.
                 const icon = btn.querySelector('i');
-                if (!icon || !icon.classList.contains('spinning')) {
+                const busy = icon && icon.classList.contains('spinning');
+                if (!busy || window.tablespaceInFlightDbId !== window.currentDbId) {
                     btn.click();
                 }
             }
@@ -1239,26 +1243,44 @@ let layoutHTML = "";
     const tsTbody = document.getElementById('tablespace-tbody');
 
     if (tsRefreshBtn && tsTbody) {
+        const tsTotalMbEl = document.getElementById('tablespace-total-mb');
+        const tsUsedMbEl = document.getElementById('tablespace-used-mb');
+        const tsTotalPctEl = document.getElementById('tablespace-total-pct');
+        const resetTablespaceTotals = () => {
+            if (tsTotalMbEl) tsTotalMbEl.textContent = '-- MB';
+            if (tsUsedMbEl) tsUsedMbEl.textContent = '-- MB';
+            if (tsTotalPctEl) tsTotalPctEl.textContent = '--%';
+        };
+        // 요청 세대 번호 - DB를 빠르게 바꾸면 이전 DB 응답이 나중에 도착할 수 있다. 가장 최근 요청의
+        // 응답만 화면에 반영하고, 나머지는 버린다(체크리스트 7-1, 2026-09-25).
+        let tsRequestSeq = 0;
+
         tsRefreshBtn.addEventListener('click', async () => {
+            // 조회 시작 즉시 목록과 합계를 함께 비운다 - 예전엔 목록만 비우고 합계(전체 할당량/사용량/
+            // 사용률)는 응답이 올 때까지 이전 DB 값이 그대로 남아 있었다(체크리스트 7-1).
+            tsTbody.innerHTML = '';
+            resetTablespaceTotals();
             if (!window.currentDbId) {
                 tsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 30px;">DB를 먼저 선택해주세요.</td></tr>';
                 return;
             }
+            const mySeq = ++tsRequestSeq;
+            const myDbId = window.currentDbId;
+            window.tablespaceInFlightDbId = myDbId;
+            const isStale = () => mySeq !== tsRequestSeq || myDbId !== window.currentDbId;
+
             const icon = tsRefreshBtn.querySelector('i');
             if (icon) icon.classList.add('spinning');
 
             const tsLoadingOverlay = document.getElementById('tablespace-loading-overlay');
             if (tsLoadingOverlay) tsLoadingOverlay.style.display = 'flex';
 
-            tsTbody.innerHTML = '';
-
             try {
-                const response = await fetch(`/api/tablespace?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`);
+                const response = await fetch(`/api/tablespace?db_id=${myDbId}&token=${encodeURIComponent(getToken())}`);
+                if (isStale()) return;
                 if (response.ok) {
                     const data = await response.json();
-                    const tsTotalMbEl = document.getElementById('tablespace-total-mb');
-                    const tsUsedMbEl = document.getElementById('tablespace-used-mb');
-                    const tsTotalPctEl = document.getElementById('tablespace-total-pct');
+                    if (isStale()) return;
 
                     if (data.error) {
                         tsTbody.innerHTML = `<tr><td colspan="6" style="color:#d03b3b; text-align:center; padding: 30px;">DB Error: ${data.error}</td></tr>`;
@@ -1283,7 +1305,7 @@ let layoutHTML = "";
                             let barClass = '';
                             if (numPct >= 90) barClass = 'danger';
                             else if (numPct >= 80) barClass = 'warning';
-
+                            
                             let statusBadge = 'online';
                             if (ts.status && ts.status.toUpperCase() !== 'ONLINE') {
                                 statusBadge = 'offline';
@@ -1312,13 +1334,22 @@ let layoutHTML = "";
                     }
                 } else {
                     tsTbody.innerHTML = `<tr><td colspan="6" style="color:#d03b3b; text-align:center; padding: 30px;">API 서버 오류가 발생했습니다.</td></tr>`;
+                    resetTablespaceTotals();
                 }
             } catch (error) {
+                if (isStale()) return;
                 console.error('Tablespace fetch error:', error);
                 tsTbody.innerHTML = `<tr><td colspan="6" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+                resetTablespaceTotals();
+            } finally {
+                // 스피너/오버레이는 가장 최근 요청이 끝날 때만 내린다 - 이전 DB 요청이 먼저 끝나며
+                // 새 DB 조회 중 표시를 지워버리지 않게.
+                if (mySeq === tsRequestSeq) {
+                    if (icon) icon.classList.remove('spinning');
+                    if (tsLoadingOverlay) tsLoadingOverlay.style.display = 'none';
+                    window.tablespaceInFlightDbId = null;
+                }
             }
-            if (icon) icon.classList.remove('spinning');
-            if (tsLoadingOverlay) tsLoadingOverlay.style.display = 'none';
         });
     }
 
