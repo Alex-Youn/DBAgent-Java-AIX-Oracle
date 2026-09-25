@@ -145,6 +145,32 @@ public class MonitorStoreService {
                 "db_id, snap_date, owner, segment_name", 5), rows);
     }
 
+    // ------------------------------------------------------------------ 읽기
+
+    /** SQL 상세(설계 6.2) - 구간(앱 시각 ms)의 실행 횟수·평균 수행 시간·평균 Buffer Gets·DB Time. 기록이 없으면 samples=0. */
+    public java.util.Map<String, Object> sqlstatSummary(String dbId, String sqlId, long fromMs, long toMs) {
+        return jdbc.queryForObject(
+                "SELECT COUNT(*) AS samples, SUM(executions_d) AS execs, SUM(elapsed_us_d) AS ela_us, " +
+                        "SUM(buffer_gets_d) AS gets, MAX(plan_hash_value) AS phv " +
+                        "FROM mon_sqlstat_delta WHERE db_id = ? AND sql_id = ? AND collect_ts BETWEEN ? AND ?",
+                (rs, n) -> {
+                    java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    long samples = rs.getLong("samples");
+                    long execs = rs.getLong("execs");
+                    long ela = rs.getLong("ela_us");
+                    long gets = rs.getLong("gets");
+                    m.put("samples", samples);
+                    m.put("executions", samples == 0 ? null : execs);
+                    m.put("elapsedMsPerExec", execs > 0 ? Math.round(ela / 1000.0 / execs * 100.0) / 100.0 : null);
+                    m.put("bufferGetsPerExec", execs > 0 ? Math.round((double) gets / execs * 10.0) / 10.0 : null);
+                    m.put("dbTimeSec", samples == 0 ? null : Math.round(ela / 1e6 * 100.0) / 100.0);
+                    Object phv = rs.getObject("phv");
+                    m.put("planHashValue", phv == null ? null : ((Number) phv).longValue());
+                    return m;
+                },
+                dbId, sqlId, fromMs, toMs);
+    }
+
     private static String truncate(String s, int max) {
         return s == null || s.length() <= max ? s : s.substring(0, max);
     }
