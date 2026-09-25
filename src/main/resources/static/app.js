@@ -98,6 +98,14 @@ function dbagentLatestRequest() {
     };
 }
 
+// 메뉴 화면이 지금 보이는지(2026-09-26 오케스트레이터 결정) - 보이지 않는 메뉴의 조회를 건너뛴다. 예전엔 대시보드만
+// 띄워 둬도 Lock Holder/Waiter Tree(tmlock, 약 4초마다 v$lock 스캔)·Current Session(세션 목록·ASH 30초)·성능 이력
+// (사용자·머신 목록) 조회가 숨겨진 화면을 위해 계속 원본 DB로 나갔다. 각 메뉴는 들어갈 때 바로 1회 조회한다(switchTab).
+function dbagentSectionVisible(id) {
+    const section = document.getElementById(id);
+    return !!section && section.classList.contains('active') && !document.hidden;
+}
+
 // Auth event listeners moved to DOMContentLoaded
 // ----------------------
 
@@ -875,6 +883,12 @@ function dbagentLatestRequest() {
             [dashCpuChart, dashMemChart, dashFailChart, dashSessChart].forEach(c => c && c.resize());
             fetchDashboard();
         }
+        // 숨겨져 있는 동안 건너뛴 조회를 들어오는 순간 바로 한 번(2026-09-26) - 이후는 각 메뉴의 기존 주기대로.
+        if (targetId === 'session' && window.currentDbId) {
+            if (typeof fetchSessions === 'function') fetchSessions();
+            if (typeof restartAshActivityPolling === 'function') restartAshActivityPolling();
+        }
+        if (targetId === 'tmlock' && window.currentDbId && typeof fetchTMLocks === 'function') fetchTMLocks();
     }
 
     // Attach click events
@@ -1385,6 +1399,7 @@ let layoutHTML = "";
 
     async function fetchTMLocks() {
         if (!tmlockTbody) return;
+        if (!dbagentSectionVisible('tmlock')) return; // 자동 갱신 루프는 돌되, 화면이 안 보이면 조회하지 않음
         if (!window.currentDbId) {
             tmlockTbody.innerHTML = '<tr><td colspan="14" style="text-align:center; padding: 30px;">DB를 먼저 선택해주세요.</td></tr>';
             return;
@@ -1691,6 +1706,7 @@ let layoutHTML = "";
 
     async function fetchSessions() {
         if (!sessionTbody) return;
+        if (!dbagentSectionVisible('session')) return; // 메뉴에 들어갈 때 switchTab이 바로 부른다
         if (!window.currentDbId) {
             sessionTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">DB를 먼저 선택해주세요.</td></tr>';
             return;
@@ -2801,6 +2817,7 @@ let layoutHTML = "";
     // Active Session Wait Class 차트 + Top SQL Activity Timeline(3단계) - 같은 range를 공유하는
     // companion 위젯이라 같은 30초 루프에서 함께 갱신한다(§8 "나란히 배치" 요구사항).
     function fetchAshPanels() {
+        if (!dbagentSectionVisible('session')) return Promise.resolve(); // 30초 루프는 돌되 숨겨져 있으면 조회 안 함
         return Promise.all([fetchAshActivity(), fetchAshTopSql()]);
     }
 
@@ -4904,6 +4921,8 @@ function updateHistoryUI(data) {
 
 // Global DB Users loader
 let dbUsersLoaded = false;
+// 어느 DB의 목록을 불러왔는지 - 예전엔 한 번 불러오면 사이드바에서 DB를 바꿔도 이전 DB 목록이 남았다(2026-09-26 발견).
+let dbUsersLoadedFor = null;
 // 이전 요청이 아직 안 끝났으면 새로 안 쏜다(오케스트레이터 실측, 2026-09-18: 아래 "Aggressive DB
 // Users loader"가 1초마다 무조건 재시도하다 보니, DB가 느릴 때 매초 fetch 쌍이 새로 쌓여 - 5초 걸리는
 // 상황이면 5쌍이 동시에 같은 커넥션을 다투는 꼴이었다).
@@ -4943,6 +4962,7 @@ async function loadDbUsers(targetDb) {
             }
         }
         dbUsersLoaded = true;
+        dbUsersLoadedFor = targetDb;
     } catch(e) {
         console.error("Failed to load db users", e);
         const hSelect = document.getElementById('history-users');
@@ -5003,9 +5023,11 @@ document.querySelectorAll('.sidebar .nav-link').forEach(link => {
 });
 
 
-// Aggressive DB Users loader
+// Aggressive DB Users loader - 성능 이력 화면이 보일 때만, 아직 안 불러왔거나 DB가 바뀌었을 때 불러온다(2026-09-26).
+// 예전엔 "탭과 무관하게 미리" 불러와 대시보드에서도 history_users/history_machines가 원본 DB로 나갔다.
 setInterval(() => {
-    if (window.currentDbId && (!dbUsersLoaded || (document.getElementById("history-users") && document.getElementById("history-users").options && document.getElementById("history-users").options.length <= 1))) {
+    if (!dbagentSectionVisible('history')) return;
+    if (window.currentDbId && (!dbUsersLoaded || dbUsersLoadedFor !== window.currentDbId || (document.getElementById("history-users") && document.getElementById("history-users").options && document.getElementById("history-users").options.length <= 1))) {
         const histDisplay = document.getElementById('history') ? document.getElementById('history').style.display : 'none';
         const topDisplay = document.getElementById('history-top') ? document.getElementById('history-top').style.display : 'none';
         
