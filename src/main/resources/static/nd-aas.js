@@ -33,6 +33,9 @@
         network: 'SQL*Net 대기입니다. 대량 fetch나 클라이언트·네트워크 지연을 확인하세요.',
         other: 'Configuration, Cluster, Scheduler 등 기타 대기의 합입니다. ⑦ Top 대기 이벤트에서 어떤 이벤트인지 확인하세요.'
     };
+    // ⑤⑥⑦·드로어(nd-top.js)가 같은 분류 이름·조치 문구를 쓰도록 공유
+    ND.classes = CLS;
+    ND.classActions = ACTION;
     const DEFAULT_SESSION_THRESHOLDS = [60, 70, 80, 90, 100];
     const DELAY_MS = 3 * 60000;
 

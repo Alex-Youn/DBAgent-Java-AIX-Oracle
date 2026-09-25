@@ -1992,3 +1992,64 @@ body {
     font-family: var(--nd-font-mono); color: var(--nd-ink-2); white-space: pre-wrap; max-height: 90px; overflow: auto;
 }
 .nd-kp-act { display: flex; justify-content: flex-end; gap: 14px; align-items: center; }
+/* ---- 새 대시보드 ⑤⑥⑦ Top 목록 · 상세 드로어 (F7, 2026-09-26) ---- */
+.nd-top-src { font-size: 0.72rem; color: var(--nd-muted); margin: -4px 2px -6px; flex: 0 0 auto; min-height: 1em; }
+.nd-top-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.nd-top-list li { padding: 4px 6px; border-radius: 5px; min-width: 0; }
+.nd-clk { cursor: pointer; }
+.nd-clk:hover, .nd-clk:focus-visible { background: var(--nd-surface-2); outline: none; }
+.nd-clk:focus-visible { box-shadow: 0 0 0 2px var(--primary); }
+.nd-rtop { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.nd-rid { font-family: var(--nd-font-mono); font-size: 0.82rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.nd-rval { font-family: var(--nd-font-mono); font-size: 0.85rem; font-weight: 700; white-space: nowrap; }
+.nd-rval small { font-size: 0.7rem; color: var(--nd-muted); margin-left: 5px; font-weight: 600; }
+.nd-segbar { display: flex; height: 6px; border-radius: 2px; overflow: hidden; margin: 3px 0; background: var(--nd-skeleton); }
+.nd-rtxt { font-size: 0.74rem; color: var(--nd-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--nd-font-mono); }
+.nd-rmeta { display: flex; gap: 10px; font-size: 0.74rem; color: var(--nd-muted); white-space: nowrap; overflow: hidden; }
+.nd-rmeta span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.nd-blk { color: var(--nd-crit); font-weight: 700; flex: none; }
+.nd-top-err { color: var(--nd-crit); font-size: 0.8rem; font-weight: 600; }
+.nd-top-errmsg { color: var(--nd-muted); font-weight: 400; font-size: 0.74rem; margin: 2px 0 4px; word-break: break-all; }
+
+/* 드로어 - body 직속(zoom 밖)이라 화면 픽셀 그대로 */
+.nd-drawer-bg { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 9990; }
+.nd-drawer-bg[hidden], .nd-drawer[hidden] { display: none; }
+.nd-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 470px; max-width: 100vw; z-index: 9991;
+    background: var(--bg-panel); color: var(--text-main); border-left: 1px solid var(--border-color);
+    display: flex; flex-direction: column; box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+    font-family: 'Malgun Gothic', 'Segoe UI', sans-serif; font-size: 13px;
+}
+.nd-dw-head { display: flex; align-items: flex-start; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border-color); }
+.nd-dw-titles { flex: 1; min-width: 0; }
+.nd-dw-kind { font-size: 11px; color: var(--text-muted); font-weight: 600; }
+.nd-dw-title { font-size: 16px; font-weight: 700; font-family: Consolas, monospace; word-break: break-all; }
+.nd-dw-sub { font-size: 12px; margin-top: 3px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.nd-dw-back, .nd-dw-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 2px 4px; }
+.nd-dw-back { color: var(--primary); font-weight: 700; }
+.nd-dw-back[hidden] { display: none; }
+.nd-dw-body { flex: 1; overflow-y: auto; padding: 10px 14px; }
+.nd-dw-foot { padding: 10px 14px; border-top: 1px solid var(--border-color); display: flex; gap: 10px; justify-content: flex-end; }
+.nd-dw-foot[hidden] { display: none; }
+.nd-dw-sec { margin-bottom: 14px; }
+.nd-dw-sec h4 { margin: 0 0 6px; font-size: 12px; color: var(--text-muted); font-weight: 700; }
+.nd-kv { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 3px 10px; margin: 0; }
+.nd-kv dt { color: var(--text-muted); }
+.nd-kv dd { margin: 0; word-break: break-all; }
+.nd-dw-code {
+    margin: 6px 0 0; padding: 8px; background: var(--bg-main); border-radius: 4px; font-family: Consolas, monospace;
+    font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto; color: var(--text-main);
+}
+.nd-dw-q summary { cursor: pointer; color: var(--primary); font-weight: 600; font-size: 12px; }
+.nd-dw-actline { margin-bottom: 4px; }
+.nd-dw-actline b { font-family: Consolas, monospace; font-size: 15px; }
+.nd-dw-bar { width: 100% !important; height: 8px; }
+.nd-dw-cls { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 2px; }
+.nd-dw-cls li { display: flex; align-items: center; gap: 6px; }
+.nd-dw-cls li b { margin-left: auto; font-family: Consolas, monospace; }
+.nd-pill { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 9px; }
+.nd-pill-good { background: rgba(12, 163, 12, 0.15); color: var(--nd-good); }
+.nd-pill-warn { background: var(--nd-warn-bg); color: var(--nd-warn); }
+.nd-pill-crit { background: var(--nd-crit-bg); color: var(--nd-crit); }
+.nd-pill-muted { background: var(--nd-surface-2); color: var(--text-muted); }
+@media (max-width: 640px) { .nd-drawer { width: 100vw; } }
