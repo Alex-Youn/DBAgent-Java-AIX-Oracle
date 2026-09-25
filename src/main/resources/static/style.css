@@ -1931,3 +1931,64 @@ body {
 .nd-banner-msg .nd-sw { margin-right: 4px; }
 .nd-muted { color: var(--nd-muted); }
 .nd-crit-t { color: var(--nd-crit); }
+/* ---- 새 대시보드 ③ Lock 카드 · ③-1 장애 처리 (F6, 2026-09-26) ---- */
+.nd-lock { display: flex; flex-direction: column; gap: 5px; }
+.nd-lk-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; flex: 0 0 auto; }
+.nd-lk-stat { padding: 0 10px; border-left: 1px solid var(--border-color); min-width: 0; }
+.nd-lk-stat:first-child { border-left: none; padding-left: 0; }
+.nd-lk-stat .nd-kpi-value { font-size: 1.25rem; }
+.nd-lk-stat .nd-kpi-label .nd-sw { margin-right: 4px; }
+.nd-lk-legend { display: flex; gap: 12px; align-items: center; font-size: 0.76rem; font-weight: 600; flex: 0 0 auto; }
+.nd-lk-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.nd-lk-rule { margin-left: auto; color: var(--nd-muted); font-weight: 500; }
+.nd-lock .nd-plot { cursor: default; }
+.nd-lkarea { opacity: 0.18; }
+.nd-lkline { fill: none; stroke-width: 2; }
+.nd-thl { stroke: var(--nd-warn); stroke-width: 1; stroke-dasharray: 4 4; opacity: 0.8; }
+.nd-incbg { fill: var(--nd-crit-bg); }
+.nd-killmk { stroke: var(--nd-crit); stroke-width: 1.5; }
+.nd-killlbl { fill: var(--nd-crit); font-size: 11px; font-weight: 700; }
+.nd-endlbl { fill: var(--nd-ink); font-size: 12px; font-weight: 700; font-family: var(--nd-font-mono); }
+.nd-lk-log { font-size: 0.78rem; color: var(--nd-ink-2); flex: 0 0 auto; }
+
+/* 판단 보류: 직전 값을 흐리게 */
+.nd-pending .nd-lk-stats, .nd-pending .nd-plot { opacity: 0.45; }
+
+/* 장애: 카드 붉게 + 은은한 깜빡임(움직임 줄이기 설정이면 깜빡임 없음) */
+#nd-lock-card.nd-incident { border-color: var(--nd-crit); background: linear-gradient(var(--nd-crit-bg), var(--nd-crit-bg)), var(--nd-surface); animation: nd-inc-pulse 2.4s ease-in-out infinite; }
+@keyframes nd-inc-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(208, 59, 59, 0); } 50% { box-shadow: 0 0 0 3px rgba(208, 59, 59, 0.35); } }
+@media (prefers-reduced-motion: reduce) { #nd-lock-card.nd-incident { animation: none; } }
+.nd-inc-bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: 0 0 auto;
+    background: var(--nd-crit); color: #fff; border-radius: 6px; padding: 6px 10px; font-size: 0.82rem; font-weight: 600;
+}
+.nd-inc-bar[hidden] { display: none; }
+.nd-inc-txt { flex: 1 1 260px; }
+.nd-inc-bar .danger-btn { background: #fff; color: var(--nd-crit); border: none; padding: 5px 10px; border-radius: 4px; font-weight: 700; cursor: pointer; }
+.nd-inc-bar .danger-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.nd-inc-note { font-size: 0.78rem; opacity: 0.9; }
+
+/* 확인 패널 - 카드 위에 겹쳐 띄워 레이아웃을 밀지 않는다 */
+.nd-kill-panel {
+    position: absolute; inset: 0; z-index: 6; overflow: auto; background: var(--nd-surface);
+    border: 1px solid var(--nd-crit); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.nd-kill-panel[hidden] { display: none; }
+.nd-kill-panel h3 { margin: 0; font-size: 0.95rem; color: var(--nd-crit); }
+.nd-kp-sub { margin: 0; font-size: 0.76rem; color: var(--nd-muted); }
+.nd-kp-note { margin: 0; font-size: 0.8rem; font-weight: 600; color: var(--nd-warn); background: var(--nd-warn-bg); padding: 4px 8px; border-radius: 4px; }
+.nd-kp-table { overflow: auto; max-height: 45%; flex: 0 1 auto; }
+.nd-kill-panel .nd-table { font-family: inherit; }
+.nd-kill-panel .nd-table td, .nd-kill-panel .nd-table th { text-align: left; }
+.nd-kill-panel .nd-table td:nth-child(3), .nd-kill-panel .nd-table td:nth-child(4) { max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+.nd-mono { font-family: var(--nd-font-mono); }
+.nd-short, .nd-newtag, .nd-gonetag { font-size: 0.7rem; font-weight: 700; padding: 0 5px; border-radius: 3px; margin-left: 4px; }
+.nd-short { color: var(--nd-muted); background: var(--nd-surface-2); }
+.nd-newtag { color: var(--primary); background: rgba(57, 135, 229, 0.15); }
+.nd-gonetag { color: var(--nd-muted); background: var(--nd-surface-2); }
+.nd-kill-panel tr.nd-gone td { opacity: 0.5; text-decoration: line-through; }
+.nd-kp-cmd {
+    margin: 0; padding: 6px 8px; background: var(--bg-main); border-radius: 4px; font-size: 0.74rem;
+    font-family: var(--nd-font-mono); color: var(--nd-ink-2); white-space: pre-wrap; max-height: 90px; overflow: auto;
+}
+.nd-kp-act { display: flex; justify-content: flex-end; gap: 14px; align-items: center; }

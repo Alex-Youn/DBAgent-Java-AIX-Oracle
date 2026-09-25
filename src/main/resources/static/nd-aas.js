@@ -147,6 +147,7 @@
         const d = await ctx.fetchJson('/api/metric_history', { db_id: ctx.dbId, range: rangeKey, metrics: METRICS.join(',') });
         if (!d || ctx.isStale()) return;
         const offset = typeof d.dbClockOffsetMs === 'number' ? d.dbClockOffsetMs : 0;
+        ND.state.dbClockOffsetMs = offset; // ③ Lock 차트 등 앱 시각 값을 DB 시각으로 표시할 때 공유
         const nowDb = Date.now() + offset;
         const n = RANGE_MIN[rangeKey] || 60;
         const endBucket = Math.floor((nowDb - 30000) / 60000) * 60000;
