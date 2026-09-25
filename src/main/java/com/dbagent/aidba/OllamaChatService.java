@@ -41,6 +41,8 @@ public class OllamaChatService {
     private static final Logger log = LoggerFactory.getLogger(OllamaChatService.class);
 
     private static final String PROMPT_ID = "chatbot";
+    // ORA 오류 코드가 없는 질문용 system prompt(sqlrestapi prompts/chatbot-general.md, 원본은 저장소 aidba-prompts/).
+    private static final String GENERAL_PROMPT_ID = "chatbot-general";
     private static final String ERROR_INDEX = "error_dictionary";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -91,6 +93,16 @@ public class OllamaChatService {
         String finalPrompt = "[참고 자료]\n" + context + "\n\n[사용자 질문]\n" + prompt
                 + "\n\n반드시 한국어로 답하세요.";
         return askWithPrompt(PROMPT_ID, finalPrompt);
+    }
+
+    /**
+     * ORA 오류 코드가 없는 질문(체크리스트 6-1) - 사내 오류 사전 검색 없이 모델 자체 지식으로 답한다. 허용 범위
+     * (일반 개념·버전별 설명, DB 무관 주제 포함)와 금지 사항(위험 명령 생성, 확인 안 된 버그/패치/MOS 번호 인용)은
+     * chatbot-general.md 에 있다. 예전엔 이런 질문에도 의미상 가까운 오류 사례를 [참고 자료]로 붙여, "참고 자료에
+     * 없으면 지어내지 말라"는 원칙 때문에 답을 피하는 경우가 많았다.
+     */
+    public String askGeneral(String prompt) {
+        return askWithPrompt(GENERAL_PROMPT_ID, "[사용자 질문]\n" + prompt + "\n\n반드시 한국어로 답하세요.");
     }
 
     /**

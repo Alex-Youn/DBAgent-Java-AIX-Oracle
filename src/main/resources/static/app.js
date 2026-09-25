@@ -6128,7 +6128,11 @@ let historySortAsc = true;
                     // 사용자 입력이 아니라 DB/LLM에서 온 텍스트지만 HTML로 렌더링하므로 이스케이프한다 -
                     // 개행은 부모 버블의 white-space:pre-wrap이 그대로 살려준다.
                     let sourceHtml = '';
-                    if (data.context_used) {
+                    if (data.answer_mode === 'general') {
+                        // 체크리스트 6-1(2026-09-25): ORA 오류 코드가 없는 질문은 사내 오류 사전 검색 없이 AI 일반 지식으로
+                        // 답한다 - 근거 기반 답변(첨부 문서가 붙는 오류 질문)과 구분되도록 답변 끝에 출처 성격을 밝힌다.
+                        sourceHtml = `<div style="margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border-color); font-size: 0.82rem; color: var(--text-muted);">※ 사내 오류 사례가 아닌 AI 일반 지식으로 작성된 답변입니다. 버전·환경에 따라 다를 수 있으니 중요한 작업 전에는 확인하세요.</div>`;
+                    } else if (data.context_used) {
                         const srcLabel = '첨부 문서';
                         sourceHtml = `<div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.9rem; font-weight: 600; color: var(--primary); cursor: pointer; user-select: none;" onclick="var b=this.nextElementSibling; var willOpen=(b.style.display==='none'); b.style.display=willOpen?'block':'none'; this.textContent=(willOpen?'[-] ':'[+] ')+'${srcLabel}';">[-] ${srcLabel}</div><div style="display: block; font-size: 0.95rem; line-height: 1.7; white-space: pre-wrap; word-break: break-word; font-family: 'D2Coding', Consolas, 'Courier New', monospace; max-height: 320px; overflow-y: auto; margin-top: 8px;">${escapeHtml(data.context_used)}</div>`;
                     }

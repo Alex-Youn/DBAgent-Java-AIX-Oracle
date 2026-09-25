@@ -38,6 +38,9 @@ public class AiDbaController {
      * 임베딩 유사도보다 정확 일치가 훨씬 신뢰도가 높다). 아무것도 못 찾으면(에러 코드 없이 증상만
      * 설명하는 자연어 질문 등) sqlrestapi의 OpenSearch 시맨틱 검색(error_dictionary 인덱스)으로
      * 폴백한다 - 둘 다 실패하면 LLM이 참고 자료 없이 일반 지식으로만 답한다.
+     *
+     * 2026-09-25(체크리스트 6-1): 위 검색은 질문에 ORA 오류 코드가 있을 때만 한다. 코드가 없으면 검색 없이
+     * askGeneral(promptId=chatbot-general)로 모델 자체 지식 답변 - 응답의 answer_mode(error/general)로 구분.
      */
     @PostMapping("/chat")
     public ResponseEntity<Map<String, Object>> chat(@RequestBody ChatRequest req) {
@@ -46,9 +49,16 @@ public class AiDbaController {
             return ResponseEntity.ok(Maps.of("success", false, "message", "질문이 없습니다."));
         }
         try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            if (!ErrorSearchService.isOraErrorQuestion(prompt)) {
+                body.put("success", true);
+                body.put("answer", ollamaChatService.askGeneral(prompt));
+                body.put("answer_mode", "general");
+                return ResponseEntity.ok(body);
+            }
+            body.put("answer_mode", "error");
             List<String> docs = errorSearchService.retrieveDocs(prompt);
 
-            Map<String, Object> body = new LinkedHashMap<>();
             if (!docs.isEmpty()) {
                 String context = String.join("\n\n", docs);
                 String answer = ollamaChatService.ask(prompt, context);

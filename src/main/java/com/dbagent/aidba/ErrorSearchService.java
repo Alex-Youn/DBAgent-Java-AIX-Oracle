@@ -27,6 +27,15 @@ public class ErrorSearchService {
     private static final Pattern ORA_CODE = Pattern.compile("ORA-\\d+");
     private static final Pattern NON_WORD_KOREAN = Pattern.compile("[^\\w가-힣]");
 
+    /**
+     * 챗봇 분기 기준(체크리스트 6-1, 2026-09-24 오케스트레이터 확정): 질문에 ORA 오류 코드(ORA-숫자, 대소문자
+     * 무관)가 있으면 오류 질문으로 보고 사내 오류 사전 근거로 답하고, 없으면 검색 없이 모델 자체 지식으로 답한다.
+     * 오류 사전 검색(retrieveDocs)과 같은 패턴을 써서 두 판단이 어긋나지 않게 한다.
+     */
+    public static boolean isOraErrorQuestion(String prompt) {
+        return prompt != null && ORA_CODE.matcher(prompt.toUpperCase(Locale.ROOT)).find();
+    }
+
     @Value("${aidba.errors-db-path}")
     private String errorsDbPath;
 
