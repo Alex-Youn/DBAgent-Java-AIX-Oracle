@@ -753,44 +753,77 @@ public class MonitorService {
     // serial/sql_id/capture_time/duration_time/program_name/username/db_name)과 맞춰, 프론트에서
     // 별도 매핑 없이 기존 showSelectedSessionsPopup()에 바로 넘길 수 있게 한다.
     public List<Map<String, Object>> getAshSessionDetail(TargetDbConfig target, String startTime, String endTime) throws SQLException {
-        // getHistorySessions()와 동일한 NVL(sql_exec_start, sample_time)/sample_time 기준 경과시간
-        // 계산 - design-advisor 검토(2026-09-22)가 지적한 "SYSDATE 기준으로 계산하면 과거 구간의
-        // 경과시간이 부풀려진다"는 결함을 처음부터 피한다.
-        String query = "SELECT sid, serial, sql_id, event_name, capture_time, duration_time, program_name, username, db_name FROM (" +
-                "SELECT h.session_id AS sid, h.session_serial# AS serial, h.sql_id AS sql_id, " +
-                "NVL(h.event, 'ON CPU') AS event_name, " +
-                "TO_CHAR(h.sample_time, 'YYYY-MM-DD HH24:MI:SS') AS capture_time, " +
-                "ROUND((CAST(h.sample_time AS DATE) - CAST(NVL(h.sql_exec_start, h.sample_time) AS DATE)) * 86400, 2) AS duration_time, " +
-                "h.program AS program_name, u.username AS username, " +
-                "(SELECT instance_name FROM v$instance) AS db_name, " +
-                "ROW_NUMBER() OVER (PARTITION BY h.session_id ORDER BY h.sample_time DESC) AS rn " +
-                "FROM v$active_session_history h " +
-                "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
-                "WHERE h.sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') " +
-                "AND h.session_type = 'FOREGROUND' " +
-                "AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ")" +
-                ") WHERE rn = 1 ORDER BY capture_time DESC";
+        return getAshSessionDetail(target, LocalDateTime.parse(startTime), LocalDateTime.parse(endTime), null, null, null);
+    }
+
+    /**
+     * E1·E2·E3(2026-09-25): 드래그 구간의 세션 목록을 공용 AshRange(D1)로 조회 - 6시간/24시간 차트에서 ASH 보관
+     * 범위 밖을 드래그해도 AWR로 보충된다. 필터(모두 선택):
+     * <ul>
+     *   <li>categories: 7분류 키(AshCategories.KEYS7) - 좌측 차트에서 범례로 숨긴 분류를 뺀 나머지</li>
+     *   <li>sqlIds / excludeSqlIds: 우측 Top SQL 차트에서 보이는 SQL만 / 숨긴 SQL 제외</li>
+     * </ul>
+     * 끝 시각은 그 분을 포함한다(예전 BETWEEN ... 'HH24:MI' 동작과 같게 +1분).
+     */
+    public List<Map<String, Object>> getAshSessionDetail(TargetDbConfig target, LocalDateTime start, LocalDateTime end,
+                                                         List<String> categories, List<String> sqlIds,
+                                                         List<String> excludeSqlIds) throws SQLException {
+        StringBuilder extra = new StringBuilder();
+        final List<String> binds = new ArrayList<>();
+        if (categories != null && !categories.isEmpty()) {
+            extra.append("AND ").append(AshCategories.CASE7).append(" IN (")
+                    .append(String.join(",", Collections.nCopies(categories.size(), "?"))).append(") ");
+            binds.addAll(categories);
+        }
+        if (sqlIds != null && !sqlIds.isEmpty()) {
+            extra.append("AND h.sql_id IN (").append(String.join(",", Collections.nCopies(sqlIds.size(), "?"))).append(") ");
+            binds.addAll(sqlIds);
+        }
+        if (excludeSqlIds != null && !excludeSqlIds.isEmpty()) {
+            extra.append("AND h.sql_id IS NOT NULL AND h.sql_id NOT IN (")
+                    .append(String.join(",", Collections.nCopies(excludeSqlIds.size(), "?"))).append(") ");
+            binds.addAll(excludeSqlIds);
+        }
 
         List<Map<String, Object>> sessions = new ArrayList<>();
-        try (Connection conn = poolManager.getConnection(target);
-             PreparedStatement ps = conn.prepareStatement(query)) {
-            ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
-            ps.setString(1, startTime);
-            ps.setString(2, endTime);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("sid", rs.getObject("sid"));
-                    row.put("serial", rs.getObject("serial"));
-                    row.put("sql_id", rs.getString("sql_id"));
-                    row.put("event_name", rs.getString("event_name"));
-                    row.put("capture_time", rs.getString("capture_time"));
-                    Object duration = rs.getObject("duration_time");
-                    row.put("duration_time", duration == null ? 0 : Math.max(0, ((Number) duration).doubleValue()));
-                    row.put("program_name", rs.getString("program_name"));
-                    row.put("username", rs.getString("username"));
-                    row.put("db_name", rs.getString("db_name"));
-                    sessions.add(row);
+        try (Connection conn = poolManager.getConnection(target)) {
+            AshRange.Window window = AshRange.resolve(conn, start, end.plusMinutes(1), ashAwrFallback);
+            // getHistorySessions()와 동일한 NVL(sql_exec_start, sample_time)/sample_time 기준 경과시간 계산 -
+            // "SYSDATE 기준으로 계산하면 과거 구간의 경과시간이 부풀려진다"는 결함을 피한다(design-advisor, 2026-09-22).
+            // 사용자명은 SID당 최신 1건만 남긴 뒤 dba_users에서 붙인다(행마다 JOIN하지 않음).
+            String query = "SELECT b.sid, b.serial, b.sql_id, b.event_name, " +
+                    "TO_CHAR(b.sample_time, 'YYYY-MM-DD HH24:MI:SS') AS capture_time, b.duration_time, b.program_name, " +
+                    "u.username AS username, (SELECT instance_name FROM v$instance) AS db_name FROM (" +
+                    "SELECT a.*, ROW_NUMBER() OVER (PARTITION BY a.sid, a.serial ORDER BY a.sample_time DESC) AS rn FROM (" +
+                    AshRange.baseSql(window,
+                            "h.session_id AS sid, h.session_serial# AS serial, h.sql_id AS sql_id, " +
+                            "NVL(h.event, 'ON CPU') AS event_name, h.sample_time, h.user_id, " +
+                            "ROUND((CAST(h.sample_time AS DATE) - CAST(NVL(h.sql_exec_start, h.sample_time) AS DATE)) * 86400, 2) AS duration_time, " +
+                            "h.program AS program_name",
+                            extra.toString()) +
+                    ") a) b LEFT JOIN dba_users u ON b.user_id = u.user_id " +
+                    "WHERE b.rn = 1 ORDER BY b.sample_time DESC";
+            try (PreparedStatement ps = conn.prepareStatement(query)) {
+                ps.setQueryTimeout(window.useAwr ? ashAwrQueryTimeoutSeconds : ashActivityQueryTimeoutSeconds);
+                AshRange.bind(ps, 1, window, (stmt, idx) -> {
+                    for (String v : binds) stmt.setString(idx++, v);
+                    return idx;
+                });
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("sid", rs.getObject("sid"));
+                        row.put("serial", rs.getObject("serial"));
+                        row.put("sql_id", rs.getString("sql_id"));
+                        row.put("event_name", rs.getString("event_name"));
+                        row.put("capture_time", rs.getString("capture_time"));
+                        Object duration = rs.getObject("duration_time");
+                        row.put("duration_time", duration == null ? 0 : Math.max(0, ((Number) duration).doubleValue()));
+                        row.put("program_name", rs.getString("program_name"));
+                        row.put("username", rs.getString("username"));
+                        row.put("db_name", rs.getString("db_name"));
+                        sessions.add(row);
+                    }
                 }
             }
         }
@@ -807,6 +840,7 @@ public class MonitorService {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("active_transactions", queryActiveTransactions(conn, target));
             result.put("parallel_sessions", queryParallelSessions(conn));
+            result.put("remote_sessions", queryRemoteSessions(conn, target));
             result.put("pending_2pc", queryPending2pc(conn));
             // 사용자 요청(2026-08-31): Trace 그래프 점(개별 세션)을 Lock Wait 여부로도 색칠하려면 몇 명인지
             // 뿐 아니라 어떤 SID인지가 필요 - 목록으로 바꾸고 카운트는 그 목록의 크기로 계산해 v$lock을
@@ -906,6 +940,48 @@ public class MonitorService {
                 row.put("status", rs.getString("status"));
                 row.put("program", rs.getString("program"));
                 row.put("machine", rs.getString("machine"));
+                rows.add(row);
+            }
+        } catch (SQLException ignored) {
+        }
+        return rows;
+    }
+
+    /**
+     * E5(체크리스트 1-8, 2026-09-25 오케스트레이터 결정: 들어온+나가는 DB Link 둘 다, 방향 컬럼으로 구분).
+     * <ul>
+     *   <li>IN: 다른 DB가 DB Link로 이 DB에 접속한 세션 - program이 "oracle@원격호스트 (TNS V1-V3)"
+     *       (같은 oracle@ 형태인 Job/병렬 슬레이브는 "(J000)"/"(P000)"라 구분됨). machine이 원격 DB 서버.</li>
+     *   <li>OUT: 이 DB의 세션이 DB Link로 원격 DB를 호출하고 기다리는 중 - 대기 이벤트 "... dblink".
+     *       링크를 열어 둔 채 쉬고 있는 세션은 v$session만으로는 알 수 없어 포함하지 않는다.</li>
+     * </ul>
+     * 로컬 XE 루프백 링크로 두 경우의 v$session 값을 실측해 기준을 정했다. v$만 사용(RAC 원칙).
+     */
+    private List<Map<String, Object>> queryRemoteSessions(Connection conn, TargetDbConfig target) {
+        String query = "SELECT CASE WHEN s.event LIKE '%dblink%' THEN 'OUT' ELSE 'IN' END AS direction, " +
+                "(SELECT instance_name FROM v$instance) AS db_name, s.sid, s.serial#, s.status, s.username, " +
+                "s.machine, s.program, s.event, s.sql_id, s.last_call_et, s.osuser " +
+                "FROM v$session s " +
+                "WHERE s.type = 'USER' AND s.username IS NOT NULL " +
+                "AND s.username != " + monitoringAccountLiteral(target) + " " +
+                "AND (s.event LIKE '%dblink%' OR s.program LIKE 'oracle@% (TNS V1-V3)') " +
+                "ORDER BY direction, CASE WHEN s.status = 'ACTIVE' THEN 0 ELSE 1 END, s.last_call_et DESC";
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("direction", rs.getString("direction"));
+                row.put("db_name", rs.getString("db_name"));
+                row.put("sid", rs.getObject("sid"));
+                row.put("serial", rs.getObject("serial#"));
+                row.put("status", rs.getString("status"));
+                row.put("username", rs.getString("username"));
+                row.put("machine", rs.getString("machine"));
+                row.put("program", rs.getString("program"));
+                row.put("event", rs.getString("event"));
+                row.put("sql_id", rs.getString("sql_id"));
+                row.put("duration_time", rs.getObject("last_call_et"));
+                row.put("osuser", rs.getString("osuser"));
                 rows.add(row);
             }
         } catch (SQLException ignored) {

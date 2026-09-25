@@ -1744,66 +1744,12 @@ let layoutHTML = "";
             // (initAshTopSqlBrush, 아래쪽). showSelectedSessionsPopup()/session-list.html은 History
             // 탭의 자체 산점도가 계속 쓰므로 그대로 유지.
 
-            // Update Table (Only Active Sessions)
-            if (activeSessions.length === 0) {
-                sessionTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">현재 ACTIVE 상태인 세션이 없습니다.</td></tr>';
-                fitSessListScroll(sessionTbody);
-                // 표가 비면 고를 것이 없다 - 선택이 남아 있던 상태에서 세션이 사라져도 버튼이
-                // 활성인 채로 남지 않도록 여기서도 맞춘다.
-                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
-            } else {
-                const maxDuration = activeSessions.reduce((max, s) => Math.max(max, Number(s.duration_time) || 0), 1);
-                let html = '';
-                activeSessions.forEach(session => {
-                    const statusClass = 'online';
-                    const durationVal = session.duration_time !== null ? Number(session.duration_time) : 0;
-                    const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
-                    const durationHtml = session.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
-                    html += `
-                        <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${session.sid}" data-serial="${session.serial || ''}" data-sql_id="${session.sql_id || ''}">
-                            <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="session-checkbox" data-sid="${session.sid}" data-serial="${session.serial}"></td>
-                            <td>${session.db_name || '-'}</td>
-                            <td><span class="status-badge ${statusClass}">${session.status}</span></td>
-                            <td>${session.sid}</td>
-                            <td>${session.serial}</td>
-                            <td>${session.server_pid || '-'}</td>
-                            <td>${durationHtml}</td>
-                            <td>${(() => {
-                                let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
-                                if (session.session_wait_pct && session.session_wait_pct.includes(',')) {
-                                    const [cpu, uio, sio, latch, txlock, tmlock, other] = session.session_wait_pct.split(',').map(Number);
-                                    if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
-                                        waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #22d3ee;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #7c3aed;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #be123c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
-                                    }
-                                }
-                                return waitHtml;
-                            })()}</td>
-                            <td>${session.sql_id || '-'}</td>
-                            <td>${session.event_name || '-'}</td>
-                            <td>${session.plan_hash_value || '-'}</td>
-                            <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${session.sql_text || ''}">${session.sql_text || '-'}</div></td>
-                            <td>${session.machine_name || '-'}</td>
-                            <td>${session.osuser || '-'}</td>
-                            <td>${session.username || '-'}</td>
-                            <td>${session.program_name || '-'}</td>
-                        </tr>
-                    `;
-                });
-                // Oracle SID는 재사용되므로 SID만으로는 세션을 특정할 수 없다 - SID+SERIAL# 복합키로 대조.
-                const checkedSessionKeys = new Set(Array.from(document.querySelectorAll('.session-checkbox:checked'))
-                    .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
-                sessionTbody.innerHTML = html;
-                fitSessListScroll(sessionTbody);
-                document.querySelectorAll('.session-checkbox').forEach(cb => {
-                    if (checkedSessionKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
-                        cb.checked = true;
-                    }
-                });
-                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
-            }
+            lastActiveSessions = activeSessions;
+            renderActiveSessionRows();
 
             renderActiveTransactionsTab(extra.active_transactions);
             renderParallelSessionsTab(extra.parallel_sessions);
+            renderRemoteSessionsTab(extra.remote_sessions);
             renderPending2pcTab(extra.pending_2pc);
         } catch (error) {
             if (req.isStale()) return;
@@ -1812,6 +1758,106 @@ let layoutHTML = "";
         } finally {
             // 예전엔 성공할 때만 스피너를 내려 실패 시 계속 돌았다. 가장 최근 요청이 끝날 때 내린다.
             if (icon && req.isLatest()) icon.classList.remove('spinning');
+        }
+    }
+
+    // E4(체크리스트 1-7, 2026-09-25): Duration Time(sec) 머리글 클릭 정렬 - 내림차순 → 오름차순 → 원래 순서.
+    // 자동 갱신(기본 3초)으로 목록이 다시 그려져도 고른 정렬을 유지하려고 마지막 데이터와 정렬 상태를 들고 있다.
+    let lastActiveSessions = [];
+    let lastActiveTxRows = [];
+    const sessionDurationSort = { active: null, tx: null }; // null | 'desc' | 'asc'
+
+    function sortByDuration(rows, dir) {
+        const list = (rows || []).slice();
+        if (!dir) return list;
+        const val = r => (r.duration_time === null || r.duration_time === undefined) ? -1 : Number(r.duration_time) || 0;
+        list.sort((a, b) => dir === 'desc' ? val(b) - val(a) : val(a) - val(b));
+        return list;
+    }
+
+    function updateDurationSortHeader(key) {
+        const th = document.querySelector(`th[data-duration-sort="${key}"]`);
+        if (!th) return;
+        const dir = sessionDurationSort[key];
+        const mark = th.querySelector('.duration-sort-mark');
+        if (mark) mark.textContent = dir === 'desc' ? '▼' : dir === 'asc' ? '▲' : '↕';
+        th.title = dir === 'desc' ? '긴 순서(다시 누르면 짧은 순서)' : dir === 'asc' ? '짧은 순서(다시 누르면 원래 순서)' : '누르면 긴 순서로 정렬';
+    }
+
+    document.querySelectorAll('th[data-duration-sort]').forEach(th => {
+        th.style.cursor = 'pointer';
+        th.style.userSelect = 'none';
+        updateDurationSortHeader(th.dataset.durationSort);
+        th.addEventListener('click', () => {
+            const key = th.dataset.durationSort;
+            const cur = sessionDurationSort[key];
+            sessionDurationSort[key] = cur === null ? 'desc' : cur === 'desc' ? 'asc' : null;
+            updateDurationSortHeader(key);
+            if (key === 'active') renderActiveSessionRows();
+            else renderActiveTransactionsTab(lastActiveTxRows);
+        });
+    });
+
+    function renderActiveSessionRows() {
+        if (!sessionTbody) return;
+        // Update Table (Only Active Sessions)
+        const activeSessions = sortByDuration(lastActiveSessions, sessionDurationSort.active);
+        if (activeSessions.length === 0) {
+            sessionTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">현재 ACTIVE 상태인 세션이 없습니다.</td></tr>';
+            fitSessListScroll(sessionTbody);
+            // 표가 비면 고를 것이 없다 - 선택이 남아 있던 상태에서 세션이 사라져도 버튼이
+            // 활성인 채로 남지 않도록 여기서도 맞춘다.
+            if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
+        } else {
+            const maxDuration = activeSessions.reduce((max, s) => Math.max(max, Number(s.duration_time) || 0), 1);
+            let html = '';
+            activeSessions.forEach(session => {
+                const statusClass = 'online';
+                const durationVal = session.duration_time !== null ? Number(session.duration_time) : 0;
+                const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
+                const durationHtml = session.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
+                html += `
+                    <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${session.sid}" data-serial="${session.serial || ''}" data-sql_id="${session.sql_id || ''}">
+                        <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="session-checkbox" data-sid="${session.sid}" data-serial="${session.serial}"></td>
+                        <td>${session.db_name || '-'}</td>
+                        <td><span class="status-badge ${statusClass}">${session.status}</span></td>
+                        <td>${session.sid}</td>
+                        <td>${session.serial}</td>
+                        <td>${session.server_pid || '-'}</td>
+                        <td>${durationHtml}</td>
+                        <td>${(() => {
+                            let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
+                            if (session.session_wait_pct && session.session_wait_pct.includes(',')) {
+                                const [cpu, uio, sio, latch, txlock, tmlock, other] = session.session_wait_pct.split(',').map(Number);
+                                if (cpu + uio + sio + latch + txlock + tmlock + other > 0) {
+                                    waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #22d3ee;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #7c3aed;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #be123c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
+                                }
+                            }
+                            return waitHtml;
+                        })()}</td>
+                        <td>${session.sql_id || '-'}</td>
+                        <td>${session.event_name || '-'}</td>
+                        <td>${session.plan_hash_value || '-'}</td>
+                        <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${session.sql_text || ''}">${session.sql_text || '-'}</div></td>
+                        <td>${session.machine_name || '-'}</td>
+                        <td>${session.osuser || '-'}</td>
+                        <td>${session.username || '-'}</td>
+                        <td>${session.program_name || '-'}</td>
+                    </tr>
+                `;
+            });
+            // SID만으로 복원하면 자동 갱신 사이 SID가 재사용된 다른 세션이 잘못 체크된다 -
+            // SID+SERIAL# 조합으로 매칭한다(같은 이유로 tmlock-checkbox/dash-sess-checkbox도 수정).
+            const checkedSessionKeys = new Set(Array.from(document.querySelectorAll('.session-checkbox:checked'))
+                .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
+            sessionTbody.innerHTML = html;
+            fitSessListScroll(sessionTbody);
+            document.querySelectorAll('.session-checkbox').forEach(cb => {
+                if (checkedSessionKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
+                    cb.checked = true;
+                }
+            });
+            if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
         }
     }
 
@@ -1891,6 +1937,8 @@ let layoutHTML = "";
     function renderActiveTransactionsTab(rows) {
         const tbody = document.getElementById('sesslist-active-tx-tbody');
         if (!tbody) return;
+        lastActiveTxRows = rows || [];
+        rows = sortByDuration(lastActiveTxRows, sessionDurationSort.tx);
         if (!rows || rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding: 30px;">활성 트랜잭션이 없습니다.</td></tr>';
             fitSessListScroll(tbody);
@@ -1933,6 +1981,33 @@ let layoutHTML = "";
             </tr>
         `;
         }).join('');
+        fitSessListScroll(tbody);
+    }
+
+    // E5(체크리스트 1-8, 2026-09-25): Remote 탭 - DB Link로 들어온(IN)/나가는(OUT) 세션.
+    function renderRemoteSessionsTab(rows) {
+        const tbody = document.getElementById('sesslist-remote-tbody');
+        if (!tbody) return;
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">DB Link로 연결된 세션이 없습니다.</td></tr>';
+            fitSessListScroll(tbody);
+            return;
+        }
+        const esc = v => (v === null || v === undefined || v === '') ? '-' : String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        tbody.innerHTML = rows.map(r => `
+            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${esc(r.sid)}" data-serial="${esc(r.serial)}" data-sql_id="${r.sql_id || ''}">
+                <td><span class="status-badge ${r.direction === 'OUT' ? 'remote-out' : 'online'}" title="${r.direction === 'OUT' ? '이 DB → 원격 DB 호출 중' : '원격 DB → 이 DB 접속'}">${esc(r.direction)}</span></td>
+                <td>${esc(r.db_name)}</td>
+                <td>${esc(r.status)}</td>
+                <td>${esc(r.sid)}</td>
+                <td>${esc(r.serial)}</td>
+                <td>${esc(r.duration_time)}</td>
+                <td>${esc(r.username)}</td>
+                <td>${esc(r.machine)}</td>
+                <td>${esc(r.program)}</td>
+                <td>${esc(r.event)}</td>
+                <td>${esc(r.sql_id)}</td>
+            </tr>`).join('');
         fitSessListScroll(tbody);
     }
 
@@ -2022,6 +2097,8 @@ let layoutHTML = "";
         if (activeTxTbody) activeTxTbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const parallelTbody = document.getElementById('sesslist-parallel-tbody');
         if (parallelTbody) parallelTbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
+        const remoteTbody = document.getElementById('sesslist-remote-tbody');
+        if (remoteTbody) remoteTbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
         const pending2pcTbody = document.getElementById('sesslist-2pc-tbody');
         if (pending2pcTbody) pending2pcTbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
 
@@ -2194,6 +2271,7 @@ let layoutHTML = "";
     // DB 전환 시(resetSessionMonitor) 호출 - 이전 DB의 그래프·KPI·범례를 즉시 지우고 "불러오는 중"
     // 표시. 차트 인스턴스는 유지하고 데이터만 비운다(크기·범례 on/off 상태 유지).
     function clearAshPanelsForDbSwitch() {
+        ashTopSqlHiddenSqlIds = new Set();
         ashActivityRequestGuard.invalidate();
         ashTopSqlRequestGuard.invalidate();
         lastAshActivityData = null;
@@ -2444,6 +2522,9 @@ let layoutHTML = "";
     let lastAshTopSqlData = null;
     let ashOtherDrilldownOpen = false;
     let ashSelectedWindow = null; // {start: Date, end: Date} | null - 드래그 선택 중이면 그 구간, 없으면 null(전체 표시 구간)
+    // E3(체크리스트 1-6, 2026-09-25): Top SQL 범례에서 숨긴 sql_id - Top5 구성이 30초마다 바뀌어도 sql_id
+    // 기준이라 같은 SQL은 계속 숨겨진다. DB 전환 시 초기화. 드래그(E2)는 숨긴 SQL의 세션을 빼고 보여준다.
+    let ashTopSqlHiddenSqlIds = new Set();
 
     async function fetchAshTopSql() {
         const canvas = document.getElementById('ash-topsql-chart');
@@ -2502,18 +2583,33 @@ let layoutHTML = "";
             color: ASH_TOPSQL_CATEGORY_COLOR[s.category] || ASH_TOPSQL_OTHER_COLOR
         }));
         // §9.1: 범례의 Other 항목에 클릭 가능 표시(밑줄 호버 + ▸ 화살표) - 클릭 시 드릴다운 패널 토글.
-        container.innerHTML = items.map(it => `
-            <span style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; color: var(--text-main);">
+        container.innerHTML = items.map((it, i) => {
+            const hidden = ashTopSqlHiddenSqlIds.has(sqlCategories[i].sql_id);
+            return `
+            <span class="ash-topsql-legend-item" data-sql-id="${sqlCategories[i].sql_id}" title="클릭: 이 SQL 숨기기/보이기 (드래그 조회에서도 제외)" style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; cursor:pointer; user-select:none; color: ${hidden ? 'var(--text-muted)' : 'var(--text-main)'}; opacity:${hidden ? '0.45' : '1'};">
                 <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${it.color}; flex:none;"></span>
                 ${it.label}
-            </span>
-        `).join('') + `
+            </span>`;
+        }).join('') + `
             <span id="ash-topsql-other-legend" style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; color: var(--text-main); cursor:pointer;">
                 <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${ASH_TOPSQL_OTHER_COLOR}; flex:none;"></span>
                 <span style="text-decoration: underline dotted;">Other</span>
                 <span style="font-size:0.7rem;">▸</span>
             </span>
         `;
+        container.querySelectorAll('.ash-topsql-legend-item').forEach((item, i) => {
+            item.addEventListener('click', () => {
+                const sqlId = item.dataset.sqlId;
+                const nowHidden = !ashTopSqlHiddenSqlIds.has(sqlId);
+                if (nowHidden) ashTopSqlHiddenSqlIds.add(sqlId); else ashTopSqlHiddenSqlIds.delete(sqlId);
+                item.style.color = nowHidden ? 'var(--text-muted)' : 'var(--text-main)';
+                item.style.opacity = nowHidden ? '0.45' : '1';
+                if (ashTopSqlChart) {
+                    ashTopSqlChart.setDatasetVisibility(i, !nowHidden);
+                    ashTopSqlChart.update();
+                }
+            });
+        });
         const otherLegend = document.getElementById('ash-topsql-other-legend');
         if (otherLegend) {
             otherLegend.addEventListener('click', () => {
@@ -2539,6 +2635,7 @@ let layoutHTML = "";
             const color = ASH_TOPSQL_CATEGORY_COLOR[s.category] || ASH_TOPSQL_OTHER_COLOR;
             return {
                 label: s.module ? `${s.label} (${s.module})` : s.label,
+                hidden: ashTopSqlHiddenSqlIds.has(s.sql_id),
                 data: data.series.map(pt => ({ x: new Date(pt.time).getTime(), y: pt.values[i] })),
                 borderColor: color,
                 backgroundColor: color + 'd1',
@@ -4301,24 +4398,23 @@ function scatterPointerToLocal(e, container) {
     return { x, y };
 }
 
-// Drag-select on the Top SQL Activity Timeline (설계문서 §8.4, 4단계 - 2026-09-22, 기존 Trace 산점도의
-// drag-brush를 대체). 세로 밴드로 시간 구간만 선택한다(값 축은 무관 - 위 History 탭 산점도의 2D 박스
-// 선택과 다른 이유는 이 차트가 누적 영역이라 y값이 "그 시점의 합계"이지 세션 하나하나의 좌표가 아니라서).
-// §0/체크리스트 검토 결과 기존 /api/history_sessions는 재사용하지 않기로 함 - getHistorySessions()는
-// "성능 이력 조회" 화면 전용으로 elapsed>=3초 AND exec_count>=100 튜닝 후보 필터가 걸려 있어, 일반
-// 드래그 드릴다운(§8.4 의도)에 쓰면 대부분의 정상적인 드래그가 "결과 없음"으로 나온다 - 그래서 같은
-// 필터 없이 구간 내 세션을 그대로 보여주는 /api/ash_session_detail을 새로 추가했다(getAshSessionDetail).
-(function initAshTopSqlBrush() {
-    const container = document.getElementById('ash-topsql-container');
-    const selectionBox = document.getElementById('ash-topsql-selection-box');
+// E1(체크리스트 1-3, 2026-09-25): 세로 밴드 드래그 공용 모듈 - 우측 Top SQL Activity Timeline(설계문서 §8.4,
+// 4단계 - 2026-09-22)에 이어 좌측 Active Session Wait Class 차트에도 붙인다. 두 차트 모두 누적 영역이라 y값은
+// "그 시점 합계"이지 세션 하나하나의 좌표가 아니어서 시간 구간만 고른다(우측이 처음부터 세로 밴드였던 이유 -
+// E2 검토 결론: 의도된 동작). 대신 범례로 숨긴 계열은 드래그 조회에서도 빼서 "색별로 골라 보기"를 대신한다.
+// 세션 조회는 /api/ash_session_detail(D1 공용 AshRange - 6시간/24시간 구간도 AWR 보충). 기존
+// /api/history_sessions는 "성능 이력 조회" 전용 튜닝 후보 필터(elapsed>=3초 AND exec_count>=100)가 있어 쓰지 않는다.
+function attachAshBrush(containerId, boxId, canvasId, getChart, buildFilterParams, onSelected) {
+    const container = document.getElementById(containerId);
+    const selectionBox = document.getElementById(boxId);
     let isDragging = false;
     let startX = 0;
 
-    if (!container || !selectionBox || window.isAshTopSqlBrushBound) return;
-    window.isAshTopSqlBrushBound = true;
+    if (!container || !selectionBox || container.dataset.brushBound) return;
+    container.dataset.brushBound = '1';
 
     container.addEventListener('mousedown', (e) => {
-        if (e.target.id !== 'ash-topsql-chart') return;
+        if (e.target.id !== canvasId) return;
         isDragging = true;
         const p = scatterPointerToLocal(e, container);
         startX = p.x;
@@ -4341,28 +4437,53 @@ function scatterPointerToLocal(e, container) {
         if (!isDragging) return;
         isDragging = false;
         selectionBox.style.display = 'none';
-        if (!ashTopSqlChart) return;
+        const chart = getChart();
+        if (!chart) return;
 
         const p = scatterPointerToLocal(e, container);
         const endX = p.x;
         if (Math.abs(endX - startX) < 5) return; // 클릭과 구분 - 최소 드래그 폭
 
         try {
-            const xAxis = ashTopSqlChart.scales.x;
+            const xAxis = chart.scales.x;
             const val1 = xAxis.getValueForPixel(Math.min(startX, endX));
             const val2 = xAxis.getValueForPixel(Math.max(startX, endX));
             if (val1 == null || val2 == null) return;
-            // §9.1: Other 드릴다운이 열려 있으면 새 드래그 구간 기준으로 같이 갱신(패널이 열려 있는
-            // 동안은 패널이 캔버스를 덮어 새로 드래그할 수 없으므로, 실제로는 "드래그 후 Other를 열면
-            // 이미 이 구간 기준"이 되는 경로로 동작한다).
-            ashSelectedWindow = { start: new Date(val1), end: new Date(val2) };
-            if (ashOtherDrilldownOpen) refreshAshOtherDrilldown();
-            await fetchAshSessionDetailForDrag(new Date(val1), new Date(val2));
+            const filterParams = buildFilterParams ? buildFilterParams() : '';
+            if (filterParams === null) return; // 범례로 전부 숨겨 조회할 계열이 없음
+            if (onSelected) onSelected(new Date(val1), new Date(val2));
+            await fetchAshSessionDetailForDrag(new Date(val1), new Date(val2), filterParams);
         } catch (err) {
-            console.error('Top SQL brush selection error', err);
+            console.error('ASH brush selection error', err);
         }
     });
-})();
+}
+
+// 우측 Top SQL Activity Timeline
+attachAshBrush('ash-topsql-container', 'ash-topsql-selection-box', 'ash-topsql-chart', () => ashTopSqlChart,
+    () => {
+        // E2: 범례로 숨긴 SQL은 제외 - 현재 Top5에 있는 것만(Top5에서 빠져 Other로 간 SQL까지 빼면 안 됨).
+        const top = ((lastAshTopSqlData && lastAshTopSqlData.sql_categories) || []).map(s => s.sql_id);
+        const hidden = top.filter(id => ashTopSqlHiddenSqlIds.has(id));
+        return hidden.length ? `&exclude_sql_ids=${encodeURIComponent(hidden.join(','))}` : '';
+    },
+    (start, end) => {
+        // §9.1: Other 드릴다운이 열려 있으면 새 드래그 구간 기준으로 같이 갱신.
+        ashSelectedWindow = { start, end };
+        if (ashOtherDrilldownOpen) refreshAshOtherDrilldown();
+    });
+
+// E1: 좌측 Active Session Wait Class 차트 - 범례로 숨긴 분류는 제외(화면 키 sys_io → 서버 7분류 키 system_io).
+attachAshBrush('ash-activity-container', 'ash-activity-selection-box', 'ash-activity-chart', () => ashActivityChart,
+    () => {
+        const items = Array.from(document.querySelectorAll('#ash-activity-legend .chart-legend-item'));
+        if (!items.length || items.every(it => it.dataset.active === 'true')) return '';
+        const keys = items.filter(it => it.dataset.active === 'true')
+            .map(it => ASH_ACTIVITY_CATEGORIES[parseInt(it.dataset.idx, 10)].key)
+            .map(k => (k === 'sys_io' ? 'system_io' : k));
+        if (!keys.length) return null;
+        return `&categories=${encodeURIComponent(keys.join(','))}`;
+    }, null);
 
 function formatAshDateTimeParam(date) {
     const pad = (n) => String(n).padStart(2, '0');
@@ -4373,7 +4494,7 @@ function formatAshDateTimeParam(date) {
 // Popup/session-list.html)으로 보여준다 - /api/ash_session_detail이 이미 session-list.html이 기대하는
 // 필드명(sid/serial/sql_id/capture_time/duration_time/program_name/username/db_name)으로 내려주므로
 // 별도 매핑이 필요 없다(command/osuser는 ASH에 없는 정보라 비워두면 팝업이 '-'로 표시).
-async function fetchAshSessionDetailForDrag(startDate, endDate) {
+async function fetchAshSessionDetailForDrag(startDate, endDate, filterParams) {
     if (!window.currentDbId) return;
     if (endDate.getTime() - startDate.getTime() < 60000) {
         // 드래그 폭이 1분 미만이면 버킷 하나도 안 걸릴 수 있어 최소 1분 폭을 보장.
@@ -4382,7 +4503,7 @@ async function fetchAshSessionDetailForDrag(startDate, endDate) {
     const startParam = formatAshDateTimeParam(startDate);
     const endParam = formatAshDateTimeParam(endDate);
     try {
-        const res = await fetch(`/api/ash_session_detail?db_id=${window.currentDbId}&start_time=${encodeURIComponent(startParam)}&end_time=${encodeURIComponent(endParam)}&token=${encodeURIComponent(getToken())}`);
+        const res = await fetch(`/api/ash_session_detail?db_id=${window.currentDbId}&start_time=${encodeURIComponent(startParam)}&end_time=${encodeURIComponent(endParam)}${filterParams || ''}&token=${encodeURIComponent(getToken())}`);
         const data = await res.json();
         if (!res.ok || data.error) {
             console.error('ash_session_detail 조회 실패:', data && data.error);

@@ -710,27 +710,70 @@ public class MonitorController {
     // Top SQL Activity Timeline 드래그→세션 상세(설계문서 §8.4, 4단계 - 2026-09-22). getHistorySessions와
     // 달리 튜닝 후보 필터(elapsed>=3초, exec_count>=100)가 없다 - 왜 재사용하지 않았는지는
     // MonitorService.getAshSessionDetail() 주석 참고.
+    // E1·E2·E3(2026-09-25): 좌측(Wait Class)·우측(Top SQL) 차트 드래그 공용. categories(7분류 키)·sql_ids·
+    // exclude_sql_ids는 범례로 숨긴 계열을 뺀 필터(선택). 값은 허용 목록으로만 받는다(바인드 변수로 넘기지만
+    // 형식이 틀린 값은 400).
     @GetMapping("/ash_session_detail")
     public ResponseEntity<Object> ashSessionDetail(
             @RequestParam(required = false) String db_id,
             @RequestParam(required = false) String token,
             @RequestParam(name = "start_time", required = false) String startTime,
-            @RequestParam(name = "end_time", required = false) String endTime) {
+            @RequestParam(name = "end_time", required = false) String endTime,
+            @RequestParam(required = false) String categories,
+            @RequestParam(name = "sql_ids", required = false) String sqlIds,
+            @RequestParam(name = "exclude_sql_ids", required = false) String excludeSqlIds) {
         if (!authService.canAccessDb(token, db_id)) {
             return dbAccessDenied();
         }
         if (startTime == null || endTime == null) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "start_time and end_time are required"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "start_time and end_time are required"));
+        }
+        LocalDateTime start;
+        LocalDateTime end;
+        try {
+            start = LocalDateTime.parse(startTime.trim());
+            end = LocalDateTime.parse(endTime.trim());
+        } catch (DateTimeParseException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "start_time/end_time must be yyyy-MM-ddTHH:mm (DB time)"));
+        }
+        List<String> categoryList = splitCsv(categories);
+        for (String c : categoryList) {
+            if (!Arrays.asList(AshCategories.KEYS7).contains(c)) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "unknown category: " + c));
+            }
+        }
+        List<String> sqlIdList = splitCsv(sqlIds);
+        List<String> excludeList = splitCsv(excludeSqlIds);
+        for (String id : concat(sqlIdList, excludeList)) {
+            if (!id.matches("[a-z0-9]{13}")) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "invalid sql_id"));
+            }
         }
         TargetDbConfig target = configService.resolve(db_id);
         if (target == null) {
             return dbNotFound();
         }
         try {
-            return ResponseEntity.ok(monitorService.getAshSessionDetail(target, startTime, endTime));
+            return ResponseEntity.ok(monitorService.getAshSessionDetail(target, start, end, categoryList, sqlIdList, excludeList));
         } catch (SQLException e) {
             return dbError(e);
         }
+    }
+
+    private static List<String> splitCsv(String csv) {
+        List<String> out = new ArrayList<>();
+        if (csv == null) return out;
+        for (String part : csv.split(",")) {
+            String t = part.trim();
+            if (!t.isEmpty()) out.add(t);
+        }
+        return out;
+    }
+
+    private static List<String> concat(List<String> a, List<String> b) {
+        List<String> out = new ArrayList<>(a);
+        out.addAll(b);
+        return out;
     }
 
     // "Other" 드릴다운(설계문서 §9, 5단계 - 2026-09-22) - exclude_sql_ids는 프론트가 이미 들고 있는

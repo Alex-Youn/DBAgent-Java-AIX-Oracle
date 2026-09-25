@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=46">
+    <link rel="stylesheet" href="style.css?v=47">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=12"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -1004,8 +1004,10 @@
                                             <div class="iv2-kpi-value" id="ash-kpi-exceed">–</div>
                                         </div>
                                     </div>
-                                    <div style="flex: 1; position: relative; min-height: 0;">
+                                    <div style="flex: 1; position: relative; min-height: 0;" id="ash-activity-container">
                                         <canvas id="ash-activity-chart"></canvas>
+                                        <!-- E1(체크리스트 1-3, 2026-09-25): 드래그 → 구간 세션 목록 -->
+                                        <div id="ash-activity-selection-box" style="position: absolute; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10;"></div>
                                         <div id="ash-activity-table" class="table-container" style="display: none; position: absolute; inset: 0; overflow: auto; background: var(--bg-panel);"></div>
                                     </div>
                                 </div>
@@ -1036,6 +1038,7 @@
                                 <div class="sesslist-tab-btn active" data-sesslist-tab="sesslist-active-session" style="padding: 10px 20px; cursor: pointer; border-bottom: 2px solid #3987e5; font-weight: 600; color: #3987e5;">Active Session</div>
                                 <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-active-tx" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">Active Transaction</div>
                                 <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-parallel" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">Parallel Session</div>
+                                <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-remote" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">Remote</div>
                                 <div class="sesslist-tab-btn" data-sesslist-tab="sesslist-2pc" style="padding: 10px 20px; cursor: pointer; font-weight: 500; color: var(--text-muted);">2pc Pending Transaction</div>
                             </div>
 
@@ -1055,7 +1058,7 @@
                                                 <th>SID</th>
                                                 <th>Serial#</th>
                                                 <th>Server PID</th>
-                                                <th>Duration Time(sec)</th>
+                                                <th data-duration-sort="active">Duration Time(sec) <span class="duration-sort-mark">↕</span></th>
                                                 <th>Session Wait(%)</th>
                                                 <th>SQL ID</th>
                                                 <th>Event Name</th>
@@ -1085,7 +1088,7 @@
                                                 <th>SID</th>
                                                 <th>Serial#</th>
                                                 <th>Server PID</th>
-                                                <th>Duration Time(sec)</th>
+                                                <th data-duration-sort="tx">Duration Time(sec) <span class="duration-sort-mark">↕</span></th>
                                                 <th>Session Wait(%)</th>
                                                 <th>SQL ID</th>
                                                 <th>Event Name</th>
@@ -1124,6 +1127,32 @@
                                             </tr>
                                         </thead>
                                         <tbody id="sesslist-parallel-tbody">
+                                            <tr><td colspan="11" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- Tab: Remote (E5, 체크리스트 1-8, 2026-09-25) - DB Link로 들어온(IN)/나가는(OUT) 세션 -->
+                            <div id="sesslist-remote" class="sesslist-tab-content" style="display: none;">
+                                <div class="sesslist-scroll">
+                                    <table class="data-table" style="border: none;">
+                                        <thead>
+                                            <tr>
+                                                <th title="IN: 다른 DB가 DB Link로 이 DB에 접속 / OUT: 이 DB 세션이 DB Link로 원격 DB 호출 중">방향</th>
+                                                <th>Instance Name</th>
+                                                <th>Status</th>
+                                                <th>SID</th>
+                                                <th>Serial#</th>
+                                                <th>Duration Time(sec)</th>
+                                                <th>Oracle User Name</th>
+                                                <th title="IN이면 원격 DB 서버">Machine Name</th>
+                                                <th>Program Name</th>
+                                                <th>Event Name</th>
+                                                <th>SQL ID</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="sesslist-remote-tbody">
                                             <tr><td colspan="11" style="text-align:center; padding: 30px;">데이터를 불러오는 중입니다...</td></tr>
                                         </tbody>
                                     </table>
@@ -1289,6 +1318,6 @@
     </div>
 
 
-    <script src="app.js?v=167"></script>
+    <script src="app.js?v=168"></script>
 </body>
 </html>
