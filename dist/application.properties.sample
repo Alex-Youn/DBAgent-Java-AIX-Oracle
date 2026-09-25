@@ -159,3 +159,6 @@
 #dbagent.sql-runner.max-rows=500
 #dbagent.sql-runner.max-rows-limit=5000
 #dbagent.sql-runner.timeout-seconds=30
+# SQL 실행 메뉴 읽기 전용 모드(기본 true): SELECT / WITH 조회문만 실행하고, 실행 중에는 읽기 전용 트랜잭션을 건다.
+# DML(자동 커밋되어 되돌릴 수 없음)·DDL·PL/SQL이 필요할 때만 false로 끈다. "false"가 아닌 값은 켜진 것으로 본다.
+#dbagent.sql-runner.read-only=true

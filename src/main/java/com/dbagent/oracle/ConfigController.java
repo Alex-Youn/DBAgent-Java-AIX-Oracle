@@ -1,5 +1,6 @@
 package com.dbagent.oracle;
 
+import com.dbagent.query.SqlQueryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,6 +15,7 @@ public class ConfigController {
     private static final Logger log = LoggerFactory.getLogger(ConfigController.class);
 
     private final DatabaseConfigService configService;
+    private final SqlQueryService sqlQueryService;
 
     // Dashboard polling interval, read once by app.js on load and used for setInterval(fetchDashboard, ...)
     // - see application.properties for the default and tuning notes.
@@ -57,8 +59,9 @@ public class ConfigController {
     @Value("${dbagent.sql-runner.max-rows-limit:5000}")
     private int sqlRunnerMaxRowsLimit;
 
-    public ConfigController(DatabaseConfigService configService) {
+    public ConfigController(DatabaseConfigService configService, SqlQueryService sqlQueryService) {
         this.configService = configService;
+        this.sqlQueryService = sqlQueryService;
     }
 
     @GetMapping("/api/config")
@@ -69,6 +72,9 @@ public class ConfigController {
         result.put("session_refresh_seconds", sessionRefreshSeconds);
         result.put("sql_runner_max_rows", sqlRunnerMaxRows);
         result.put("sql_runner_max_rows_limit", sqlRunnerMaxRowsLimit);
+        // SQL 실행 메뉴 읽기 전용 모드 여부(dbagent.sql-runner.read-only) - 화면 안내 문구 표시용.
+        // 실제 차단은 서버(SqlQueryService)가 한다.
+        result.put("sql_runner_read_only", sqlQueryService.isReadOnly());
         return result;
     }
 }

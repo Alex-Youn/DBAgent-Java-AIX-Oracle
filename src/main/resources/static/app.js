@@ -3365,6 +3365,9 @@ let layoutHTML = "";
                 if (rowLimitInput) rowLimitInput.value = pollingData.sql_runner_max_rows;
                 if (maxRowsLabel) maxRowsLabel.textContent = pollingData.sql_runner_max_rows;
             }
+            // SQL 실행 메뉴 읽기 전용 안내(체크리스트 5-1, 2026-09-25). 실제 차단은 서버가 한다 - 이건 표시만.
+            const readOnlyNote = document.getElementById('sqlrunner-readonly-note');
+            if (readOnlyNote) readOnlyNote.style.display = pollingData.sql_runner_read_only === false ? 'none' : 'inline-block';
             if (pollingData.sql_runner_max_rows_limit) {
                 if (rowLimitInput) rowLimitInput.max = pollingData.sql_runner_max_rows_limit;
                 if (maxRowsLimitLabel) maxRowsLimitLabel.textContent = pollingData.sql_runner_max_rows_limit;

@@ -489,7 +489,7 @@
                     <div class="panel">
                         <div class="panel-header">
                             <h2>SQL 실행</h2>
-                            <p style="color: var(--text-secondary); margin-top: 5px; font-size: 0.9rem;">좌측에서 선택된 DB에 SQL을 1문장 실행합니다. (기본 <span id="sqlrunner-maxrows">500</span>건 표시, 최대 <span id="sqlrunner-maxrows-limit">5000</span>건까지 조회 건수 조정 가능, <span id="sqlrunner-timeout">30</span>초 타임아웃)</p>
+                            <p style="color: var(--text-secondary); margin-top: 5px; font-size: 0.9rem;">좌측에서 선택된 DB에 SQL을 1문장 실행합니다. (기본 <span id="sqlrunner-maxrows">500</span>건 표시, 최대 <span id="sqlrunner-maxrows-limit">5000</span>건까지 조회 건수 조정 가능, <span id="sqlrunner-timeout">30</span>초 타임아웃) <span id="sqlrunner-readonly-note" style="display: none; margin-left: 6px; padding: 1px 8px; border-radius: 10px; font-size: 0.8rem; font-weight: 600; color: var(--warning, #fab219); border: 1px solid var(--warning, #fab219);" title="SELECT / WITH 조회문만 실행됩니다. 데이터 변경(INSERT·UPDATE·DELETE·MERGE), DDL, PL/SQL, COMMIT/ROLLBACK은 실행되지 않습니다.">읽기 전용 · SELECT / WITH만 실행</span></p>
                         </div>
                         <div class="panel-body">
                             <div class="input-group">
@@ -1289,6 +1289,6 @@
     </div>
 
 
-    <script src="app.js?v=164"></script>
+    <script src="app.js?v=165"></script>
 </body>
 </html>
