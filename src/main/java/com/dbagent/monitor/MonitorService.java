@@ -1555,11 +1555,11 @@ public class MonitorService {
         // dba_objects join 제거(오케스트레이터 실측, 2026-09-22, 11g patent_integ_1/2) - getActiveAlerts()의
         // 같은 패턴 쿼리와 동일한 이유: o의 컬럼을 하나도 안 쓰면서 딕셔너리 뷰 조인만 더해 11g에서
         // 무응답으로 블로킹되던 원인이었다.
-        String query = "SELECT count(distinct s.sid) FROM v$session s " +
-                "JOIN v$lock l ON s.sid = l.sid " +
-                "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
-                "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_instance = s.inst_id AND w.blocking_session = s.sid)";
-        String fallbackQuery = "SELECT /*+ rule */ count(distinct s.sid) FROM v$session s " +
+        // 버그 수정(2026-09-25): 예전 1차 쿼리는 v$session에 없는 s.inst_id(gv$ 시절 흔적)를 참조해
+        // 매번 ORA-00904로 실패하고 아래 rule 힌트 쿼리로 넘어가고 있었다 - 즉 운영에서 실제로 돌던 건
+        // 항상 이 쿼리였다. 폐쇄망에서 검증된 동작(rule 힌트 포함)을 그대로 두고, 매 호출 헛도는 1차
+        // 쿼리와 폴백 구조만 없앤다. gv$/inst_id는 쓰지 않는다(2026-09-06 RAC 원칙).
+        String query = "SELECT /*+ rule */ count(distinct s.sid) FROM v$session s " +
                 "JOIN v$lock l ON s.sid = l.sid " +
                 "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
                 "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid)";
@@ -1572,10 +1572,6 @@ public class MonitorService {
             int count;
             try (ResultSet rs = st.executeQuery(query)) {
                 count = rs.next() ? rs.getInt(1) : 0;
-            } catch (SQLException e) {
-                try (ResultSet rs = st.executeQuery(fallbackQuery)) {
-                    count = rs.next() ? rs.getInt(1) : 0;
-                }
             }
             // v2 대시보드의 "현재 TM/TX Lock 대기" 카드용 실시간 건수 - 장애조치 버튼(위 count)이 이미
             // 이 순간의 v$lock을 직접 보고 판단하는데, 화면에 보이는 대기 건수는 최대
