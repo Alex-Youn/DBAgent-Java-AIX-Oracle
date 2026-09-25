@@ -2108,6 +2108,39 @@ let layoutHTML = "";
         return document.getElementById('ash-topsql-container');
     }
 
+    function resetAshKpis() {
+        ['ash-kpi-current', 'ash-kpi-cores', 'ash-kpi-avg', 'ash-kpi-exceed'].forEach(id => ashSetText(id, '–'));
+        const deltaEl = document.getElementById('ash-kpi-delta');
+        if (deltaEl) deltaEl.textContent = '';
+    }
+
+    // 첫 로딩 스켈레톤(체크리스트 1-2, 2026-09-25) - 예전엔 첫 ASH 응답이 와야 차트를 처음 만들어서, 폐쇄망처럼
+    // 응답이 느리면 그동안 그래프 자리가 축·격자도 없는 빈(검은) 영역이었다. 데이터가 없어도 빈 데이터로
+    // 차트를 먼저 만들어 축·격자·제목을 즉시 보여주고, 그 위에 "불러오는 중…"을 띄운다.
+    function ensureAshSkeletons() {
+        if (!ashActivityChart && !ashActivityShowTable) {
+            renderAshActivityChart({ series: [], cpu_cores: 0 });
+            lastAshActivityData = null; // 빈 스켈레톤은 "그린 데이터"가 아니다(오류 표시 판단용)
+            resetAshKpis();
+        }
+        if (!ashTopSqlChart && !isAshLongRange()) {
+            renderAshTopSqlChart({ sql_categories: [], series: [] });
+            lastAshTopSqlData = null;
+            const topLegend = document.getElementById('ash-topsql-legend');
+            if (topLegend) topLegend.innerHTML = '';
+        }
+    }
+
+    // 조회 시간 진단 로그(체크리스트 1-2): 2초 이상 걸린 응답만 콘솔에 "전체 / 서버 처리(query_ms) /
+    // 네트워크·대기"로 나눠 남긴다 - 폐쇄망 현장에서 F12 콘솔만 보면 원인을 구분할 수 있게.
+    function logSlowAshResponse(what, dbId, startedAt, data) {
+        const total = Math.round(performance.now() - startedAt);
+        if (total < 2000) return;
+        const serverMs = data && typeof data.query_ms === 'number' ? data.query_ms : null;
+        console.info(`[DBAgent] ${what} db=${dbId} 전체 ${total}ms`
+            + (serverMs !== null ? ` / 서버 처리(커넥션+DB 조회) ${serverMs}ms / 네트워크·대기 ${total - serverMs}ms` : ''));
+    }
+
     // DB 전환 시(resetSessionMonitor) 호출 - 이전 DB의 그래프·KPI·범례를 즉시 지우고 "불러오는 중"
     // 표시. 차트 인스턴스는 유지하고 데이터만 비운다(크기·범례 on/off 상태 유지).
     function clearAshPanelsForDbSwitch() {
@@ -2117,13 +2150,12 @@ let layoutHTML = "";
         lastAshTopSqlData = null;
         if (ashActivityChart) { ashActivityChart.data.datasets = []; ashActivityChart.update(); }
         if (ashTopSqlChart) { ashTopSqlChart.data.datasets = []; ashTopSqlChart.update(); }
-        ['ash-kpi-current', 'ash-kpi-cores', 'ash-kpi-avg', 'ash-kpi-exceed'].forEach(id => ashSetText(id, '–'));
-        const deltaEl = document.getElementById('ash-kpi-delta');
-        if (deltaEl) deltaEl.textContent = '';
+        resetAshKpis();
         const tableEl = document.getElementById('ash-activity-table');
         if (tableEl) tableEl.innerHTML = '';
         const topLegend = document.getElementById('ash-topsql-legend');
         if (topLegend) topLegend.innerHTML = '';
+        ensureAshSkeletons();
         setAshPanelMessage(ashActivityContainer(), '불러오는 중…');
         setAshPanelMessage(ashTopSqlContainer(), isAshLongRange() ? '' : '불러오는 중…');
     }
@@ -2137,8 +2169,10 @@ let layoutHTML = "";
             const data = isAshLongRange()
                 ? await fetchAshActivityFromHistory(myDbId)
                 : await (async () => {
+                    const startedAt = performance.now();
                     const res = await fetch(`/api/ash_activity?db_id=${myDbId}&range_minutes=${ashActivityRangeMinutes}&step_minutes=1&token=${encodeURIComponent(getToken())}`);
                     const d = await res.json();
+                    logSlowAshResponse('ash_activity', myDbId, startedAt, d);
                     if (!res.ok || d.error) throw new Error(d.error || 'ash_activity 조회 실패');
                     return d;
                 })();
@@ -2379,8 +2413,10 @@ let layoutHTML = "";
         const req = ashTopSqlRequestGuard.begin();
         const myDbId = req.dbId;
         try {
+            const startedAt = performance.now();
             const res = await fetch(`/api/ash_top_sql?db_id=${myDbId}&range_minutes=${ashActivityRangeMinutes}&step_minutes=1&token=${encodeURIComponent(getToken())}`);
             const data = await res.json();
+            logSlowAshResponse('ash_top_sql', myDbId, startedAt, data);
             if (!res.ok || data.error) throw new Error(data.error || 'ash_top_sql 조회 실패');
             if (req.isStale()) return;
             setAshPanelMessage(ashTopSqlContainer(), '');
@@ -2645,6 +2681,17 @@ let layoutHTML = "";
                 scheduleNextAshActivityFetch(generation);
             }
         });
+    }
+
+    // 페이지를 막 열었을 때(DB 자동 선택·첫 응답 전)도 그래프 자리가 빈 영역이 아니라 축·격자 +
+    // "불러오는 중…"으로 보이게 한다(체크리스트 1-2). RDB/FO 화면에서 돌아올 때도 페이지가 새로
+    // 열리므로 같은 경로를 탄다.
+    try {
+        ensureAshSkeletons();
+        setAshPanelMessage(ashActivityContainer(), '불러오는 중…');
+        setAshPanelMessage(ashTopSqlContainer(), '불러오는 중…');
+    } catch (skeletonErr) {
+        console.error('ASH skeleton init failed:', skeletonErr);
     }
 
     document.querySelectorAll('[data-ash-range]').forEach(btn => {

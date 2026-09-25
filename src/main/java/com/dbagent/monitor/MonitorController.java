@@ -173,6 +173,21 @@ public class MonitorController {
         }
     }
 
+    // Current Session 그래프 첫 로딩이 폐쇄망에서만 느린 원인(체크리스트 1-2)을 현장에서 구분하기 위해,
+    // 서버 쪽 처리 시간(query_ms, 커넥션 획득+DB 조회)을 응답에 실어 보낸다. 브라우저는 전체 응답 시간과 이 값을 같이
+    // 콘솔에 남기므로 "전체 - query_ms"가 네트워크·대기 시간이다. 느린 조회(3초 이상)는 서버 로그에도 남긴다.
+    private static final long SLOW_ASH_QUERY_LOG_MS = 3000;
+
+    private Map<String, Object> withQueryMs(String what, String dbId, Map<String, Object> result, long startedNanos) {
+        long queryMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+        if (queryMs >= SLOW_ASH_QUERY_LOG_MS) {
+            log.info("{} slow for db_id={}: {} ms", what, dbId, queryMs);
+        }
+        Map<String, Object> body = new LinkedHashMap<>(result);
+        body.put("query_ms", queryMs);
+        return body;
+    }
+
     // "Current Session" 화면 Active Session Wait Class 차트(설계문서 `Current Session 매뉴
     // active_session 차트 개편.md` 1단계, 2026-09-22 - 원본 DBAgent-Java에서 포팅) - 30분/1시간만
     // 지원. 6시간/24시간(AWR 소스)은 문서 §0 결정에 따라 이후 단계(6단계)에서 추가 예정이라 여기서는
@@ -196,7 +211,9 @@ public class MonitorController {
             return dbNotFound();
         }
         try {
-            return ResponseEntity.ok(monitorService.getAshActivity(target, rangeMinutes, stepMinutes));
+            long started = System.nanoTime();
+            Map<String, Object> result = monitorService.getAshActivity(target, rangeMinutes, stepMinutes);
+            return ResponseEntity.ok(withQueryMs("ash_activity", db_id, result, started));
         } catch (SQLException e) {
             return dbError(e);
         }
@@ -222,7 +239,9 @@ public class MonitorController {
             return dbNotFound();
         }
         try {
-            return ResponseEntity.ok(monitorService.getAshTopSql(target, rangeMinutes, stepMinutes));
+            long started = System.nanoTime();
+            Map<String, Object> result = monitorService.getAshTopSql(target, rangeMinutes, stepMinutes);
+            return ResponseEntity.ok(withQueryMs("ash_top_sql", db_id, result, started));
         } catch (SQLException e) {
             return dbError(e);
         }
