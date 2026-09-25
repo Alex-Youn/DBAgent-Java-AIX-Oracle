@@ -82,6 +82,11 @@ public class MonitorService {
         this.tmHolderLastCallEtSeconds = seconds;
     }
 
+    /** 새 대시보드 Lock 실시간(LockRealtimeService)도 v2와 같은 기준을 쓰도록 공유(F2, 2026-09-25). */
+    public int getTmHolderLastCallEtSeconds() {
+        return tmHolderLastCallEtSeconds;
+    }
+
     public MonitorService(OracleConnectionPoolManager poolManager, OracleQueryHelper queryHelper,
                            InstanceMetricSamplerService metricSamplerService) {
         this.poolManager = poolManager;
