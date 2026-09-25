@@ -186,8 +186,33 @@
         const scale = el.offsetHeight > 0 ? rect.height / el.offsetHeight : 1;
         const available = (window.innerHeight - rect.top - 12) / (scale || 1);
         el.style.height = Math.max(400, Math.floor(available)) + 'px';
+        fitChart();
     }
     window.addEventListener('resize', () => { if (state.active) fitHeight(); });
+
+    // ②③ 차트 행 높이: 창 높이에 맞춰 300~400px (2026-09-26 오케스트레이터 결정). 큰 모니터는 400px, 작은 모니터는
+    // 줄여서 스크롤을 줄이고, 300px 아래로는 줄이지 않는다(넘치면 대시보드 영역 안에서 스크롤).
+    // 부하·데이터가 아니라 "대시보드 영역 높이 - 나머지 블록 높이"로만 정해지므로 같은 창에서는 크기가 흔들리지 않는다.
+    const CHART_MIN = 300, CHART_MAX = 400;
+    function fitChart() {
+        const el = $('dashboard-nd-view');
+        const row = el && el.querySelector('.nd-chart-row');
+        if (!row || el.style.display === 'none') return;
+        const gap = parseFloat(getComputedStyle(el).rowGap) || 0;
+        let others = 0, count = 0;
+        for (const c of el.children) {
+            if (c === row || c.offsetParent === null) continue;
+            others += c.offsetHeight; count++;
+        }
+        const h = Math.max(CHART_MIN, Math.min(CHART_MAX, Math.floor(el.clientHeight - others - gap * count)));
+        if (row.style.height !== h + 'px') { row.style.height = h + 'px'; row.style.flexBasis = h + 'px'; }
+    }
+    // 다른 블록 높이가 바뀌면(⑧ 카드 줄 수, 상태바 줄바꿈 등) 다시 맞춘다.
+    if (typeof ResizeObserver === 'function') {
+        const ro = new ResizeObserver(() => { if (state.active) fitChart(); });
+        const view = $('dashboard-nd-view');
+        if (view) for (const c of view.children) if (!c.classList.contains('nd-chart-row')) ro.observe(c);
+    }
 
     // ------------------------------------------------------------------ 상태바 (느린 주기)
 

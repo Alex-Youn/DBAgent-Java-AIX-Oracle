@@ -1846,8 +1846,9 @@ body {
 .nd-minibar { display: flex; gap: 2px; margin-top: 4px; height: 6px; }
 .nd-minibar span { flex: 1; border-radius: 1px; background: var(--nd-skeleton); }
 
-/* ②③ 차트 행: 높이 400px 고정(2026-09-26 오케스트레이터 결정, 320px → 400px - 예전엔 남는 세로 공간을 모두 가져가 부하·배율에 따라
-   차트 크기가 들쭉날쭉했다). 남는 공간은 아래 여백, 창이 작으면 대시보드 영역 안에서 스크롤. */
+/* ②③ 차트 행: 창 높이에 맞춰 300~400px(2026-09-26 오케스트레이터 결정, 320px → 400px 고정 → 창 높이 연동).
+   실제 높이는 nd-dashboard.js fitChart()가 "대시보드 영역 - 나머지 블록"으로 정한다(부하·데이터와 무관). 아래 400px는 JS 전 기본값.
+   예전엔 남는 세로 공간을 모두 가져가 부하·배율에 따라 차트 크기가 들쭉날쭉했다. */
 .nd-chart-row { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); gap: 10px; flex: 0 0 400px; height: 400px; }
 .nd-chart-row .nd-card { display: flex; flex-direction: column; min-height: 0; }
 .nd-chart-body { flex: 1 1 auto; min-height: 120px; position: relative; }
