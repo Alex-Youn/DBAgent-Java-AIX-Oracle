@@ -1732,3 +1732,135 @@ body {
     border: 1px solid var(--border-color);
     border-radius: 4px;
 }
+
+/* ============================================================================
+   대시보드 개편(새 대시보드, 설계문서 `대시보드 UI 개선 설계.md` 2장, 전체 작업순서 F4 - 2026-09-25)
+   - 색 토큰은 새로 만들지 않고 기존 테마 변수에 매핑한다(2.3). 라이트 테마([data-theme="light"])에서도 따라간다.
+   - 폐쇄망 제약(2.4): 외부 폰트·color-mix()·dvh 없음 - 반투명 색은 rgba 값으로 미리 둔다.
+   ============================================================================ */
+:root {
+    --nd-page: var(--bg-main);
+    --nd-surface: var(--bg-panel);
+    --nd-surface-2: rgba(255, 255, 255, 0.04);
+    --nd-ink: var(--text-main);
+    --nd-ink-2: #b3bec9;
+    --nd-muted: var(--text-muted);
+    --nd-grid: rgba(255, 255, 255, 0.07);
+    --nd-axis: rgba(255, 255, 255, 0.18);
+    --nd-good: var(--success);
+    --nd-warn: var(--warning);
+    --nd-serious: #ec835a;
+    --nd-crit: var(--danger);
+    --nd-crit-bg: rgba(208, 59, 59, 0.14);
+    --nd-warn-bg: rgba(250, 178, 25, 0.12);
+    --nd-skeleton: rgba(255, 255, 255, 0.06);
+    /* 대기 클래스 8분류 (2.3, 누적 순서 아래→위) */
+    --nd-c-cpu: #1c9a68;
+    --nd-c-user_io: #4270e8;
+    --nd-c-system_io: #13a9a4;
+    --nd-c-concurrency: #a45a2c;
+    --nd-c-application: #ec4868;
+    --nd-c-commit: #a8830a;
+    --nd-c-network: #8f7ae6;
+    --nd-c-other: #d46a9e;
+    --nd-font-mono: Consolas, 'D2Coding', monospace;
+}
+
+:root[data-theme="light"] {
+    --nd-ink-2: #cbd5e1;
+    --nd-surface-2: rgba(148, 163, 184, 0.08);
+    --nd-grid: rgba(148, 163, 184, 0.14);
+    --nd-axis: rgba(148, 163, 184, 0.35);
+    --nd-skeleton: rgba(148, 163, 184, 0.12);
+    --nd-serious: #f08a5d;
+}
+
+/* 대시보드 영역: 상단 크롬을 뺀 높이를 flex column으로 나눈다(2.2). 너무 작으면 이 영역 안에서만 스크롤. */
+#dashboard-nd-view {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: calc(125vh - 150px); /* .app-container zoom 80% 보정(100vh / 0.8) - 상단 크롬 높이 제외 */
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    color: var(--nd-ink);
+    font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
+}
+
+.nd-statusbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 24px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 8px 16px;
+    flex: 0 0 auto;
+}
+.nd-status-items { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: center; }
+.nd-status-item { display: flex; align-items: center; gap: 6px; font-size: 0.92rem; color: var(--nd-muted); }
+.nd-status-item b { color: var(--nd-ink); font-size: 1rem; }
+.nd-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--nd-muted); flex: none; }
+.nd-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.nd-seg { display: inline-flex; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
+.nd-seg button {
+    background: transparent; color: var(--nd-muted); border: none; padding: 5px 12px; cursor: pointer;
+    font-size: 0.85rem; font-weight: 600;
+}
+.nd-seg button + button { border-left: 1px solid var(--border-color); }
+.nd-seg button.active { background: var(--primary); color: #fff; }
+.nd-seg button:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.nd-refresh-label { font-size: 0.85rem; color: var(--nd-muted); }
+#nd-refresh-sec {
+    width: 56px; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 4px;
+    background: var(--bg-main); color: var(--nd-ink);
+}
+
+.nd-error {
+    display: none; flex: 0 0 auto; padding: 8px 14px; border-radius: 6px;
+    background: var(--nd-crit-bg); color: var(--nd-crit); font-size: 0.9rem; font-weight: 600;
+}
+
+.nd-card {
+    background: var(--nd-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 14px;
+    min-width: 0;
+    position: relative;
+}
+.nd-card-title { font-size: 0.9rem; font-weight: 700; color: var(--nd-ink); margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+.nd-card-sub { font-size: 0.78rem; color: var(--nd-muted); font-weight: 500; }
+
+/* ① KPI 6칸 (2026-09-25 활성 세션·메모리 추가) */
+.nd-kpi-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; flex: 0 0 auto; padding: 8px 4px; }
+.nd-kpi { padding: 2px 14px; border-left: 1px solid var(--border-color); min-width: 0; }
+.nd-kpi:first-child { border-left: none; }
+.nd-kpi-label { font-size: 0.8rem; color: var(--nd-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-kpi-value { font-size: 1.45rem; font-weight: 700; font-family: var(--nd-font-mono); line-height: 1.3; }
+.nd-kpi-sub { font-size: 0.76rem; color: var(--nd-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-minibar { display: flex; gap: 2px; margin-top: 4px; height: 6px; }
+.nd-minibar span { flex: 1; border-radius: 1px; background: var(--nd-skeleton); }
+
+/* ②③ 차트 행: 남는 세로 공간을 모두 가져간다(최소 180px) */
+.nd-chart-row { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); gap: 10px; flex: 1 1 auto; min-height: 180px; }
+.nd-chart-row .nd-card { display: flex; flex-direction: column; min-height: 0; }
+.nd-chart-body { flex: 1 1 auto; min-height: 120px; position: relative; }
+
+.nd-banner { flex: 0 0 auto; padding: 8px 14px; font-size: 0.9rem; }
+.nd-top-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; flex: 0 0 auto; }
+.nd-checks { flex: 0 0 auto; }
+
+.nd-live { font-size: 0.72rem; font-weight: 700; color: var(--nd-good); letter-spacing: 0.02em; }
+.nd-live.paused { color: var(--nd-muted); }
+
+/* 첫 로딩 스켈레톤 - 데이터 전에도 틀을 보여 준다(검은 빈 화면 없음) */
+.nd-skel { background: var(--nd-skeleton); border-radius: 4px; animation: nd-pulse 1.4s ease-in-out infinite; }
+.nd-skel-line { height: 12px; margin: 7px 0; }
+.nd-skel-block { position: absolute; inset: 4px; }
+@keyframes nd-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .nd-skel { animation: none; } }
+.nd-placeholder { color: var(--nd-muted); font-size: 0.82rem; }

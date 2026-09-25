@@ -3655,6 +3655,7 @@ let layoutHTML = "";
 
         function fetchActiveDashboardView() {
             if (currentView === 'v2') fetchInstanceDashboardV2();
+            if (currentView === 'nd' && window.ndDashboard) window.ndDashboard.onDbChange();
         }
         // instLink 클릭 핸들러(이 IIFE 밖, DB 트리 초기화 코드)가 최초 DB 자동선택/전환 직후 바로
         // 불러 쓰기 위한 훅(오케스트레이터 실측, 2026-09-18) - 안 그러면 v2는 다음 10초 폴링
@@ -3663,8 +3664,14 @@ let layoutHTML = "";
 
         function setView(view) {
             currentView = view;
-            legacyView.style.display = view === 'legacy' ? '' : 'none';
+            // 새 대시보드(F4, 2026-09-25)가 "기존" 자리를 대체 - 예전 게이지·탭 화면(legacy)은 더 이상 고를 수 없다.
+            legacyView.style.display = 'none';
             v2View.style.display = view === 'v2' ? '' : 'none';
+            const ndView = document.getElementById('dashboard-nd-view');
+            if (ndView) ndView.style.display = view === 'nd' ? '' : 'none';
+            if (window.ndDashboard) {
+                if (view === 'nd') window.ndDashboard.show(); else window.ndDashboard.hide();
+            }
             switchBtns.forEach(b => b.classList.toggle('active', b.getAttribute('data-iv2-view') === view));
             try { localStorage.setItem('dbagent.dashboardView', view); } catch (e) { /* private mode 등 - 무시 */ }
 
@@ -3672,7 +3679,6 @@ let layoutHTML = "";
             // 코드는 건드리지 않고, 신규 뷰가 보이는 동안만 레거시 폴링을 멈춰 같은 인스턴스에 두 폴러가
             // 동시에 부하를 주지 않도록 한다.
             window.dbagentActiveDashboardSubView = view;
-            if (view === 'legacy') fetchDashboard();
 
             if (iv2PollingTimer) { clearInterval(iv2PollingTimer); iv2PollingTimer = null; }
             if (view === 'v2') {
@@ -4075,12 +4081,15 @@ let layoutHTML = "";
             }
         }
 
-        let initialView = 'legacy';
+        // 마지막 선택값 저장은 기존 방식 그대로 - 예전 값 'legacy'는 그 자리를 대체한 새 대시보드('nd')로 연다.
+        let initialView = 'nd';
         try {
             const saved = localStorage.getItem('dbagent.dashboardView');
             if (saved === 'v2') initialView = saved;
         } catch (e) { /* ignore */ }
-        setView(initialView);
+        // nd-dashboard.js는 app.js 다음에 로드되므로 한 틱 뒤에 연다(window.ndDashboard 준비 후).
+        window.dbagentActiveDashboardSubView = initialView; // 한 틱 사이 예전 화면 폴링이 돌지 않게 먼저 표시
+        setTimeout(() => setView(initialView), 0);
 
         // 전환 스위치는 .content-section 바깥(항상 뷰포트 기준 우측하단)에 두었기 때문에, DASHBOARD 탭이
         // 활성화된 동안에만 보이도록 표시 여부를 직접 관리해야 한다 - .content-section.active의 CSS

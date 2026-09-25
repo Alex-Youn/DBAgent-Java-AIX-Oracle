@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=47">
+    <link rel="stylesheet" href="style.css?v=48">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=12"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -240,7 +240,70 @@
             <div class="content-area">
                 <!-- Dashboard Section -->
                 <section id="dashboard" class="content-section active">
-                    <div id="dashboard-legacy-view">
+                    <!-- 새 대시보드(설계문서 `대시보드 UI 개선 설계.md`, 전체 작업순서 F4~F9 - 2026-09-25). 우측 하단 스위치의
+                         "기존" 자리를 대체한다(예전 게이지·탭 화면은 스위치에서 빠지고 폴링도 멈춤, v2는 그대로).
+                         동작은 nd-dashboard.js - 각 패널 내용은 F5~F8에서 채운다. -->
+                    <div id="dashboard-nd-view" style="display: none;">
+                        <div class="nd-statusbar">
+                            <div class="nd-status-items">
+                                <div class="nd-status-item">인스턴스 <span class="nd-dot" id="nd-st-instance-dot"></span><b id="nd-st-instance">--</b></div>
+                                <div class="nd-status-item">리스너 <span class="nd-dot" id="nd-st-listener-dot"></span><b id="nd-st-listener">--</b></div>
+                                <div class="nd-status-item">Max Session <b id="nd-st-max-session">--</b> <span>[Active <b id="nd-st-active">--</b> / Inactive <b id="nd-st-inactive">--</b>]</span></div>
+                                <div class="nd-status-item">Max Process <b id="nd-st-max-process">--</b> <span>[Dedicated <b id="nd-st-dedicated">--</b> / Shared <b id="nd-st-shared">--</b>]</span></div>
+                            </div>
+                            <div class="nd-controls">
+                                <div class="nd-seg" id="nd-range" role="group" aria-label="조회 구간">
+                                    <button type="button" data-range="15m">15분</button>
+                                    <button type="button" data-range="1h" class="active">1시간</button>
+                                    <button type="button" data-range="3h">3시간</button>
+                                    <button type="button" data-range="24h">24시간</button>
+                                </div>
+                                <label for="nd-refresh-sec" class="nd-refresh-label">리프레쉬 주기(초):</label>
+                                <input type="number" id="nd-refresh-sec" value="3" min="2" max="60">
+                                <button type="button" id="nd-refresh-btn" class="secondary-btn"><i data-lucide="refresh-cw"></i> 수동 새로고침</button>
+                                <button type="button" id="nd-toggle-btn" class="danger-btn">자동 갱신 중지</button>
+                            </div>
+                        </div>
+                        <div class="nd-error" id="nd-error" role="alert"></div>
+
+                        <!-- ① KPI 6칸 -->
+                        <div class="nd-card nd-kpi-row" id="nd-kpi">
+                            <div class="nd-kpi" data-kpi="current"><div class="nd-kpi-label">현재 AAS</div><div class="nd-kpi-value" id="nd-kpi-current">—</div><div class="nd-kpi-sub" id="nd-kpi-current-sub">&nbsp;</div></div>
+                            <div class="nd-kpi" data-kpi="avg"><div class="nd-kpi-label">구간 평균 AAS</div><div class="nd-kpi-value" id="nd-kpi-avg">—</div><div class="nd-kpi-sub" id="nd-kpi-avg-sub">&nbsp;</div></div>
+                            <div class="nd-kpi" data-kpi="max"><div class="nd-kpi-label">최대 AAS</div><div class="nd-kpi-value" id="nd-kpi-max">—</div><div class="nd-kpi-sub" id="nd-kpi-max-sub">&nbsp;</div></div>
+                            <div class="nd-kpi" data-kpi="over"><div class="nd-kpi-label">CPU 코어 초과</div><div class="nd-kpi-value" id="nd-kpi-over">—</div><div class="nd-kpi-sub" id="nd-kpi-over-sub">&nbsp;</div></div>
+                            <div class="nd-kpi" data-kpi="sessions"><div class="nd-kpi-label">활성 세션</div><div class="nd-kpi-value" id="nd-kpi-sessions">—</div><div class="nd-minibar" id="nd-kpi-sessions-bar"></div></div>
+                            <div class="nd-kpi" data-kpi="memory"><div class="nd-kpi-label">메모리 사용률</div><div class="nd-kpi-value" id="nd-kpi-memory">—</div><div class="nd-minibar" id="nd-kpi-memory-bar"></div></div>
+                        </div>
+
+                        <!-- ②③ 차트 행 -->
+                        <div class="nd-chart-row">
+                            <div class="nd-card" id="nd-aas-card">
+                                <div class="nd-card-title">평균 활성 세션 (대기 클래스별) <span class="nd-card-sub">Oracle 대기 클래스 기준</span></div>
+                                <div class="nd-chart-body" id="nd-aas-body"><div class="nd-skel nd-skel-block"></div></div>
+                            </div>
+                            <div class="nd-card" id="nd-lock-card">
+                                <div class="nd-card-title">Lock 대기 세션 <span class="nd-live" id="nd-lock-live">LIVE · 3초 주기</span></div>
+                                <div class="nd-chart-body" id="nd-lock-body"><div class="nd-skel nd-skel-block"></div></div>
+                            </div>
+                        </div>
+
+                        <!-- ④ 진단 배너 -->
+                        <div class="nd-card nd-banner" id="nd-banner"><div class="nd-skel nd-skel-line" style="width: 55%;"></div></div>
+
+                        <!-- ⑤⑥⑦ Top -->
+                        <div class="nd-top-row">
+                            <div class="nd-card" id="nd-top-sql"><div class="nd-card-title">Top SQL</div><div class="nd-top-body"><div class="nd-skel nd-skel-line"></div><div class="nd-skel nd-skel-line"></div><div class="nd-skel nd-skel-line"></div></div></div>
+                            <div class="nd-card" id="nd-top-session"><div class="nd-card-title">Top 세션</div><div class="nd-top-body"><div class="nd-skel nd-skel-line"></div><div class="nd-skel nd-skel-line"></div><div class="nd-skel nd-skel-line"></div></div></div>
+                            <div class="nd-card" id="nd-top-event"><div class="nd-card-title">Top 대기 이벤트</div><div class="nd-top-body"><div class="nd-skel nd-skel-line"></div><div class="nd-skel nd-skel-line"></div><div class="nd-skel nd-skel-line"></div></div></div>
+                        </div>
+
+                        <!-- ⑧ 점검 알림 -->
+                        <div class="nd-card nd-checks" id="nd-checks"><div class="nd-card-title">점검 알림</div><div class="nd-checks-body"><div class="nd-skel nd-skel-line" style="width: 70%;"></div></div></div>
+                    </div><!-- /#dashboard-nd-view -->
+                    <!-- 예전 게이지·탭 화면: 새 대시보드로 대체되어 스위치에서 빠졌다(F4, 2026-09-25). 기존 JS가
+                         이 DOM에 이벤트를 걸고 있어 지우지 않고 숨겨 두기만 한다 - 폴링은 dbagentActiveDashboardSubView로 멈춤. -->
+                    <div id="dashboard-legacy-view" style="display: none;">
                     <div class="db-mini-status" style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border-color); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);">
                         <div style="display: flex; gap: 30px; align-items: center; flex-wrap: wrap; row-gap: 8px;">
                             <div style="display: flex; align-items: center; gap: 8px;">
@@ -1303,7 +1366,7 @@
          모달들과 같은 레벨(.app-container 바깥, body 직속)로 옮겨서 zoom 영향을 완전히 벗어나게 한다.
          표시 여부는 JS가 DASHBOARD 탭 활성 상태에 맞춰 토글한다(app.js의 initInstanceDashboardV2). -->
     <div class="iv2-view-switch" id="iv2-view-switch" style="display: none;">
-        <button type="button" class="iv2-view-btn active" data-iv2-view="legacy" title="클래식 대시보드">
+        <button type="button" class="iv2-view-btn active" data-iv2-view="nd" title="새 대시보드">
             <i data-lucide="layout-dashboard"></i>
         </button>
         <button type="button" class="iv2-view-btn" data-iv2-view="v2" title="신규 대시보드(베타)">
@@ -1318,6 +1381,7 @@
     </div>
 
 
-    <script src="app.js?v=168"></script>
+    <script src="app.js?v=169"></script>
+    <script src="nd-dashboard.js?v=3"></script>
 </body>
 </html>
