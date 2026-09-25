@@ -295,6 +295,10 @@
     /* Connections 행에 시계열 패널이 합쳐지면서(2026-09-06) 패널 폭이 좁아졌다.
        접속 목록처럼 칸이 많은 표는 페이지를 밀지 않고 자기 안에서 가로로 스크롤되게 한다. */
     .metric-panel .live-table-scroll { overflow-x: auto; }
+    /* Client Connections 목록(체크리스트 3-1, 2026-09-25): 연결이 9개 이상이면 프레임이 아래로 계속 늘어나지
+       않고 8행 높이에서 세로 스크롤. 높이는 fitConnScroll()이 머리글+8행을 재서 정하고, 머리글은 고정. */
+    .metric-panel .conn-scroll { overflow-y: auto; }
+    .metric-panel .conn-scroll thead th { position: sticky; top: 0; background: #17181c; z-index: 1; }
     .live-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .live-table th, .live-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
     .live-table th { color: var(--text-muted); font-weight: 600; }
@@ -790,6 +794,18 @@
     }
 
     // ---- Real data: Connections (/api/rdb/sessions) ----
+    // 체크리스트 3-1(2026-09-25): 연결이 CONN_VISIBLE_ROWS개를 넘으면(9개째부터) 목록 높이를 "머리글 + 첫 8행"의
+    // 실제 높이로 제한하고 나머지는 세로 스크롤. 예전엔 20개까지 잘라 보여주며 프레임이 아래로 늘어났다.
+    const CONN_VISIBLE_ROWS = 8;
+    function fitConnScroll(box) {
+        if (!box) return;
+        const rows = box.querySelectorAll('tbody tr');
+        if (rows.length <= CONN_VISIBLE_ROWS) { box.style.maxHeight = 'none'; return; }
+        const thead = box.querySelector('thead');
+        let height = thead ? thead.offsetHeight : 0;
+        for (let i = 0; i < CONN_VISIBLE_ROWS; i++) height += rows[i].offsetHeight;
+        box.style.maxHeight = height + 'px';
+    }
     function loadConnections() {
         const holders = liveHolders.connections;
         if (!holders || !dbId) return;
@@ -805,17 +821,18 @@
                 // 패널 제목(ROWS 의 '현재 연결 수')이 이미 뜻을 말해 주므로 숫자 아래 같은 라벨을 또 붙이지 않는다.
                 countEl.innerHTML = `<div class="live-count">${data.length}</div>`;
                 if (!data.length) { listEl.innerHTML = '연결이 없습니다.'; return; }
-                const rows = data.slice(0, 20).map(s => `
+                const rows = data.map(s => `
                     <tr><td>${s.user || ''}</td><td>${s.host || ''}</td><td>${s.application_name || ''}</td><td>${s.state || ''}</td></tr>
                 `).join('');
                 listEl.innerHTML = `
-                    <div class="live-table-scroll">
+                    <div class="live-table-scroll conn-scroll">
                         <table class="live-table">
                             <thead><tr><th>계정</th><th>Host</th><th>App</th><th>상태</th></tr></thead>
                             <tbody>${rows}</tbody>
                         </table>
                     </div>
                 `;
+                fitConnScroll(listEl.querySelector('.conn-scroll'));
             })
             .catch(err => {
                 countEl.innerHTML = `<span class="live-error">오류</span>`;
