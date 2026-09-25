@@ -16,6 +16,8 @@
         /* #8e8e8e 는 잔글씨(11~12px)에서 너무 흐려 읽기 힘들었다 - 한 단계 밝혀 대비를 올린다. */
         --text-muted: #a9aaae;
         --teal: #5ac8db;
+        /* 화면 이동 버튼(ORACLE/FO) 색 - index.html의 --primary와 같은 파랑(체크리스트 3-2, 2026-09-25). */
+        --nav-btn: #3987e5;
         --orange: #ff9830;
         --green: #73bf69;
         --blue: #5794f2;
@@ -39,6 +41,7 @@
         --text: #f8fafc;
         --text-muted: #aab6c6;
         --teal: #3b82f6;
+        --nav-btn: #3b82f6;
         --orange: #f59e0b;
         --green: #10b981;
         --blue: #3b82f6;
@@ -203,24 +206,25 @@
     .icon-btn i { width: 16px; height: 16px; }
     .fo-btn {
         font-family: inherit; font-weight: 800; font-size: 12px; letter-spacing: .02em;
-        padding: 0 10px; height: 30px; box-sizing: border-box; border: 1px solid var(--teal);
-        border-radius: 8px; background: var(--teal); color: #0b1e21; text-decoration: none;
+        padding: 0 10px; height: 30px; box-sizing: border-box; border: 1px solid var(--nav-btn);
+        border-radius: 8px; background: var(--nav-btn); color: #0a1a2b; text-decoration: none;
         display: inline-flex; align-items: center;
     }
-    .fo-btn:hover { background: #7ad5e5; border-color: #7ad5e5; }
+    .fo-btn:hover { background: #5b9dee; border-color: #5b9dee; }
     /* Oracle 화면(index.html) 바로가기. 로고 이미지(Oracle_icon.jpg / oracle_icon.png)는 둘 다
        알파 채널이 없어 어두운 헤더에 흰 배경이 사각형으로 드러나서 포기하고, FO 버튼과 같은
-       텍스트 필로 통일했다. FO가 솔리드(주 동선)이므로 이쪽은 아웃라인으로 한 단계 낮춘 위계.
+       텍스트 필로 통일했다. 2026-09-25 체크리스트 3-2로 FO와 같은 파란색 채움(--nav-btn)으로 통일
+       (예전엔 FO가 솔리드, 이쪽은 아웃라인으로 한 단계 낮춘 위계였다).
        Oracle 브랜드 빨강은 쓰지 않는다 - 이 페이지에서 빨강(#ef4444)은 .live-error, 즉 오류
        상태색이라 "지금 장애 중"으로 오해될 수 있다. */
     .ora-btn {
         font-family: inherit; font-weight: 800; font-size: 9px; letter-spacing: .06em;
-        padding: 0 8px; height: 30px; box-sizing: border-box; border: 1px solid var(--ora);
-        border-radius: 8px; background: transparent; color: var(--ora); text-decoration: none;
+        padding: 0 8px; height: 30px; box-sizing: border-box; border: 1px solid var(--nav-btn);
+        border-radius: 8px; background: var(--nav-btn); color: #0a1a2b; text-decoration: none;
         display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
     }
     /* lucide SVG는 stroke="currentColor"라 아이콘 색도 위 color를 그대로 따라간다. */
-    .ora-btn:hover { background: rgba(167, 139, 250, .14); }
+    .ora-btn:hover { background: #5b9dee; border-color: #5b9dee; }
     .ora-btn i { width: 13px; height: 13px; flex: 0 0 auto; }
     /* ORACLE을 ORA / CLE 두 줄로 쌓아 30px 높이 안에 전체 단어를 담는다. 두 줄이 들어가야 하므로
        line-height를 1로 조이고 폰트를 9px로 줄였다 - 이보다 키우면 버튼 높이를 넘긴다. */

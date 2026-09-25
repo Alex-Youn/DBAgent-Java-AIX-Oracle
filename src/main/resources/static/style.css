@@ -412,29 +412,29 @@ body {
     color: #0a1a2b;
 }
 
-/* RDB(MySQL/MariaDB/PostgreSQL/MS SQL) 대시보드 바로가기. FO가 솔리드라 이쪽은 아웃라인으로
-   위계를 한 단계 낮췄다. border에 !important를 붙이는 이유는 .icon-btn이 border:none을 걸어
-   두었기 때문(.fo-btn과 동일한 사정). lucide SVG는 stroke="currentColor"라 아이콘도 color를
-   따라간다. */
+/* RDB(MySQL/MariaDB/PostgreSQL/MS SQL) 대시보드 바로가기. 2026-09-25 체크리스트 3-2로 FO 버튼과 같은
+   파란색 채움으로 통일(예전엔 보라색 아웃라인으로 위계를 한 단계 낮췄었다). RDB 대시보드의 ORACLE/FO
+   버튼도 같은 색이다. border에 !important를 붙이는 이유는 .icon-btn이 border:none을 걸어 두었기
+   때문(.fo-btn과 동일한 사정). lucide SVG는 stroke="currentColor"라 아이콘도 color를 따라간다. */
 .rdb-btn {
     font-family: inherit;
     font-weight: 800;
     font-size: 12px;
     letter-spacing: 0.02em;
     padding: 6px 10px;
-    border: 1px solid var(--rdb) !important;
+    border: 1px solid var(--primary) !important;
     border-radius: 8px;
-    background: transparent;
-    color: var(--rdb);
+    background: var(--primary);
+    color: #0a1a2b;
     display: inline-flex;
     align-items: center;
     gap: 4px;
 }
 
 .rdb-btn:hover {
-    background: rgba(167, 139, 250, 0.14);
-    border-color: #c4b5fd !important;
-    color: #c4b5fd;
+    background: #5b9dee;
+    border-color: #5b9dee !important;
+    color: #0a1a2b;
 }
 
 .rdb-btn i { width: 13px; height: 13px; }
