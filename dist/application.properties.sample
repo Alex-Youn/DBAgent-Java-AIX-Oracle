@@ -93,6 +93,10 @@
 # v$lock 스캔(Current Session 세션 리스트의 TX/TM Lock 집계, Lock Holder/Waiter Tree) 쿼리 타임아웃(초).
 # 일부 인스턴스는 enqueue 해시체인이 길어 v$lock 스캔 자체가 수십 초까지 걸릴 수 있어 짧게 캡을 건다.
 #dbagent.monitor.lock-query-timeout-seconds=3
+# TM Lock 장애 판정 기준(초). last_call_et 가 이 시간 이상이면서, 자기는 막혀 있지 않고 다른 세션을
+# 막고 있는 TM Lock Holder 만 장애 판정(장애조치 버튼)과 "Blocking Session 감지" 알림에 센다.
+# 값이 없거나 잘못된 값이면 60 으로 동작한다.
+#dbagent.monitor.tm-holder-last-call-et-seconds=60
 # Fleet Overview 의 인스턴스별 상태 점검 상한(초). connect-timeout 이 못 잡는 경우(DNS 지연 등)까지
 # 포함해, 느린 인스턴스 하나가 화면 전체를 붙잡지 못하게 한다.
 #dbagent.fleet-status.timeout-seconds=5

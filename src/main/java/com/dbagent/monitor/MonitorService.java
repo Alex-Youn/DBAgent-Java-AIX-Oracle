@@ -48,6 +48,30 @@ public class MonitorService {
     @Value("${dbagent.monitor.ash-activity-query-timeout-seconds:10}")
     private int ashActivityQueryTimeoutSeconds;
 
+    // TM Lock 장애 판정 기준(초) - 이 시간 이상 last_call_et가 흐른 블로킹 TM Holder만 센다. getFailureProb()
+    // (장애 판정·장애조치 버튼)와 getActiveAlerts()("Blocking Session 감지" 알림)가 같은 값을 써야 화면마다
+    // 판정이 갈리지 않는다(2026-09-25 오케스트레이터 결정으로 하드코딩 60초를 프로퍼티화). application.properties는
+    // skip-worktree라 pull로 새 키가 들어가지 않으므로 키가 없으면 기존과 같은 60초로 동작해야 하고, 폐쇄망에서
+    // 오타로 잘못 넣어도 앱 기동 자체가 실패하지 않도록 문자열로 받아 직접 검증한다.
+    private static final int DEFAULT_TM_HOLDER_LAST_CALL_ET_SECONDS = 60;
+    private int tmHolderLastCallEtSeconds = DEFAULT_TM_HOLDER_LAST_CALL_ET_SECONDS;
+
+    @Value("${dbagent.monitor.tm-holder-last-call-et-seconds:60}")
+    void setTmHolderLastCallEtSeconds(String value) {
+        int seconds;
+        try {
+            seconds = Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            seconds = -1;
+        }
+        if (seconds < 1) {
+            log.warn("dbagent.monitor.tm-holder-last-call-et-seconds='{}' is not a positive integer - using {}s",
+                    value, DEFAULT_TM_HOLDER_LAST_CALL_ET_SECONDS);
+            seconds = DEFAULT_TM_HOLDER_LAST_CALL_ET_SECONDS;
+        }
+        this.tmHolderLastCallEtSeconds = seconds;
+    }
+
     public MonitorService(OracleConnectionPoolManager poolManager, OracleQueryHelper queryHelper,
                            InstanceMetricSamplerService metricSamplerService) {
         this.poolManager = poolManager;
@@ -1226,7 +1250,7 @@ public class MonitorService {
                         // dba_objects join 빼고 실행하면 빠름).
                         "SELECT DISTINCT s.sid FROM v$session s " +
                                 "JOIN v$lock l ON s.sid = l.sid " +
-                                "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
+                                "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= " + tmHolderLastCallEtSeconds + " " +
                                 "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid) AND ROWNUM <= 3")) {
                     while (rs.next()) {
                         String sid = String.valueOf(rs.getInt("sid"));
@@ -1559,9 +1583,10 @@ public class MonitorService {
         // 매번 ORA-00904로 실패하고 아래 rule 힌트 쿼리로 넘어가고 있었다 - 즉 운영에서 실제로 돌던 건
         // 항상 이 쿼리였다. 폐쇄망에서 검증된 동작(rule 힌트 포함)을 그대로 두고, 매 호출 헛도는 1차
         // 쿼리와 폴백 구조만 없앤다. gv$/inst_id는 쓰지 않는다(2026-09-06 RAC 원칙).
+        // last_call_et 기준은 프로퍼티(dbagent.monitor.tm-holder-last-call-et-seconds, 기본 60) - int라 결합해도 안전.
         String query = "SELECT /*+ rule */ count(distinct s.sid) FROM v$session s " +
                 "JOIN v$lock l ON s.sid = l.sid " +
-                "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= 60 " +
+                "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= " + tmHolderLastCallEtSeconds + " " +
                 "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid)";
 
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
