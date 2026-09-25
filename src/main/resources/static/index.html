@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=44">
+    <link rel="stylesheet" href="style.css?v=45">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=12"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -1045,7 +1045,7 @@
                                     <span class="kill-selected-count admin-only" id="session-selected-count"></span>
                                     <button id="session-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;" disabled>선택 세션 Kill</button>
                                 </div>
-                                <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
+                                <div class="sesslist-scroll">
                                     <table class="data-table" style="border: none;">
                                         <thead>
                                             <tr>
@@ -1076,7 +1076,7 @@
 
                             <!-- Tab: Active Transaction -->
                             <div id="sesslist-active-tx" class="sesslist-tab-content" style="display: none;">
-                                <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
+                                <div class="sesslist-scroll">
                                     <table class="data-table" style="border: none;">
                                         <thead>
                                             <tr>
@@ -1106,7 +1106,7 @@
 
                             <!-- Tab: Parallel Session -->
                             <div id="sesslist-parallel" class="sesslist-tab-content" style="display: none;">
-                                <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
+                                <div class="sesslist-scroll">
                                     <table class="data-table" style="border: none;">
                                         <thead>
                                             <tr>
@@ -1132,7 +1132,7 @@
 
                             <!-- Tab: 2pc Pending Transaction -->
                             <div id="sesslist-2pc" class="sesslist-tab-content" style="display: none;">
-                                <div style="max-height: 500px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
+                                <div class="sesslist-scroll">
                                     <table class="data-table" style="border: none;">
                                         <thead>
                                             <tr>
@@ -1289,6 +1289,6 @@
     </div>
 
 
-    <script src="app.js?v=162"></script>
+    <script src="app.js?v=163"></script>
 </body>
 </html>

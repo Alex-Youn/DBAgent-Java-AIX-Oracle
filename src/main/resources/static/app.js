@@ -1747,6 +1747,7 @@ let layoutHTML = "";
             // Update Table (Only Active Sessions)
             if (activeSessions.length === 0) {
                 sessionTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">현재 ACTIVE 상태인 세션이 없습니다.</td></tr>';
+                fitSessListScroll(sessionTbody);
                 // 표가 비면 고를 것이 없다 - 선택이 남아 있던 상태에서 세션이 사라져도 버튼이
                 // 활성인 채로 남지 않도록 여기서도 맞춘다.
                 if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
@@ -1792,6 +1793,7 @@ let layoutHTML = "";
                 const checkedSessionKeys = new Set(Array.from(document.querySelectorAll('.session-checkbox:checked'))
                     .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
                 sessionTbody.innerHTML = html;
+                fitSessListScroll(sessionTbody);
                 document.querySelectorAll('.session-checkbox').forEach(cb => {
                     if (checkedSessionKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
                         cb.checked = true;
@@ -1865,6 +1867,24 @@ let layoutHTML = "";
         });
     }
 
+    // 세션 목록 스크롤 높이 맞춤(체크리스트 1-4, 2026-09-25) - 행이 SESSLIST_VISIBLE_ROWS개를 넘으면 목록
+    // 영역을 "머리글 + 첫 7행"의 실제 높이로 제한해 그 아래는 세로 스크롤로 본다. 행 높이는 내용(대기
+    // 막대 등)과 화면 배율에 따라 달라 고정 px 대신 매번 잰다. 숨겨진 탭은 높이를 잴 수 없으므로 CSS의
+    // 대략값(.sesslist-scroll max-height)을 그대로 두고, 탭을 열 때 다시 잰다.
+    const SESSLIST_VISIBLE_ROWS = 7;
+    function fitSessListScroll(tbody) {
+        if (!tbody) return;
+        const box = tbody.closest('.sesslist-scroll');
+        if (!box) return;
+        const rows = tbody.rows;
+        if (rows.length <= SESSLIST_VISIBLE_ROWS) { box.style.maxHeight = 'none'; return; }
+        if (!box.offsetParent) { box.style.maxHeight = ''; return; }
+        const thead = box.querySelector('thead');
+        let height = thead ? thead.offsetHeight : 0;
+        for (let i = 0; i < SESSLIST_VISIBLE_ROWS; i++) height += rows[i].offsetHeight;
+        box.style.maxHeight = (height + 2) + 'px'; // +2: 테두리
+    }
+
     // Column set mirrors the Active Session tab's rendering (same fields, same duration/wait bar
     // treatment) - Active Transaction shows the same columns, just scoped to sessions holding a
     // transaction rather than status='ACTIVE'.
@@ -1873,6 +1893,7 @@ let layoutHTML = "";
         if (!tbody) return;
         if (!rows || rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="15" style="text-align:center; padding: 30px;">활성 트랜잭션이 없습니다.</td></tr>';
+            fitSessListScroll(tbody);
             return;
         }
         const maxDuration = rows.reduce((max, r) => Math.max(max, Number(r.duration_time) || 0), 1);
@@ -1912,6 +1933,7 @@ let layoutHTML = "";
             </tr>
         `;
         }).join('');
+        fitSessListScroll(tbody);
     }
 
     function renderParallelSessionsTab(rows) {
@@ -1919,6 +1941,7 @@ let layoutHTML = "";
         if (!tbody) return;
         if (!rows || rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">병렬 세션이 없습니다.</td></tr>';
+            fitSessListScroll(tbody);
             return;
         }
         tbody.innerHTML = rows.map(r => `
@@ -1936,6 +1959,7 @@ let layoutHTML = "";
                 <td>${r.machine || '-'}</td>
             </tr>
         `).join('');
+        fitSessListScroll(tbody);
     }
 
     function renderPending2pcTab(rows) {
@@ -1943,6 +1967,7 @@ let layoutHTML = "";
         if (!tbody) return;
         if (!rows || rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 30px;">보류 중인 2PC 트랜잭션이 없습니다.</td></tr>';
+            fitSessListScroll(tbody);
             return;
         }
         tbody.innerHTML = rows.map(r => `
@@ -1958,6 +1983,7 @@ let layoutHTML = "";
                 <td>${r.os_user || '-'}</td>
             </tr>
         `).join('');
+        fitSessListScroll(tbody);
     }
 
     // Active Session / Active Transaction / Parallel Session / 2pc Pending Transaction tabs
@@ -1980,6 +2006,7 @@ let layoutHTML = "";
                 content.style.display = 'none';
             });
             document.getElementById(targetId).style.display = 'block';
+            fitSessListScroll(document.querySelector(`#${targetId} tbody`)); // 숨겨져 있어 못 쟀던 높이를 지금 잰다
         });
     });
 
