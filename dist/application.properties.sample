@@ -107,6 +107,34 @@
 # 대시보드 개편 수집 테이블(mon_*) 보관 기간(일) - 1분/10분/일 테이블, KILL 감사 로그 (2026-09-25)
 #dbagent.monitor.store-retention-days=30
 #dbagent.monitor.kill-audit-retention-days=365
+
+# 새 대시보드 (2026-09-26) - 모두 선택, 없으면 아래 기본값
+# ③ Lock: 장애 판정 Holder 수, KILL 대상 좁히기(기본은 USER Holder 전체), TX를 row lock만 셀지
+#dbagent.monitor.tm-holder-incident-count=6
+#dbagent.monitor.tm-holder-kill-blocking-only=false
+#dbagent.monitor.tm-holder-kill-inactive-only=false
+#dbagent.monitor.lock-tx-row-lock-only=false
+#dbagent.monitor.lock-cache-millis=2000
+# ⑧ 점검 알림: 가벼운 항목 주기(분), 잡 실패 주기(분), 무거운 항목 실행 시각(시, 0~23 - 앱 기동 직후에도 1회)
+#dbagent.monitor.check-interval-minutes=10
+#dbagent.monitor.check-job-interval-minutes=30
+#dbagent.monitor.check-daily-hour=3
+# 임계치
+#dbagent.monitor.check-tablespace-warn-pct=97
+#dbagent.monitor.check-tablespace-crit-pct=98
+#dbagent.monitor.check-table-size-warn-gb=30
+#dbagent.monitor.check-table-size-crit-gb=40
+#dbagent.monitor.check-fra-warn-pct=80
+#dbagent.monitor.check-fra-crit-pct=90
+#dbagent.monitor.check-temp-warn-pct=75
+#dbagent.monitor.check-temp-crit-pct=90
+#dbagent.monitor.check-exclude-owners=SYS,SYSTEM,AUDSYS,XDB,MDSYS,CTXSYS
+# 점검 쿼리 타임아웃(초). 1일 항목은 dbagent.oracle.read-timeout-ms보다 5초 짧게 자동 제한되므로, 더 길게 필요하면 두 값을 같이 올린다
+#dbagent.monitor.check-query-timeout-seconds=30
+#dbagent.monitor.check-daily-query-timeout-seconds=120
+#dbagent.monitor.check-segment-snapshot-min-gb=1
+# SQL 통계 델타 수집 타임아웃(초)
+#dbagent.monitor.sqlstat-query-timeout-seconds=15
 # Fleet Overview 의 인스턴스별 상태 점검 상한(초). connect-timeout 이 못 잡는 경우(DNS 지연 등)까지
 # 포함해, 느린 인스턴스 하나가 화면 전체를 붙잡지 못하게 한다.
 #dbagent.fleet-status.timeout-seconds=5

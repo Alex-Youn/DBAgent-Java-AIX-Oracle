@@ -39,13 +39,56 @@ public class DashboardController {
     private final DatabaseConfigService configService;
     private final LockRealtimeService lockService;
     private final DashboardQueryService queryService;
+    private final CheckDetailService checkService;
 
     public DashboardController(AuthService authService, DatabaseConfigService configService,
-                               LockRealtimeService lockService, DashboardQueryService queryService) {
+                               LockRealtimeService lockService, DashboardQueryService queryService,
+                               CheckDetailService checkService) {
         this.authService = authService;
         this.configService = configService;
         this.lockService = lockService;
         this.queryService = queryService;
+        this.checkService = checkService;
+    }
+
+    // ------------------------------------------------------------------ ⑧ 점검 알림 (F8)
+
+    /** ⑧ 항목별 최신 점검 결과(저장소만 읽음). */
+    @GetMapping("/{dbId}/checks")
+    public ResponseEntity<Object> checks(@PathVariable String dbId, @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, dbId)) {
+            return error(HttpStatus.FORBIDDEN, "해당 DB에 대한 접근 권한이 없습니다.");
+        }
+        TargetDbConfig target = configService.resolve(dbId);
+        if (target == null || !"oracle".equalsIgnoreCase(target.dbType())) {
+            return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
+        }
+        return ResponseEntity.ok(checkService.list(target));
+    }
+
+    /** 6.4 점검 알림 상세 - 대상 이름은 OWNER.NAME 형태라 경로 대신 파라미터로 받는다. */
+    @GetMapping("/{dbId}/checks/{checkType}")
+    public ResponseEntity<Object> checkDetail(@PathVariable String dbId, @PathVariable String checkType,
+                                              @RequestParam(required = false) String target,
+                                              @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, dbId)) {
+            return error(HttpStatus.FORBIDDEN, "해당 DB에 대한 접근 권한이 없습니다.");
+        }
+        if (!CheckDetailService.LABEL.containsKey(checkType)) {
+            return error(HttpStatus.BAD_REQUEST, "알 수 없는 점검 항목입니다.");
+        }
+        if (target == null || target.isEmpty() || target.length() > 261 || !target.matches("[\\p{L}\\p{N}_$#.*+/ :\\-]+")) {
+            return error(HttpStatus.BAD_REQUEST, "대상 이름이 올바르지 않습니다.");
+        }
+        TargetDbConfig t = configService.resolve(dbId);
+        if (t == null || !"oracle".equalsIgnoreCase(t.dbType())) {
+            return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
+        }
+        try {
+            return ResponseEntity.ok(checkService.detail(t, checkType, target));
+        } catch (SQLException e) {
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "조회 실패: " + e.getMessage());
+        }
     }
 
     // ------------------------------------------------------------------ ⑤⑥⑦ Top / 6장 드로어 (F3)

@@ -171,6 +171,66 @@ public class MonitorStoreService {
                 dbId, sqlId, fromMs, toMs);
     }
 
+    /** ⑧ 화면: 항목 종류별 최신 점검 결과(OK·ERROR 포함) - 10분·1일 항목의 check_ts가 달라 종류별 MAX를 쓴다. */
+    public List<java.util.Map<String, Object>> latestChecks(String dbId) {
+        return jdbc.query(
+                "SELECT r.check_type, r.target_name, r.severity, r.metric_value, r.threshold, r.detail_json, r.check_ts " +
+                        "FROM mon_check_result r JOIN (SELECT check_type, MAX(check_ts) AS last_ts FROM mon_check_result " +
+                        "WHERE db_id = ? GROUP BY check_type) x ON x.check_type = r.check_type AND x.last_ts = r.check_ts " +
+                        "WHERE r.db_id = ? " +
+                        "ORDER BY CASE r.severity WHEN 'CRIT' THEN 0 WHEN 'WARN' THEN 1 WHEN 'INFO' THEN 2 WHEN 'ERROR' THEN 3 ELSE 4 END, r.metric_value DESC",
+                (rs, n) -> checkRow(rs), dbId, dbId);
+    }
+
+    /** 6.4 상세: 해당 대상의 최근 결과 행(없으면 null). */
+    public java.util.Map<String, Object> latestCheck(String dbId, String checkType, String targetName) {
+        List<java.util.Map<String, Object>> rows = jdbc.query(
+                "SELECT check_type, target_name, severity, metric_value, threshold, detail_json, check_ts FROM mon_check_result " +
+                        "WHERE db_id = ? AND check_type = ? AND target_name = ? ORDER BY check_ts DESC LIMIT 1",
+                (rs, n) -> checkRow(rs), dbId, checkType, targetName);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 6.4 7일 추이: 대상의 점검 값 {ts, value} (일별 최댓값 계산은 화면/서비스에서). */
+    public List<java.util.Map<String, Object>> checkHistory(String dbId, String checkType, String targetName, long fromMs) {
+        return jdbc.query(
+                "SELECT check_ts, metric_value FROM mon_check_result WHERE db_id = ? AND check_type = ? AND target_name = ? " +
+                        "AND check_ts >= ? AND metric_value IS NOT NULL ORDER BY check_ts",
+                (rs, n) -> {
+                    java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("ts", rs.getLong(1));
+                    m.put("value", rs.getDouble(2));
+                    return m;
+                }, dbId, checkType, targetName, fromMs);
+    }
+
+    /** 6.4 테이블 7일 추이: 세그먼트 크기 일 스냅샷. */
+    public List<java.util.Map<String, Object>> segmentHistory(String dbId, String owner, String segmentName, long fromMs) {
+        return jdbc.query(
+                "SELECT snap_date, size_bytes FROM mon_segment_size WHERE db_id = ? AND owner = ? AND segment_name = ? " +
+                        "AND snap_date >= ? ORDER BY snap_date",
+                (rs, n) -> {
+                    java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("ts", rs.getLong(1));
+                    m.put("value", Math.round(rs.getLong(2) / Math.pow(1024, 3) * 10) / 10.0);
+                    return m;
+                }, dbId, owner, segmentName, fromMs);
+    }
+
+    private static java.util.Map<String, Object> checkRow(java.sql.ResultSet rs) throws java.sql.SQLException {
+        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("checkType", rs.getString("check_type"));
+        m.put("targetName", rs.getString("target_name"));
+        m.put("severity", rs.getString("severity"));
+        Object v = rs.getObject("metric_value");
+        m.put("value", v == null ? null : ((Number) v).doubleValue());
+        Object t = rs.getObject("threshold");
+        m.put("threshold", t == null ? null : ((Number) t).doubleValue());
+        m.put("detail", rs.getString("detail_json"));
+        m.put("checkTs", rs.getLong("check_ts"));
+        return m;
+    }
+
     private static String truncate(String s, int max) {
         return s == null || s.length() <= max ? s : s.substring(0, max);
     }

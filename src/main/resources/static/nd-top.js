@@ -416,6 +416,10 @@
         };
     }
 
+    // ⑧ 점검 알림(nd-checks.js)이 같은 드로어·부품을 쓰도록 공개
+    ND.drawer = { open: openDrawer, push: pushDrawer, close: closeDrawer };
+    ND.drawerKit = { sec, kv, code, queries, esc };
+
     // ================================================================== 초기 DOM
 
     function ensureDom() {
