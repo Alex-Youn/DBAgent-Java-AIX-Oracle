@@ -28,6 +28,15 @@
     };
     const tasks = { fast: [], slow: [] };
     const resetHooks = [];
+    // 패널끼리 데이터를 나눠 쓰는 작은 이벤트 전달 - 예: 'lock'(③ Lock 카드 + ① 활성 세션·메모리 칸이 같은 응답 1개를 씀),
+    // 'selection'(② 차트의 선택 구간 → ④ 배너·⑤⑥⑦ Top).
+    const listeners = {};
+    function on(name, fn) { (listeners[name] = listeners[name] || []).push(fn); }
+    function emit(name, data) {
+        (listeners[name] || []).forEach(fn => {
+            try { fn(data); } catch (e) { console.error(`[DBAgent] 새 대시보드 ${name} 처리 실패:`, e); }
+        });
+    }
 
     const $ = (id) => document.getElementById(id);
 
@@ -217,6 +226,20 @@
     }
     tasks.slow.push({ name: 'status', fn: loadStatus });
 
+    // ③ Lock 실시간 + ① 활성 세션·메모리 - 빠른 주기에 한 번만 조회해 'lock' 이벤트로 나눠 준다(F2 API).
+    // 실패하면 'lock'에 {ok:false}를 보내 각 패널이 "판단 보류"로 표시하게 한다(0으로 그리지 않음).
+    async function loadLock(ctx) {
+        let d;
+        try {
+            d = await ctx.fetchJson('/api/dashboard/' + encodeURIComponent(ctx.dbId) + '/lock/realtime');
+        } catch (e) {
+            if (!ctx.isStale()) emit('lock', { ok: false, error: e.message });
+            return;
+        }
+        if (d && !ctx.isStale()) emit('lock', d);
+    }
+    tasks.fast.push({ name: 'lock', fn: loadLock });
+
     // ------------------------------------------------------------------ 컨트롤
 
     function updateLiveLabel() {
@@ -287,6 +310,8 @@
         state,
         /** kind: 'fast'(리프레쉬 주기) | 'slow'(60초). fn(ctx)는 ctx.fetchJson()으로 조회하고 ctx.isStale()이면 그리지 않는다. */
         register(kind, name, fn) { tasks[kind].push({ name, fn }); },
+        on,
+        emit,
         /** DB 전환·표시 시작 때 호출 - 패널을 스켈레톤으로 되돌리고 드로어·확인 패널을 닫는다. */
         onReset(fn) { resetHooks.push(fn); },
         show() {
