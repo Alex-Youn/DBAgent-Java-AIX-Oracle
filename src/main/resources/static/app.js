@@ -77,6 +77,27 @@ function getToken() {
     return sessionStorage.getItem('dbagent_token') || '';
 }
 
+// DB 전환 레이스 방지 공용 유틸(체크리스트 1-5, 2026-09-25) - 화면 하나(목록/차트)당 하나씩 만든다.
+// 요청을 시작할 때 begin()으로 세대 번호와 그때의 DB를 잡아 두고, 응답이 오면 isStale()로 "그 사이
+// 같은 화면에 더 새 요청이 나갔거나 DB가 바뀌었는지" 확인해 늦게 온 이전 응답을 버린다. 이전 DB
+// 응답이 새 DB 화면을 덮어쓰던 버그(테이블스페이스 7-1, Current Session 1-5)를 막는 패턴이며, 대시보드
+// 개편(9-2)도 이것을 재사용한다. invalidate()는 새 요청 없이 진행 중인 응답만 무효화할 때 쓴다.
+function dbagentLatestRequest() {
+    let seq = 0;
+    return {
+        begin() {
+            const my = ++seq;
+            const dbId = window.currentDbId;
+            return {
+                dbId,
+                isLatest: () => my === seq,
+                isStale: () => my !== seq || dbId !== window.currentDbId
+            };
+        },
+        invalidate() { seq++; }
+    };
+}
+
 // Auth event listeners moved to DOMContentLoaded
 // ----------------------
 
@@ -1664,6 +1685,10 @@ let layoutHTML = "";
         chart.update();
     }
 
+    // 세션 목록 요청 세대 - DB를 바꾼 뒤 늦게 도착한 이전 DB 응답이 새 DB 목록을 덮어쓰던 버그 방지
+    // (체크리스트 1-5, 2026-09-25 CDP로 재현: B로 전환 후 도착한 A 응답이 B 화면 목록에 그려졌음).
+    const sessionRequestGuard = dbagentLatestRequest();
+
     async function fetchSessions() {
         if (!sessionTbody) return;
         if (!window.currentDbId) {
@@ -1671,14 +1696,16 @@ let layoutHTML = "";
             return;
         }
 
+        const req = sessionRequestGuard.begin();
+        const icon = sessionRefreshBtn ? sessionRefreshBtn.querySelector('i') : null;
         try {
-            const icon = sessionRefreshBtn.querySelector('i');
             if (icon) icon.classList.add('spinning');
-            
+
             const [response, extraResponse] = await Promise.all([
-                fetch(`/api/session?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`),
-                fetch(`/api/session_extra?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`)
+                fetch(`/api/session?db_id=${req.dbId}&token=${encodeURIComponent(getToken())}`),
+                fetch(`/api/session_extra?db_id=${req.dbId}&token=${encodeURIComponent(getToken())}`)
             ]);
+            if (req.isStale()) return;
             if (!response.ok) throw new Error('Network response was not ok');
             const data = await response.json();
 
@@ -1695,6 +1722,7 @@ let layoutHTML = "";
             } catch (extraErr) {
                 console.error('Failed to fetch session_extra:', extraErr);
             }
+            if (req.isStale()) return;
 
             let activeCount = 0;
             let inactiveCount = 0;
@@ -1775,11 +1803,13 @@ let layoutHTML = "";
             renderActiveTransactionsTab(extra.active_transactions);
             renderParallelSessionsTab(extra.parallel_sessions);
             renderPending2pcTab(extra.pending_2pc);
-
-            if (icon) icon.classList.remove('spinning');
         } catch (error) {
+            if (req.isStale()) return;
             console.error('Error fetching sessions:', error);
             sessionTbody.innerHTML = `<tr><td colspan="7" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+        } finally {
+            // 예전엔 성공할 때만 스피너를 내려 실패 시 계속 돌았다. 가장 최근 요청이 끝날 때 내린다.
+            if (icon && req.isLatest()) icon.classList.remove('spinning');
         }
     }
 
@@ -1969,6 +1999,8 @@ let layoutHTML = "";
         if (pending2pcTbody) pending2pcTbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 30px;">접속 중...</td></tr>';
 
         fetchSessions();
+        // 이전 DB 그래프·KPI를 즉시 비우고 "불러오는 중" 표시 후 새 DB로 재조회(체크리스트 1-5).
+        clearAshPanelsForDbSwitch();
         restartAshActivityPolling();
     }
 
@@ -2047,10 +2079,60 @@ let layoutHTML = "";
         };
     }
 
+    // 두 차트의 요청 세대 - DB 전환·구간 변경 뒤 늦게 온 이전 응답을 버린다(체크리스트 1-5). 예전엔
+    // currentDbId만 비교해 A→B→A처럼 같은 DB로 돌아온 경우의 옛 응답은 막지 못했다.
+    const ashActivityRequestGuard = dbagentLatestRequest();
+    const ashTopSqlRequestGuard = dbagentLatestRequest();
+
+    // 차트 위에 겹치는 안내 문구("불러오는 중…"/오류). DB를 바꾼 직후 새 DB 응답이 올 때까지 이전 DB
+    // 그래프가 새 DB 것처럼 보이던 문제(체크리스트 1-5, 2026-09-25 CDP 재현: 제목은 DB #2인데 그래프·
+    // KPI는 DB #1 값)를 막기 위해, 전환 즉시 차트를 비우고 이 문구를 띄운다.
+    function setAshPanelMessage(container, text, isError) {
+        if (!container) return;
+        let el = container.querySelector(':scope > .ash-panel-message');
+        if (!text) { if (el) el.remove(); return; }
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'ash-panel-message';
+            el.style.cssText = 'position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; font-size:0.85rem; z-index:5;';
+            container.appendChild(el);
+        }
+        el.style.color = isError ? 'var(--danger)' : 'var(--text-muted)';
+        el.textContent = text;
+    }
+    function ashActivityContainer() {
+        const c = document.getElementById('ash-activity-chart');
+        return c ? c.parentElement : null;
+    }
+    function ashTopSqlContainer() {
+        return document.getElementById('ash-topsql-container');
+    }
+
+    // DB 전환 시(resetSessionMonitor) 호출 - 이전 DB의 그래프·KPI·범례를 즉시 지우고 "불러오는 중"
+    // 표시. 차트 인스턴스는 유지하고 데이터만 비운다(크기·범례 on/off 상태 유지).
+    function clearAshPanelsForDbSwitch() {
+        ashActivityRequestGuard.invalidate();
+        ashTopSqlRequestGuard.invalidate();
+        lastAshActivityData = null;
+        lastAshTopSqlData = null;
+        if (ashActivityChart) { ashActivityChart.data.datasets = []; ashActivityChart.update(); }
+        if (ashTopSqlChart) { ashTopSqlChart.data.datasets = []; ashTopSqlChart.update(); }
+        ['ash-kpi-current', 'ash-kpi-cores', 'ash-kpi-avg', 'ash-kpi-exceed'].forEach(id => ashSetText(id, '–'));
+        const deltaEl = document.getElementById('ash-kpi-delta');
+        if (deltaEl) deltaEl.textContent = '';
+        const tableEl = document.getElementById('ash-activity-table');
+        if (tableEl) tableEl.innerHTML = '';
+        const topLegend = document.getElementById('ash-topsql-legend');
+        if (topLegend) topLegend.innerHTML = '';
+        setAshPanelMessage(ashActivityContainer(), '불러오는 중…');
+        setAshPanelMessage(ashTopSqlContainer(), isAshLongRange() ? '' : '불러오는 중…');
+    }
+
     async function fetchAshActivity() {
         const canvas = document.getElementById('ash-activity-chart');
         if (!canvas || !window.currentDbId) return;
-        const myDbId = window.currentDbId;
+        const req = ashActivityRequestGuard.begin();
+        const myDbId = req.dbId;
         try {
             const data = isAshLongRange()
                 ? await fetchAshActivityFromHistory(myDbId)
@@ -2061,10 +2143,14 @@ let layoutHTML = "";
                     return d;
                 })();
             // DB를 빠르게 전환하면 늦게 도착한 이전 DB 응답이 새로 선택된 DB 화면을 덮어쓸 수 있어 방어.
-            if (window.currentDbId !== myDbId) return;
+            if (req.isStale()) return;
+            setAshPanelMessage(ashActivityContainer(), '');
             renderAshActivityChart(data);
         } catch (err) {
+            if (req.isStale()) return;
             console.error('Failed to fetch ash_activity:', err);
+            // 이전에 그린 데이터가 없을 때만 오류를 차트 위에 표시(있으면 마지막 정상 그래프를 유지).
+            if (!lastAshActivityData) setAshPanelMessage(ashActivityContainer(), '조회 실패: ' + err.message, true);
         }
     }
 
@@ -2290,15 +2376,19 @@ let layoutHTML = "";
             renderAshTopSqlLongRangeNotice();
             return;
         }
-        const myDbId = window.currentDbId;
+        const req = ashTopSqlRequestGuard.begin();
+        const myDbId = req.dbId;
         try {
             const res = await fetch(`/api/ash_top_sql?db_id=${myDbId}&range_minutes=${ashActivityRangeMinutes}&step_minutes=1&token=${encodeURIComponent(getToken())}`);
             const data = await res.json();
             if (!res.ok || data.error) throw new Error(data.error || 'ash_top_sql 조회 실패');
-            if (window.currentDbId !== myDbId) return;
+            if (req.isStale()) return;
+            setAshPanelMessage(ashTopSqlContainer(), '');
             renderAshTopSqlChart(data);
         } catch (err) {
+            if (req.isStale()) return;
             console.error('Failed to fetch ash_top_sql:', err);
+            if (!lastAshTopSqlData) setAshPanelMessage(ashTopSqlContainer(), '조회 실패: ' + err.message, true);
         }
     }
 
