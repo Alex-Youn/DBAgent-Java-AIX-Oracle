@@ -1851,7 +1851,7 @@ let layoutHTML = "";
                 sessionToggleBtn.classList.add('primary-btn');
                 sessionRefreshBtn.disabled = false;
             } else {
-                const interval = parseInt(sessionIntervalInput.value) || 5;
+                const interval = parseInt(sessionIntervalInput.value) || 3; // 기본 3초(체크리스트 1-9)
                 isSessionAutoRefreshing = true;
                 const generation = ++sessionRefreshGeneration;
                 fetchSessions().then(() => {
@@ -3349,6 +3349,12 @@ let layoutHTML = "";
             const pollingData = await pollingRes.json();
             if (pollingData.polling_interval_ms) dashboardPollingIntervalMs = pollingData.polling_interval_ms;
             if (dashRefreshIntervalInput) dashRefreshIntervalInput.value = Math.round(dashboardPollingIntervalMs / 1000);
+            // Current Session "리프레쉬 주기(초)" 기본값(dbagent.ui.session-refresh-seconds, 기본 3초 - 체크리스트 1-9).
+            // 이미 자동 갱신이 돌고 있으면(이 응답보다 먼저 메뉴에 들어온 경우) 도는 주기와 입력칸이 어긋나지
+            // 않도록 건드리지 않는다 - 그 경우엔 HTML 기본값 3초로 돌고 있다.
+            if (pollingData.session_refresh_seconds && sessionIntervalInput && !isSessionAutoRefreshing) {
+                sessionIntervalInput.value = pollingData.session_refresh_seconds;
+            }
 
             // SQL Runner row-limit input: pre-fill with the server default and cap it at the
             // server's hard ceiling, so the UI can't ask for more rows than the backend allows anyway.

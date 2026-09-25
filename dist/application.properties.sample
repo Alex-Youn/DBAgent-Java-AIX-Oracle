@@ -113,6 +113,9 @@
 # ── 화면 자동 갱신 주기 ──────────────────────────────────────────────────
 # 대시보드 갱신 주기(ms). 1000 은 너무 촘촘해서 풀이 고갈되고 정상 DB 가 down 으로 보였다. 2000~5000 권장.
 #dbagent.ui.polling-interval-ms=2000
+# Current Session 메뉴 "리프레쉬 주기(초)" 입력칸의 기본값(세션 목록 갱신 주기, 1~60). 화면에서 바꿀 수 있고,
+# 위쪽 두 그래프는 이 값과 무관하게 따로 갱신된다. 값이 없거나 잘못되면 3초.
+#dbagent.ui.session-refresh-seconds=3
 # Fleet Overview 갱신 주기(ms). 탭이 실제로 보일 때만 동작한다(Page Visibility API).
 #dbagent.fleet-overview.polling-interval-ms=3000
 
