@@ -2071,8 +2071,27 @@ let layoutHTML = "";
         return ashActivityRangeMinutes > 60;
     }
 
+    // C5(2026-09-25): 30분/1시간도 저장값으로 그린다 - 샘플러가 sample_id 워터마크(C1)로 빠짐없이 쌓고
+    // 기동 시 1시간을 backfill(C3)하므로, 보는 사람 수만큼 ASH GROUP BY가 원본 DB에 나가던 실시간 경로가
+    // 필요 없어졌다. 저장값이 아직 없을 때(신규 DB 등록 직후 등)만 실시간 조회로 대신한다.
+    function ashHistoryRangeKey() {
+        if (ashActivityRangeMinutes >= 1440) return '24h';
+        if (ashActivityRangeMinutes >= 360) return '6h';
+        if (ashActivityRangeMinutes >= 60) return '1h';
+        return '30m';
+    }
+
+    async function fetchAshActivityRealtime(myDbId) {
+        const startedAt = performance.now();
+        const res = await fetch(`/api/ash_activity?db_id=${myDbId}&range_minutes=${ashActivityRangeMinutes}&step_minutes=1&token=${encodeURIComponent(getToken())}`);
+        const d = await res.json();
+        logSlowAshResponse('ash_activity', myDbId, startedAt, d);
+        if (!res.ok || d.error) throw new Error(d.error || 'ash_activity 조회 실패');
+        return d;
+    }
+
     async function fetchAshActivityFromHistory(myDbId) {
-        const rangeKey = ashActivityRangeMinutes >= 1440 ? '24h' : '6h';
+        const rangeKey = ashHistoryRangeKey();
         const res = await fetch(`/api/metric_history?db_id=${myDbId}&range=${rangeKey}&metrics=${ASH_LONG_RANGE_METRIC_NAMES.join(',')}&token=${encodeURIComponent(getToken())}`);
         const raw = await res.json();
         if (!res.ok || raw.error) throw new Error(raw.error || 'metric_history 조회 실패');
@@ -2090,11 +2109,15 @@ let layoutHTML = "";
             ASH_LONG_RANGE_METRIC_NAMES.flatMap(name => Array.from(seriesMaps[name].keys()))
         )).sort((a, b) => a - b);
 
+        // sampledAt은 앱 서버 시각이다. 실시간 조회(/api/ash_activity)와 옆의 Top SQL 차트는 DB 시각을 쓰므로
+        // dbClockOffsetMs(C4)만큼 옮겨 DB 시각으로 맞춘다 - 안 맞추면 DB와 앱 서버 시간대가 다른 환경(도커 XE는
+        // UTC)에서 두 차트의 가로축이 9시간 어긋나 보인다(2026-09-25 CDP 확인).
+        const clockOffset = typeof raw.dbClockOffsetMs === 'number' ? raw.dbClockOffsetMs : 0;
         let lastCpuCores = 0;
         const series = timestamps.map(ts => {
             const values = ASH_LONG_RANGE_CATEGORY_KEYS.map(key => seriesMaps[key].get(ts) || 0);
             if (seriesMaps['ash_cpu_cores'].has(ts)) lastCpuCores = seriesMaps['ash_cpu_cores'].get(ts);
-            return { time: new Date(ts).toISOString(), values };
+            return { time: new Date(ts + clockOffset).toISOString(), values };
         });
 
         return {
@@ -2193,16 +2216,11 @@ let layoutHTML = "";
         const req = ashActivityRequestGuard.begin();
         const myDbId = req.dbId;
         try {
-            const data = isAshLongRange()
-                ? await fetchAshActivityFromHistory(myDbId)
-                : await (async () => {
-                    const startedAt = performance.now();
-                    const res = await fetch(`/api/ash_activity?db_id=${myDbId}&range_minutes=${ashActivityRangeMinutes}&step_minutes=1&token=${encodeURIComponent(getToken())}`);
-                    const d = await res.json();
-                    logSlowAshResponse('ash_activity', myDbId, startedAt, d);
-                    if (!res.ok || d.error) throw new Error(d.error || 'ash_activity 조회 실패');
-                    return d;
-                })();
+            let data = await fetchAshActivityFromHistory(myDbId);
+            // 저장값이 비어 있으면(샘플러가 아직 이 DB를 한 번도 못 돈 경우) 30분/1시간은 실시간 조회로 대신.
+            if (!data.series.length && !isAshLongRange() && !req.isStale()) {
+                data = await fetchAshActivityRealtime(myDbId);
+            }
             // DB를 빠르게 전환하면 늦게 도착한 이전 DB 응답이 새로 선택된 DB 화면을 덮어쓸 수 있어 방어.
             if (req.isStale()) return;
             setAshPanelMessage(ashActivityContainer(), '');

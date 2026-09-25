@@ -48,11 +48,12 @@ public class MonitorController {
     private final MsSqlMonitorService msSqlMonitorService;
     private final CubridMonitorService cubridMonitorService;
     private final InstanceMetricHistoryService metricHistoryService;
+    private final InstanceMetricSamplerService metricSamplerService;
 
     public MonitorController(MonitorService monitorService, DatabaseConfigService configService, AuthService authService,
             MySqlMonitorService mySqlMonitorService, PostgresMonitorService postgresMonitorService,
             MsSqlMonitorService msSqlMonitorService, CubridMonitorService cubridMonitorService,
-            InstanceMetricHistoryService metricHistoryService) {
+            InstanceMetricHistoryService metricHistoryService, InstanceMetricSamplerService metricSamplerService) {
         this.monitorService = monitorService;
         this.configService = configService;
         this.authService = authService;
@@ -61,10 +62,11 @@ public class MonitorController {
         this.msSqlMonitorService = msSqlMonitorService;
         this.cubridMonitorService = cubridMonitorService;
         this.metricHistoryService = metricHistoryService;
+        this.metricSamplerService = metricSamplerService;
     }
 
     // 대시보드 CpuDbTimeLineChart/LockTrendChart용 - InstanceMetricSamplerService가 쌓아 둔
-    // instance_metric_history를 그대로 내려준다. 지원 range: "1h"(기본)/"24h"/"7d".
+    // instance_metric_history를 그대로 내려준다. 지원 range: "15m"/"30m"/"1h"(기본)/"3h"/"6h"/"24h"/"7d".
     @GetMapping("/metric_history")
     public ResponseEntity<Object> metricHistory(
             @RequestParam(required = false) String db_id,
@@ -87,6 +89,9 @@ public class MonitorController {
         for (String metricName : metricNames) {
             result.put(metricName, metricHistoryService.query(target.id(), metricName, fromMillis, toMillis));
         }
+        // C4(2026-09-25): "DB SYSDATE - 앱 시각"(ms). sampledAt은 앱 시각이라, 화면이 DB 시각 기준 조회
+        // (Top SQL 등)와 구간을 맞출 때 쓴다. 아직 샘플링 전이면 null.
+        result.put("dbClockOffsetMs", metricSamplerService.getDbClockOffsetMs(target.id()));
         return ResponseEntity.ok(result);
     }
 
@@ -94,6 +99,10 @@ public class MonitorController {
         // "6h"는 Active Session Wait Class 차트 6단계(설계문서 §0 결정, 자체 수집 경로 -
         // 2026-09-22)가 추가 - 기존 1h/24h/7d(v2 CpuDbTimeLineChart/LockTrendChart)는 그대로.
         switch (range) {
+            // 15m/30m/3h: Current Session 차트를 저장값으로 그리면서(C5, 2026-09-25) 추가.
+            case "15m": return TimeUnit.MINUTES.toMillis(15);
+            case "30m": return TimeUnit.MINUTES.toMillis(30);
+            case "3h": return TimeUnit.HOURS.toMillis(3);
             case "6h": return TimeUnit.HOURS.toMillis(6);
             case "24h": return TimeUnit.HOURS.toMillis(24);
             case "7d": return TimeUnit.DAYS.toMillis(7);

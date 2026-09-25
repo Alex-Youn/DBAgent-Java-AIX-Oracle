@@ -306,16 +306,8 @@ public class MonitorService {
                 // sample_time은 TIMESTAMP라 TIMESTAMP - TIMESTAMP는 INTERVAL(NUMBER 연산 불가, ORA-00932)이
                 // 되므로 기존 코드 관례(getHistorySessions 등)처럼 CAST(... AS DATE)로 맞춘 뒤 계산한다.
                 "SELECT TRUNC(CAST(h.sample_time AS DATE)) + FLOOR((CAST(h.sample_time AS DATE) - TRUNC(CAST(h.sample_time AS DATE))) * 1440 / ?) * (? / 1440) AS bucket_time, " +
-                "CASE " +
-                "WHEN h.session_state = 'ON CPU' THEN 'cpu' " +
-                "WHEN h.wait_class = 'User I/O' THEN 'user_io' " +
-                "WHEN h.wait_class = 'System I/O' THEN 'system_io' " +
-                "WHEN h.event LIKE 'latch%' THEN 'latch' " +
-                "WHEN h.event LIKE 'enq: TX%' THEN 'tx_lock' " +
-                "WHEN h.event LIKE 'enq: TM%' THEN 'tm_lock' " +
-                "WHEN h.wait_class NOT IN ('User I/O', 'System I/O', 'Idle') THEN 'other' " +
-                "ELSE NULL " +
-                "END AS category " +
+                // 7분류 CASE는 60초 샘플러(ash_*)와 반드시 같아야 해서 공용 상수를 쓴다(2026-09-25).
+                AshCategories.CASE7 + " AS category " +
                 "FROM v$active_session_history h " +
                 "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
                 "WHERE h.sample_time >= SYSDATE - (? / 1440) " +

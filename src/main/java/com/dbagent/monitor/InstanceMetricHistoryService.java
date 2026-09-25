@@ -94,6 +94,24 @@ public class InstanceMetricHistoryService {
                 instanceName, metricName, sampledAtMillis, value);
     }
 
+    /** 여러 값을 한 트랜잭션으로 기록 - 행은 {instanceName, metricName, sampledAtMillis, value} (C3 backfill, 2026-09-25). */
+    public void recordBatch(List<Object[]> rows) {
+        if (rows == null || rows.isEmpty()) return;
+        jdbc.batchUpdate("MERGE INTO instance_metric_history " +
+                "(instance_name, metric_name, sampled_at, value) KEY (instance_name, metric_name, sampled_at) " +
+                "VALUES (?, ?, ?, ?)", rows);
+    }
+
+    /** 구간 안에 이미 기록된 샘플 시각 목록 - backfill이 이미 있는 분을 건너뛸 때 쓴다. */
+    public List<Long> sampleTimes(String instanceName, String metricName, long fromMillis, long toMillis) {
+        return jdbc.query(
+                "SELECT sampled_at FROM instance_metric_history " +
+                        "WHERE instance_name = ? AND metric_name = ? AND sampled_at BETWEEN ? AND ? " +
+                        "ORDER BY sampled_at ASC",
+                (rs, rowNum) -> rs.getLong("sampled_at"),
+                instanceName, metricName, fromMillis, toMillis);
+    }
+
     public List<Map<String, Object>> query(String instanceName, String metricName, long fromMillis, long toMillis) {
         return jdbc.query(
                 "SELECT sampled_at, value FROM instance_metric_history " +
