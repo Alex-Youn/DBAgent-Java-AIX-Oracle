@@ -147,6 +147,9 @@ public class InstanceMetricSamplerService {
                 if (rs.next()) cpuUsage = rs.getDouble(1);
             }
             double cpuPct = numCpus > 0 ? Math.round((cpuUsage / numCpus) * 100.0) / 100.0 : 0;
+            // CPU%의 분모는 위처럼 논리 CPU(NUM_CPUS) 그대로, 차트의 코어 기준선(ash_cpu_cores)만 물리 코어
+            // (NUM_CPU_CORES) - 이유는 CpuCores 주석 참고(체크리스트 1-1, 2026-09-25 결정).
+            double cpuCores = CpuCores.query(conn);
 
             double dbTimeAas = 0;
             try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'Average Active Sessions'")) {
@@ -246,7 +249,7 @@ public class InstanceMetricSamplerService {
             }
 
             return new SampleResult(target.id(), sampledAt, cpuPct, dbTimeAas, tmLockWaiting, txLockWaiting,
-                    numCpus, ashCategoryAas);
+                    cpuCores, ashCategoryAas);
         } catch (Exception e) {
             log.warn("Instance metric sampling failed for db_id={}: {}", target.id(), e.toString());
             return null;

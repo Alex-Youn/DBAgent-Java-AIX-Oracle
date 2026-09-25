@@ -341,13 +341,9 @@ public class MonitorService {
                     }
                 }
             }
-            // 코어 수는 기존 v2 대시보드가 이미 쓰는 값을 그대로 재사용(v$osstat.NUM_CPUS,
-            // InstanceMetricSamplerService와 동일 쿼리). v$parameter.cpu_count를 별도로 쓰면 화면마다
-            // "코어 수"가 두 값으로 갈리는 문제가 생기므로 통일한다(design-advisor 검토 2026-09-22 지적).
-            try (Statement st = conn.createStatement();
-                 ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
-                if (rs.next()) cpuCores = rs.getInt(1);
-            }
+            // 코어 기준선은 60초 샘플러(ash_cpu_cores)와 같은 CpuCores 헬퍼로 읽는다 - NUM_CPU_CORES, 없으면
+            // NUM_CPUS(체크리스트 1-1, 2026-09-25). 화면마다 "코어 수"가 갈리지 않게 한 곳으로 모은다.
+            cpuCores = CpuCores.query(conn);
             // 0-패딩 버킷 경계는 반드시 DB 서버의 시각(SYSDATE) 기준이어야 한다 - 로컬 실측(2026-09-22,
             // 도커 Oracle 컨테이너는 UTC, 이 JVM은 KST)에서 LocalDateTime.now()(JVM/OS 시계)로 계산했더니
             // 위 쿼리가 실제로 반환한 bucket_label(SYSDATE 기준)과 약 9시간 어긋나 raw 맵에 아무 것도
