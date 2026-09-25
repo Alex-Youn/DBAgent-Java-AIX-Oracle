@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=43">
+    <link rel="stylesheet" href="style.css?v=44">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=12"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -126,7 +126,7 @@
         </div>
     </div>
 
-    <div class="app-container" style="zoom: 90%;">
+    <div class="app-container" style="zoom: 80%;">
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-header" style="flex-direction: column; align-items: flex-start; gap: 15px;">
@@ -1267,7 +1267,7 @@
     </div>
 
     <!-- 오라클 인스턴스 대시보드 클래식/신규 전환 아이콘 스위치. .app-container 안(.main-content 형제 포함)에
-         두면 .app-container에 걸린 style="zoom: 90%"가 position:fixed의 containing block을 가로채
+         두면 .app-container에 걸린 style="zoom: 80%"(2026-09-25 전엔 90%)가 position:fixed의 containing block을 가로채
          (.content-section의 fadeIn transform과 같은 계열의 Chrome 버그) 뷰포트가 아니라 zoom 컨테이너의
          스크롤 흐름에 묶여버려, 마지막 카드(확인 필요 알림) 부근에 붙어버리는 문제가 있었다(사용자 실측,
          2026-09-16 1차 수정 후에도 재발, 2026-09-16 2차 수정). #change-pwd-modal/#image-modal 등 기존
@@ -1289,6 +1289,6 @@
     </div>
 
 
-    <script src="app.js?v=161"></script>
+    <script src="app.js?v=162"></script>
 </body>
 </html>

@@ -4234,7 +4234,7 @@ window.openSqlTuningFromPopup = function(sqlText, hashValue, binds, plan) {
 };
 
 
-// .app-container has CSS `zoom: 90%` (see style.css), which makes getBoundingClientRect()/clientX
+// .app-container has CSS `zoom: 80%` (index.html, 90% before 2026-09-25), which makes getBoundingClientRect()/clientX
 // report real screen pixels (post-zoom) while the selection box's own left/top and Chart.js's pixel
 // space are both interpreted in the container's local (pre-zoom) pixels. Mixing the two spaces is why
 // the drag box/selection used to land away from the actual cursor - convert screen px to local px here.

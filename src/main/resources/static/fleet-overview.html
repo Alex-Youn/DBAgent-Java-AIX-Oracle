@@ -164,6 +164,9 @@
            with viewport width via clamp() instead of a fixed px value, so it still looks
            intentional rather than edge-to-edge on very wide/ultrawide screens. */
         padding: 28px calc(clamp(24px, 3vw, 64px) + 1cm) 48px;
+        /* 화면 배율 80% (2026-09-25 체크리스트 4-1) - Oracle(index.html)·RDB 대시보드와 같은 배율로 통일.
+           zoom은 본문 컨테이너(.page)에만 건다(상단 로그인 경고 배너는 바깥). */
+        zoom: 80%;
     }
 
     /* ---------- Header ---------- */
