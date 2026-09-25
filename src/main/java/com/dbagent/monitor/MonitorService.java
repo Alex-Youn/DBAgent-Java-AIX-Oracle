@@ -2044,7 +2044,8 @@ public class MonitorService {
     public List<Map<String, Object>> getHistoryTopSessions(TargetDbConfig target, String startTime, String endTime, String users, String machines) throws SQLException {
         String userFilter = buildUserFilter(users);
         String machineFilter = buildMachineFilter(machines);
-        String query = "WITH combined_ash AS (" +
+        // FETCH FIRST(12c+) 대신 ROWNUM - 11g 대상 DB에서 ORA-00933으로 실패하던 문제(2026-09-26 대시보드 수용 기준 점검 중 발견).
+        String query = "SELECT * FROM (WITH combined_ash AS (" +
                 "SELECT session_id, session_serial#, sql_id, sql_exec_id, sql_exec_start, event, sample_time, program, machine, user_id, sql_plan_hash_value, session_type " +
                 "FROM v$active_session_history " +
                 "WHERE sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND sql_exec_start IS NOT NULL " +
@@ -2062,7 +2063,7 @@ public class MonitorService {
                 excludeMonitoringAccountFilter(target) +
                 " GROUP BY h.sql_id, u.username " +
                 "HAVING MAX(ROUND((CAST(h.sample_time AS DATE) - CAST(h.sql_exec_start AS DATE)) * 24 * 60 * 60, 2)) >= 5 " +
-                "ORDER BY max_duration_time DESC FETCH FIRST 100 ROWS ONLY";
+                "ORDER BY max_duration_time DESC) WHERE ROWNUM <= 100";
 
         List<Map<String, Object>> sessions = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
