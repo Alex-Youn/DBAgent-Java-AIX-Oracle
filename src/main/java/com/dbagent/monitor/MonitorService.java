@@ -48,6 +48,16 @@ public class MonitorService {
     @Value("${dbagent.monitor.ash-activity-query-timeout-seconds:10}")
     private int ashActivityQueryTimeoutSeconds;
 
+    // D2(2026-09-25): 선택 구간이 ASH 인메모리 보관 범위를 벗어나면 dba_hist_active_sess_history(AWR)로 보충.
+    // Diagnostics Pack이 없는 사이트는 false로 끈다(설계 대시보드 UI 개선 7장 ash.awrFallback).
+    @Value("${dbagent.monitor.ash-awr-fallback:true}")
+    private boolean ashAwrFallback;
+
+    // AWR이 섞인 구간 조회는 디스크의 dba_hist_active_sess_history를 읽어 인메모리 ASH보다 훨씬 느리다 -
+    // 최대 24시간 구간을 10초(ash-activity-query-timeout-seconds)에 끝내기 어렵다(query-performance-reviewer 검토).
+    @Value("${dbagent.monitor.ash-awr-query-timeout-seconds:60}")
+    private int ashAwrQueryTimeoutSeconds;
+
     // TM Lock 장애 판정 기준(초) - 이 시간 이상 last_call_et가 흐른 블로킹 TM Holder만 센다. getFailureProb()
     // (장애 판정·장애조치 버튼)와 getActiveAlerts()("Blocking Session 감지" 알림)가 같은 값을 써야 화면마다
     // 판정이 갈리지 않는다(2026-09-25 오케스트레이터 결정으로 하드코딩 60초를 프로퍼티화). application.properties는
@@ -295,37 +305,58 @@ public class MonitorService {
     // 달라 SQL 조각을 공유하지 않음)으로 시간 버킷×카테고리 집계한다.
     // gv$는 쓰지 않는다(2026-09-06 RAC 원칙 확정 - 접속 인스턴스 기준만, MonitorController 상단 주석 참고).
     public Map<String, Object> getAshActivity(TargetDbConfig target, int rangeMinutes, int stepMinutes) throws SQLException {
+        return getAshActivity(target, rangeMinutes, stepMinutes, null, null);
+    }
+
+    /**
+     * D1(2026-09-25): 시작/종료 시각(DB 시각) 지정 조회 - from이 null이면 예전처럼 "최근 rangeMinutes분".
+     * 공용 AshRange를 써서 ASH 보관 범위 밖 구간은 AWR(dba_hist_active_sess_history, 10초 간격)로 보충하고
+     * 응답에 source(ash/awr/mixed)를 내려준다. 최대 24시간.
+     */
+    public Map<String, Object> getAshActivity(TargetDbConfig target, int rangeMinutes, int stepMinutes,
+                                              LocalDateTime from, LocalDateTime to) throws SQLException {
         String[] categoryLabels = {"CPU", "Latch", "User I/O", "TX Lock", "Sys I/O", "TM Lock", "Other"};
         // 버그 수정(2026-09-22, code-inspector 점검): 아래 CASE 문은 System I/O를 'system_io'로
         // 분류하는데 이 배열은 'sys_io'를 쓰고 있어 raw 맵에서 절대 안 걸려 Sys I/O가 항상 0으로
         // 표시되고 있었다(6단계 자체 수집 경로는 처음부터 'system_io'로 일치해서 영향 없었음).
-        String[] categoryKeys = {"cpu", "latch", "user_io", "tx_lock", "system_io", "tm_lock", "other"};
-
-        String query = "SELECT TO_CHAR(bucket_time, 'YYYY-MM-DD\"T\"HH24:MI:\"00\"') AS bucket_label, category, COUNT(*) AS cnt " +
-                "FROM (" +
-                // sample_time은 TIMESTAMP라 TIMESTAMP - TIMESTAMP는 INTERVAL(NUMBER 연산 불가, ORA-00932)이
-                // 되므로 기존 코드 관례(getHistorySessions 등)처럼 CAST(... AS DATE)로 맞춘 뒤 계산한다.
-                "SELECT TRUNC(CAST(h.sample_time AS DATE)) + FLOOR((CAST(h.sample_time AS DATE) - TRUNC(CAST(h.sample_time AS DATE))) * 1440 / ?) * (? / 1440) AS bucket_time, " +
-                // 7분류 CASE는 60초 샘플러(ash_*)와 반드시 같아야 해서 공용 상수를 쓴다(2026-09-25).
-                AshCategories.CASE7 + " AS category " +
-                "FROM v$active_session_history h " +
-                "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
-                "WHERE h.sample_time >= SYSDATE - (? / 1440) " +
-                "AND h.session_type = 'FOREGROUND' " +
-                "AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ")" +
-                ") WHERE category IS NOT NULL " +
-                "GROUP BY bucket_time, category " +
-                "ORDER BY bucket_time";
+        String[] categoryKeys = AshCategories.KEYS7;
 
         Map<String, Map<String, Long>> raw = new LinkedHashMap<>();
-        int cpuCores = 0;
-        LocalDateTime dbNow;
+        int cpuCores;
+        AshRange.Window window;
+        List<String> bucketLabels = null;
         try (Connection conn = poolManager.getConnection(target)) {
+            // 0-패딩 버킷 경계는 반드시 DB 서버의 시각(SYSDATE) 기준이어야 한다 - 로컬 실측(2026-09-22,
+            // 도커 Oracle 컨테이너는 UTC, 이 JVM은 KST)에서 LocalDateTime.now()(JVM/OS 시계)로 계산했더니
+            // 쿼리가 반환한 bucket_label(SYSDATE 기준)과 약 9시간 어긋나 항상 0으로만 채워지는 버그가 있었다.
+            LocalDateTime dbNow = AshRange.dbNow(conn);
+            if (from == null) {
+                // 예전 "최근 N분"과 같은 버킷: 현재 분이 속한 버킷에서 거꾸로 ceil(range/step)개.
+                bucketLabels = generateAshBucketLabels(dbNow, rangeMinutes, stepMinutes);
+                from = LocalDateTime.parse(bucketLabels.get(0));
+                to = null;
+            }
+            window = AshRange.resolve(conn, from, to, ashAwrFallback);
+            if (bucketLabels == null) {
+                bucketLabels = generateAshBucketLabels(window.from, window.to, stepMinutes);
+            }
+
+            String query = "SELECT TO_CHAR(bucket_time, 'YYYY-MM-DD\"T\"HH24:MI:\"00\"') AS bucket_label, category, SUM(w) AS cnt " +
+                    "FROM (" +
+                    // sample_time은 TIMESTAMP라 TIMESTAMP - TIMESTAMP는 INTERVAL(NUMBER 연산 불가, ORA-00932)이
+                    // 되므로 CAST(... AS DATE)로 맞춘 뒤 계산한다.
+                    "SELECT TRUNC(CAST(b.sample_time AS DATE)) + FLOOR((CAST(b.sample_time AS DATE) - TRUNC(CAST(b.sample_time AS DATE))) * 1440 / ?) * (? / 1440) AS bucket_time, " +
+                    "b.category, b.w FROM (" +
+                    // 7분류 CASE는 60초 샘플러(ash_*)와 반드시 같아야 해서 공용 상수를 쓴다(2026-09-25).
+                    AshRange.baseSql(window, "h.sample_time, " + AshCategories.CASE7 + " AS category", "") +
+                    ") b) WHERE category IS NOT NULL " +
+                    "GROUP BY bucket_time, category " +
+                    "ORDER BY bucket_time";
             try (PreparedStatement ps = conn.prepareStatement(query)) {
-                ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                ps.setQueryTimeout(window.useAwr ? ashAwrQueryTimeoutSeconds : ashActivityQueryTimeoutSeconds);
                 ps.setInt(1, stepMinutes);
                 ps.setInt(2, stepMinutes);
-                ps.setInt(3, rangeMinutes);
+                AshRange.bind(ps, 3, window, null);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         raw.computeIfAbsent(rs.getString("bucket_label"), k -> new LinkedHashMap<>())
@@ -336,23 +367,12 @@ public class MonitorService {
             // 코어 기준선은 60초 샘플러(ash_cpu_cores)와 같은 CpuCores 헬퍼로 읽는다 - NUM_CPU_CORES, 없으면
             // NUM_CPUS(체크리스트 1-1, 2026-09-25). 화면마다 "코어 수"가 갈리지 않게 한 곳으로 모은다.
             cpuCores = CpuCores.query(conn);
-            // 0-패딩 버킷 경계는 반드시 DB 서버의 시각(SYSDATE) 기준이어야 한다 - 로컬 실측(2026-09-22,
-            // 도커 Oracle 컨테이너는 UTC, 이 JVM은 KST)에서 LocalDateTime.now()(JVM/OS 시계)로 계산했더니
-            // 위 쿼리가 실제로 반환한 bucket_label(SYSDATE 기준)과 약 9시간 어긋나 raw 맵에 아무 것도
-            // 매칭되지 않고 항상 0으로만 채워지는 버그가 있었다 - DB 커넥션에서 직접 SYSDATE를 읽어와야
-            // 컨테이너/앱 서버 시간대가 달라도(폐쇄망 환경 포함) 항상 SQL과 같은 기준으로 맞아떨어진다.
-            try (Statement st = conn.createStatement();
-                 ResultSet rs = st.executeQuery("SELECT SYSDATE FROM dual")) {
-                rs.next();
-                dbNow = rs.getTimestamp(1).toLocalDateTime();
-            }
         }
 
         // 0-패딩: 샘플이 전혀 없는 버킷/카테고리도 빠짐없이 0으로 채워 누적 영역 차트가 항상 길이 7의
         // values 배열을 받도록 보장한다(설계문서 §4 데이터 계약의 공백 - 1단계 체크리스트 항목).
-        List<String> bucketLabels = generateAshBucketLabels(dbNow, rangeMinutes, stepMinutes);
         List<Map<String, Object>> series = new ArrayList<>(bucketLabels.size());
-        double divisor = stepMinutes * 60.0; // ASH는 1초 간격 샘플링 - 버킷 내 카운트/버킷 초 수 = 근사 AAS
+        double divisor = stepMinutes * 60.0; // SUM(w) = 버킷 안 샘플이 대표하는 초 합계, / 버킷 초 수 = AAS
         for (String label : bucketLabels) {
             Map<String, Long> counts = raw.getOrDefault(label, Collections.emptyMap());
             List<Double> values = new ArrayList<>(categoryKeys.length);
@@ -366,12 +386,17 @@ public class MonitorService {
             series.add(point);
         }
 
+        DateTimeFormatter isoFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("range_minutes", rangeMinutes);
         result.put("step_minutes", stepMinutes);
         result.put("cpu_cores", cpuCores);
         result.put("categories", Arrays.asList(categoryLabels));
         result.put("series", series);
+        result.put("source", window.source());
+        result.put("from", window.from.format(isoFmt));
+        result.put("to", window.to.format(isoFmt));
+        result.put("dbNow", window.dbNow.format(isoFmt));
         return result;
     }
 
@@ -384,7 +409,7 @@ public class MonitorService {
     // `FETCH FIRST n ROWS ONLY`(12c+) 대신 ROWNUM을 쓴다 - 코드베이스 기존 관례가 압도적으로 ROWNUM이고
     // (getSessions 등), 폐쇄망 대상 Oracle 최소 버전이 아직 확인되지 않았다(체크리스트 참고).
     public Map<String, Object> getAshTopSql(TargetDbConfig target, int rangeMinutes, int stepMinutes) throws SQLException {
-        String monitoringFilter = "AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ") ";
+        String monitoringFilter = AshRange.EXCLUDE_SELF_SQL; // D1: dba_users JOIN 대신 접속 계정 ID 비교(결과 동일)
 
         List<Map<String, Object>> topSql = new ArrayList<>();
         LocalDateTime dbNow;
@@ -392,7 +417,6 @@ public class MonitorService {
             String topSqlQuery = "SELECT sql_id, module FROM (" +
                     "SELECT h.sql_id AS sql_id, MAX(h.module) AS module, COUNT(*) AS cnt " +
                     "FROM v$active_session_history h " +
-                    "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
                     "WHERE h.sample_time >= SYSDATE - (? / 1440) " +
                     "AND h.session_type = 'FOREGROUND' " +
                     "AND h.sql_id IS NOT NULL " +
@@ -491,7 +515,6 @@ public class MonitorService {
                         "SELECT TRUNC(CAST(h.sample_time AS DATE)) + FLOOR((CAST(h.sample_time AS DATE) - TRUNC(CAST(h.sample_time AS DATE))) * 1440 / ?) * (? / 1440) AS bucket_time, " +
                         "CASE WHEN h.sql_id IN (" + placeholders + ") THEN h.sql_id ELSE 'OTHER' END AS bucket_key " +
                         "FROM v$active_session_history h " +
-                        "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
                         "WHERE h.sample_time >= SYSDATE - (? / 1440) " +
                         "AND h.session_type = 'FOREGROUND' " +
                         "AND h.sql_id IS NOT NULL " +
@@ -548,7 +571,7 @@ public class MonitorService {
     // 길이에 맞춰 동적으로 만든다 - 고정 5개를 가정한 §9.2 예시 쿼리를 그대로 쓰면 Top5가 5개 미만일
     // 때 바인드 개수 불일치로 깨진다.
     public Map<String, Object> getAshOtherBreakdown(TargetDbConfig target, String startTime, String endTime, List<String> excludeSqlIds) throws SQLException {
-        String monitoringFilter = "AND (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ") ";
+        String monitoringFilter = AshRange.EXCLUDE_SELF_SQL; // D1: dba_users JOIN 대신 접속 계정 ID 비교(결과 동일)
         String excludeClause = "";
         if (excludeSqlIds != null && !excludeSqlIds.isEmpty()) {
             String placeholders = String.join(",", Collections.nCopies(excludeSqlIds.size(), "?"));
@@ -562,7 +585,6 @@ public class MonitorService {
         String query = "WITH tail AS (" +
                 "SELECT h.sql_id AS sql_id, COUNT(*) AS cnt " +
                 "FROM v$active_session_history h " +
-                "LEFT JOIN dba_users u ON h.user_id = u.user_id " +
                 "WHERE h.sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') " +
                 "AND h.session_type = 'FOREGROUND' " +
                 "AND h.sql_id IS NOT NULL " +
@@ -696,6 +718,17 @@ public class MonitorService {
 
     // 0-패딩 버킷 시작/끝 계산 - getAshActivity()/getAshTopSql()이 공유한다(DB의 SYSDATE 기준이어야
     // 하는 이유는 getAshActivity() 쪽 주석 참고 - 로컬 테스트에서 실제로 겪은 시간대 불일치 버그).
+    /** [from, to) 구간의 버킷 시작 라벨 - from을 step 단위로 내린 경계부터 to가 속한 버킷까지(D1). */
+    private List<String> generateAshBucketLabels(LocalDateTime from, LocalDateTime to, int stepMinutes) {
+        DateTimeFormatter labelFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:00");
+        List<String> labels = new ArrayList<>();
+        LocalDateTime last = AshRange.floorToStep(to.minusSeconds(1), stepMinutes);
+        for (LocalDateTime t = AshRange.floorToStep(from, stepMinutes); !t.isAfter(last); t = t.plusMinutes(stepMinutes)) {
+            labels.add(t.format(labelFmt));
+        }
+        return labels;
+    }
+
     private List<String> generateAshBucketLabels(LocalDateTime dbNow, int rangeMinutes, int stepMinutes) {
         int totalMinutesToday = dbNow.getHour() * 60 + dbNow.getMinute();
         int flooredTotalMinutes = (totalMinutesToday / stepMinutes) * stepMinutes;

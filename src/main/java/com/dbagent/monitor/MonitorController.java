@@ -18,7 +18,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.SQLException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -198,22 +201,38 @@ public class MonitorController {
     }
 
     // "Current Session" 화면 Active Session Wait Class 차트(설계문서 `Current Session 매뉴
-    // active_session 차트 개편.md` 1단계, 2026-09-22 - 원본 DBAgent-Java에서 포팅) - 30분/1시간만
-    // 지원. 6시간/24시간(AWR 소스)은 문서 §0 결정에 따라 이후 단계(6단계)에서 추가 예정이라 여기서는
-    // 명시적으로 거부한다.
+    // active_session 차트 개편.md` 1단계, 2026-09-22) - range_minutes는 30분/1시간(6시간/24시간은 저장값
+    // /api/metric_history 경로). D1(2026-09-25): from/to(DB 시각, yyyy-MM-ddTHH:mm[:ss])를 주면 그 구간을
+    // 조회한다 - 최대 24시간, ASH 보관 범위 밖은 AWR 보충(응답 source). step_minutes 1/5/10/15/30/60.
+    private static final List<Integer> ASH_STEP_MINUTES = Arrays.asList(1, 5, 10, 15, 30, 60);
+
     @GetMapping("/ash_activity")
     public ResponseEntity<Object> ashActivity(@RequestParam(required = false) String db_id,
                                                @RequestParam(required = false) String token,
                                                @RequestParam(name = "range_minutes", required = false, defaultValue = "60") int rangeMinutes,
-                                               @RequestParam(name = "step_minutes", required = false, defaultValue = "1") int stepMinutes) {
+                                               @RequestParam(name = "step_minutes", required = false, defaultValue = "1") int stepMinutes,
+                                               @RequestParam(required = false) String from,
+                                               @RequestParam(required = false) String to) {
         if (!authService.canAccessDb(token, db_id)) {
             return dbAccessDenied();
         }
-        if (rangeMinutes != 30 && rangeMinutes != 60) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "range_minutes must be 30 or 60 (1단계 구현 범위)"));
+        LocalDateTime fromTime = null;
+        LocalDateTime toTime = null;
+        if (from != null && !from.trim().isEmpty()) {
+            try {
+                fromTime = LocalDateTime.parse(from.trim());
+                toTime = (to == null || to.trim().isEmpty()) ? null : LocalDateTime.parse(to.trim());
+            } catch (DateTimeParseException e) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "from/to must be yyyy-MM-ddTHH:mm[:ss] (DB time)"));
+            }
+            if (toTime != null && !fromTime.isBefore(toTime)) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "from must be before to"));
+            }
+        } else if (rangeMinutes != 30 && rangeMinutes != 60) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "range_minutes must be 30 or 60 (1단계 구현 범위)"));
         }
-        if (stepMinutes != 1) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "step_minutes must be 1 (1단계 구현 범위)"));
+        if (!ASH_STEP_MINUTES.contains(stepMinutes) || (fromTime == null && stepMinutes != 1)) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "step_minutes must be 1 (from/to 지정 시 1/5/10/15/30/60)"));
         }
         TargetDbConfig target = configService.resolve(db_id);
         if (target == null) {
@@ -221,7 +240,7 @@ public class MonitorController {
         }
         try {
             long started = System.nanoTime();
-            Map<String, Object> result = monitorService.getAshActivity(target, rangeMinutes, stepMinutes);
+            Map<String, Object> result = monitorService.getAshActivity(target, rangeMinutes, stepMinutes, fromTime, toTime);
             return ResponseEntity.ok(withQueryMs("ash_activity", db_id, result, started));
         } catch (SQLException e) {
             return dbError(e);

@@ -359,9 +359,8 @@ public class InstanceMetricSamplerService {
 
     // 모니터링 계정(= 이 커넥션의 접속 계정) 세션 제외. 예전 방식(dba_users LEFT JOIN + 계정명 리터럴)과
     // 결과는 같지만 ASH 행마다 딕셔너리 조인을 하지 않는다(query-performance-reviewer 검토, 2026-09-25).
-    // user_id가 NULL인 행은 예전처럼 남긴다. MonitorService의 나머지 ASH 쿼리는 D1(공용 ASH 구간 조회)에서 같이 바꾼다.
-    private static final String EXCLUDE_SELF_SQL =
-            "AND (h.user_id IS NULL OR h.user_id <> TO_NUMBER(SYS_CONTEXT('USERENV', 'SESSION_USERID')))";
+    // user_id가 NULL인 행은 예전처럼 남긴다. 식은 공용 AshRange(D1)에 한 벌만 둔다.
+    private static final String EXCLUDE_SELF_SQL = AshRange.EXCLUDE_SELF_SQL;
 
     // backfill은 기동·DB 등록 시 1회라 여유 있게 - 60분치 ASH GROUP BY가 바쁜 인스턴스에서 10초를 넘으면
     // 조용히 취소돼 차트가 빈 채로 남기 때문(query-performance-reviewer 검토 3번).

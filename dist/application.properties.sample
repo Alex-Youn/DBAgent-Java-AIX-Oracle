@@ -97,6 +97,12 @@
 # 막고 있는 TM Lock Holder 만 장애 판정(장애조치 버튼)과 "Blocking Session 감지" 알림에 센다.
 # 값이 없거나 잘못된 값이면 60 으로 동작한다.
 #dbagent.monitor.tm-holder-last-call-et-seconds=60
+
+# ASH 구간 조회(성능 분석·대시보드 Top 등)에서 ASH 인메모리 보관 범위를 벗어난 구간을
+# dba_hist_active_sess_history(AWR, 10초 간격)로 보충할지. Diagnostics Pack이 없는 사이트는 false (2026-09-25)
+#dbagent.monitor.ash-awr-fallback=true
+# AWR이 섞인 구간 조회의 타임아웃(초) - ASH만 쓰는 조회는 ash-activity-query-timeout-seconds
+#dbagent.monitor.ash-awr-query-timeout-seconds=60
 # Fleet Overview 의 인스턴스별 상태 점검 상한(초). connect-timeout 이 못 잡는 경우(DNS 지연 등)까지
 # 포함해, 느린 인스턴스 하나가 화면 전체를 붙잡지 못하게 한다.
 #dbagent.fleet-status.timeout-seconds=5
