@@ -98,6 +98,18 @@ function dbagentLatestRequest() {
     };
 }
 
+// /api/kill_session 결과 요약(2026-09-26) - 서버가 실행 직전 재조회해서 사라진/SERIAL# 바뀐/USER 아닌 세션은
+// skipped로 돌려주므로 "실패"와 따로 센다. 건너뜀·실패 사유는 세션별로 덧붙인다.
+function dbagentKillSummary(title, results) {
+    const list = results || [];
+    const n = (st) => list.filter(r => r.status === st).length;
+    let msg = `${title}:\n성공: ${n('killed')}건\n건너뜀: ${n('skipped')}건\n실패: ${n('error')}건`;
+    const notes = list.filter(r => r.status !== 'killed' && r.message).map(r => `- SID ${r.sid}: ${r.message}`);
+    if (notes.length) msg += '\n\n' + notes.slice(0, 10).join('\n') + (notes.length > 10 ? `\n외 ${notes.length - 10}건` : '');
+    if (list.some(r => r.auditWriteFailed)) msg += '\n\n※ 일부 감사 기록 저장에 실패했습니다(서버 로그 확인).';
+    return msg;
+}
+
 // 메뉴 화면이 지금 보이는지(2026-09-26 오케스트레이터 결정) - 보이지 않는 메뉴의 조회를 건너뛴다. 예전엔 대시보드만
 // 띄워 둬도 Lock Holder/Waiter Tree(tmlock, 약 4초마다 v$lock 스캔)·Current Session(세션 목록·ASH 30초)·성능 이력
 // (사용자·머신 목록) 조회가 숨겨진 화면을 위해 계속 원본 DB로 나갔다. 각 메뉴는 들어갈 때 바로 1회 조회한다(switchTab).
@@ -1630,14 +1642,7 @@ let layoutHTML = "";
                 const data = await response.json();
                 if (data.error) throw new Error(data.error);
                 
-                let successCount = 0;
-                let failCount = 0;
-                data.results.forEach(r => {
-                    if (r.status === 'killed') successCount++;
-                    else failCount++;
-                });
-                
-                alert(`처리 결과:\n성공: ${successCount}건\n실패: ${failCount}건`);
+                alert(dbagentKillSummary('처리 결과', data.results));
                 fetchTMLocks(); // refresh
             } catch (error) {
                 alert('세션 Kill 처리 중 오류가 발생했습니다: ' + error.message);
@@ -4058,16 +4063,14 @@ let layoutHTML = "";
                 const res = await fetch(`/api/kill_session?db_id=${dbId}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessions: holders, token: sessionStorage.getItem('dbagent_token') })
+                    body: JSON.stringify({ sessions: holders, token: sessionStorage.getItem('dbagent_token'), reason: 'FAILOVER' })
                 });
                 const data = await res.json();
                 if (data.error) {
                     alert(`장애조치 중 오류: ${data.error}`);
                     return;
                 }
-                let successCount = 0, failCount = 0;
-                data.results.forEach(r => (r.status === 'killed' ? successCount++ : failCount++));
-                alert(`장애조치 완료:\n성공: ${successCount}건\n실패: ${failCount}건`);
+                alert(dbagentKillSummary('장애조치 완료', data.results));
                 fetchInstanceDashboardV2();
             } catch (e) {
                 alert(`장애조치 처리 중 오류가 발생했습니다: ${e.message}`);
@@ -4185,9 +4188,7 @@ let layoutHTML = "";
                 // PL/SQL 호출 중이어서 ORA-00031(session marked for kill)이 나도 사용자에게는 성공으로
                 // 보였음. TM Lock 탭(tmlockKillBtn)/장애조치 버튼(dash-incident-action-btn)과 동일하게
                 // 성공/실패 건수를 세어서 보여주도록 통일.
-                let successCount = 0, failCount = 0;
-                (data.results || []).forEach(r => (r.status === 'killed' ? successCount++ : failCount++));
-                alert(`처리 결과:\n성공: ${successCount}건\n실패: ${failCount}건`);
+                alert(dbagentKillSummary('처리 결과', data.results));
                 if (checkboxClass === 'session-checkbox') {
                     const btn = document.getElementById('session-refresh-btn');
                     if (btn) btn.click();
@@ -4232,7 +4233,7 @@ let layoutHTML = "";
             const res = await fetch(`/api/kill_session?db_id=${dbId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessions: holders, token: sessionStorage.getItem('dbagent_token') })
+                body: JSON.stringify({ sessions: holders, token: sessionStorage.getItem('dbagent_token'), reason: 'FAILOVER' })
             });
             const data = await res.json();
             if (data.error) {
@@ -4240,9 +4241,7 @@ let layoutHTML = "";
                 return;
             }
 
-            let successCount = 0, failCount = 0;
-            data.results.forEach(r => (r.status === 'killed' ? successCount++ : failCount++));
-            alert(`장애조치 완료:\n성공: ${successCount}건\n실패: ${failCount}건`);
+            alert(dbagentKillSummary('장애조치 완료', data.results));
             fetchDashboard();
         } catch (e) {
             alert(`장애조치 처리 중 오류가 발생했습니다: ${e.message}`);

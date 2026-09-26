@@ -45,9 +45,9 @@
             case 'FRA': return `${num(d.usedGb, 1)} / ${num(d.limitGb, 1)} GB · 회수 가능 ${num(d.reclaimableGb, 1)} GB`;
             case 'TABLE_SIZE': return `임계치 ${num(it.threshold, 0)} GB`;
             case 'JOB_FAIL': return `최근 24시간 실패 ${num(it.value, 0)}회${d.consecutive ? ' · 2회 연속 실패' : ''} · 마지막 ${d.lastFail || '-'}`;
-            case 'INVALID_OBJ': case 'STALE_STATS': {
+            case 'INVALID_OBJ': {
                 const items = d.items || [];
-                const first = items[0] ? [items[0].owner, items[0].object_name || items[0].table_name].filter(Boolean).join('.') : '';
+                const first = items[0] ? [items[0].owner, items[0].object_name].filter(Boolean).join('.') : '';
                 return `${num(it.value, 0)}개${first ? ' · ' + first + (items.length > 1 ? ' 외' : '') : ''}`;
             }
             default: return '';
@@ -57,7 +57,7 @@
     function periodText(type) {
         const d = st.data;
         const ts = d && d.lastByType ? d.lastByType[type] : null;
-        const daily = ['TABLE_SIZE', 'INVALID_OBJ', 'STALE_STATS'].indexOf(type) >= 0;
+        const daily = ['TABLE_SIZE', 'INVALID_OBJ'].indexOf(type) >= 0;
         return `${daily ? '1일 주기' : (d ? d.intervalMinutes : 10) + '분 주기'}${ts ? ' · ' + hm(ts) : ''}`;
     }
 
@@ -210,7 +210,7 @@
             secs.push(K.sec('최근 7일 추이 (일별 최댓값)', trendSvg(d.trend, cur.threshold, it.checkType === 'TABLE_SIZE' ? ' GB' : '%')));
         }
         let related = d.related;
-        if ((it.checkType === 'INVALID_OBJ' || it.checkType === 'STALE_STATS') && det.items) {
+        if (it.checkType === 'INVALID_OBJ' && det.items) {
             related = det.items;
         }
         secs.push(K.sec('관련 객체', (d.relatedError ? `<p class="nd-top-err">관련 객체 조회 실패: ${esc(d.relatedError)}</p>` : '') + tableHtml(related) +

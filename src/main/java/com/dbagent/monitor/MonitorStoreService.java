@@ -81,6 +81,8 @@ public class MonitorStoreService {
                 "threshold DOUBLE, detail_json VARCHAR(4000), ack_by VARCHAR(64), ack_ts BIGINT, " +
                 "PRIMARY KEY (db_id, check_ts, check_type, target_name))");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_mon_check_result_type ON mon_check_result (db_id, check_type, check_ts)");
+        // '통계 오래됨' 점검 제거(2026-09-26) - 남은 결과가 종류별 최신 행으로 계속 카드에 뜨지 않게 지운다
+        jdbc.update("DELETE FROM mon_check_result WHERE check_type = 'STALE_STATS'");
 
         jdbc.execute("CREATE TABLE IF NOT EXISTS mon_segment_size (" +
                 "db_id VARCHAR(64) NOT NULL, snap_date BIGINT NOT NULL, owner VARCHAR(128) NOT NULL, " +

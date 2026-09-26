@@ -36,6 +36,7 @@ public class MonitorService {
     private final OracleConnectionPoolManager poolManager;
     private final OracleQueryHelper queryHelper;
     private final InstanceMetricSamplerService metricSamplerService;
+    private final MonitorStoreService storeService;
 
     // 코드 리뷰 지적(2026-09-14): 이 값은 SqlQueryService.timeoutSeconds/ExecutionPlanService.timeoutSeconds
     // 처럼 이 코드베이스가 이미 쓰는 관례대로 application.properties로 외부화 - 환경별로(v$lock이 특히
@@ -88,10 +89,11 @@ public class MonitorService {
     }
 
     public MonitorService(OracleConnectionPoolManager poolManager, OracleQueryHelper queryHelper,
-                           InstanceMetricSamplerService metricSamplerService) {
+                           InstanceMetricSamplerService metricSamplerService, MonitorStoreService storeService) {
         this.poolManager = poolManager;
         this.queryHelper = queryHelper;
         this.metricSamplerService = metricSamplerService;
+        this.storeService = storeService;
     }
 
     // ---------------------------------------------------------------- tmlock
@@ -1407,25 +1409,97 @@ public class MonitorService {
     }
 
     // ----------------------------------------------------------- kill_session
-    public List<Map<String, Object>> killSessions(TargetDbConfig target, List<KillSessionRequest.SessionRef> sessions) throws SQLException {
+    /**
+     * 기존 대시보드·Current Session·TM Lock 탭의 "선택 세션 Kill"·"장애조치"(2026-09-26 보강 - 새 대시보드
+     * LockRealtimeService.killTmHolders와 같은 기준). 실행 직전에 v$session을 다시 조회해 아직 있고 SERIAL#이 같은
+     * USER 세션만 KILL한다. 사라졌거나 SERIAL#이 바뀐(다른 세션이 SID를 재사용) 세션, BACKGROUND 세션, 앱 자신의
+     * 접속 세션은 skipped. 결과는 모두 mon_kill_audit에 남긴다. sid/serial은 호출자가 양의 정수로 검증해 넘긴다 -
+     * ALTER SYSTEM은 바인드 변수를 못 쓰므로 정수 타입이 유일한 방어선이다.
+     */
+    public List<Map<String, Object>> killSessions(TargetDbConfig target, String executedBy, String reason,
+                                                  List<long[]> sessions) throws SQLException {
         List<Map<String, Object>> results = new ArrayList<>();
+        long now = System.currentTimeMillis();
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
             int instId = queryHelper.getInstId(conn, target);
-            for (KillSessionRequest.SessionRef s : sessions) {
-                if (s.sid() == null || s.serial() == null) continue;
-                Map<String, Object> r = new LinkedHashMap<>();
-                r.put("sid", s.sid());
-                try {
-                    st.execute("ALTER SYSTEM KILL SESSION '" + s.sid() + "," + s.serial() + ",@" + instId + "' IMMEDIATE");
-                    r.put("status", "killed");
-                } catch (SQLException e) {
-                    r.put("status", "error");
-                    r.put("message", e.getMessage());
+            String instanceName = null;
+            long mySid = -1;
+            try (ResultSet rs = st.executeQuery("SELECT instance_name, SYS_CONTEXT('USERENV','SID') FROM v$instance")) {
+                if (rs.next()) {
+                    instanceName = rs.getString(1);
+                    mySid = rs.getLong(2);
                 }
-                results.add(r);
+            }
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT username, program, machine, type, last_call_et FROM v$session WHERE sid = ? AND serial# = ?")) {
+                for (long[] s : sessions) {
+                    long sid = s[0];
+                    long serial = s[1];
+                    Map<String, Object> r = new LinkedHashMap<>();
+                    r.put("sid", sid);
+                    r.put("serial", serial);
+                    String username = null, program = null, machine = null, type = null;
+                    Long lastCallEt = null;
+                    ps.setLong(1, sid);
+                    ps.setLong(2, serial);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            username = rs.getString(1);
+                            program = rs.getString(2);
+                            machine = rs.getString(3);
+                            type = rs.getString(4);
+                            lastCallEt = rs.getLong(5);
+                        }
+                    }
+                    String status;
+                    String message = null;
+                    if (type == null) {
+                        status = "skipped";
+                        message = "이미 종료됐거나 SERIAL#이 바뀐 세션입니다.";
+                    } else if (!"USER".equals(type)) {
+                        status = "skipped";
+                        message = "USER 세션만 Kill할 수 있습니다(" + type + ").";
+                    } else if (sid == mySid) {
+                        status = "skipped";
+                        message = "모니터링 앱 자신의 접속 세션입니다.";
+                    } else {
+                        try {
+                            st.execute("ALTER SYSTEM KILL SESSION '" + sid + "," + serial + ",@" + instId + "' IMMEDIATE");
+                            status = "killed";
+                        } catch (SQLException e) {
+                            status = "error";
+                            message = e.getMessage();
+                        }
+                    }
+                    r.put("status", status);
+                    if (message != null) r.put("message", message);
+                    String auditResult = "killed".equals(status) ? "SUCCESS" : "skipped".equals(status) ? "SKIPPED" : "FAILED";
+                    if (!saveKillAudit(target, now, executedBy, sid, serial, instanceName, username, program, machine,
+                            lastCallEt, reason, auditResult, message)) {
+                        r.put("auditWriteFailed", true);
+                    }
+                    results.add(r);
+                }
             }
         }
         return results;
+    }
+
+    /** 감사 기록 - 대상 DB와 감사 저장소가 달라 원자성이 없으므로 한 번 재시도하고, 실패하면 false(응답에 표시). */
+    private boolean saveKillAudit(TargetDbConfig target, long now, String executedBy, long sid, long serial, String instanceName,
+                                  String username, String program, String machine, Long lastCallEt, String reason,
+                                  String result, String err) {
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                storeService.saveKillAudit(target.id(), now, executedBy, sid, serial, instanceName, username, program,
+                        machine, null, lastCallEt, reason, result, err);
+                return true;
+            } catch (Exception e) {
+                log.error("mon_kill_audit write failed (attempt {}, db_id={}, sid={}, serial={}, result={}, by={}): {}",
+                        attempt, target.id(), sid, serial, result, executedBy, e.toString());
+            }
+        }
+        return false;
     }
 
     // -------------------------------------------------------------- relation

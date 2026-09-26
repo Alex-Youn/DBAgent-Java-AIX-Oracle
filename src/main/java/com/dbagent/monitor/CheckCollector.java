@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>가벼운 항목(10분): 테이블스페이스(97/98%), FRA(미설정 DB 제외), TEMP(autoextend MAXSIZE 기준), 스케줄러 잡 실패(24시간).</li>
  *   <li>무거운 항목(1일, check-daily-hour 기본 새벽 3시 + 앱 기동 직후 1회): 테이블 용량(dba_segments 1회 조회로 세그먼트
- *       스냅샷 mon_segment_size도 함께), 무효 객체, 통계 오래됨. 딕셔너리 뷰 스캔이라 무겁고 하루에 크게 바뀌지 않는다.</li>
+ *       스냅샷 mon_segment_size도 함께), 무효 객체. 딕셔너리 뷰 스캔이라 무겁고 하루에 크게 바뀌지 않는다.</li>
  *   <li>항목 종류마다 실행할 때 severity='OK', target_name='*' 행 1개를 남긴다 - 카드가 사라진 이유(해소 vs 점검 실패)를
  *       구분하기 위해. 쿼리가 실패하면 severity='ERROR' 행 + 오류 메시지(권한 없음·타임아웃을 "알림 없음"으로 보이게 하지 않음).</li>
  *   <li>임계치 미만이면 항목 행을 남기지 않는다. 시각은 앱 시각 epoch ms(다른 mon_* 테이블과 같음).</li>
@@ -54,7 +54,7 @@ public class CheckCollector {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     static final List<String> LIGHT_TYPES = Arrays.asList("TABLESPACE", "FRA", "TEMP", "JOB_FAIL");
-    static final List<String> DAILY_TYPES = Arrays.asList("TABLE_SIZE", "INVALID_OBJ", "STALE_STATS");
+    static final List<String> DAILY_TYPES = Arrays.asList("TABLE_SIZE", "INVALID_OBJ");
 
     private final DatabaseConfigService configService;
     private final OracleConnectionPoolManager poolManager;
@@ -182,7 +182,6 @@ public class CheckCollector {
         try (Connection conn = poolManager.getConnection(target)) {
             run(rows, target, ts, "TABLE_SIZE", () -> checkTableSize(conn, target, ts, rows));
             run(rows, target, ts, "INVALID_OBJ", () -> checkInvalid(conn, target, ts, rows));
-            run(rows, target, ts, "STALE_STATS", () -> checkStale(conn, target, ts, rows));
         } catch (SQLException e) {
             for (String type : DAILY_TYPES) rows.add(error(target, ts, type, "DB 접속 실패: " + e.getMessage()));
         }
@@ -355,14 +354,7 @@ public class CheckCollector {
                 new String[]{"owner", "object_type", "object_name", "last_ddl"});
     }
 
-    private void checkStale(Connection conn, TargetDbConfig target, long ts, List<Object[]> rows) throws SQLException {
-        listCheck(conn, target, ts, rows, "STALE_STATS", "통계 오래됨",
-                "SELECT owner, table_name, partition_name, TO_CHAR(last_analyzed, 'YYYY-MM-DD HH24:MI') AS last_analyzed, num_rows " +
-                        "FROM dba_tab_statistics WHERE stale_stats = 'YES'" + ownerNotIn() + "ORDER BY owner, table_name",
-                new String[]{"owner", "table_name", "partition_name", "last_analyzed", "num_rows"});
-    }
-
-    /** 대상 목록형(무효 객체·통계): 1개 이상이면 확인(INFO) 카드 1장, 목록은 앞 100개만 detail_json에. */
+    /** 대상 목록형(무효 객체): 1개 이상이면 확인(INFO) 카드 1장, 목록은 앞 100개만 detail_json에. */
     private void listCheck(Connection conn, TargetDbConfig target, long ts, List<Object[]> rows, String type, String label,
                            String sql, String[] cols) throws SQLException {
         List<Map<String, Object>> items = new ArrayList<>();

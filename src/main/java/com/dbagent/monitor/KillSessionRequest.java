@@ -9,11 +9,19 @@ public final class KillSessionRequest {
 
     private final List<SessionRef> sessions;
     private final String token;
+    /** "FAILOVER"(장애조치 버튼) 또는 생략(선택 세션 Kill) - 감사 기록 구분용. */
+    private final String reason;
 
     @JsonCreator
-    public KillSessionRequest(@JsonProperty("sessions") List<SessionRef> sessions, @JsonProperty("token") String token) {
+    public KillSessionRequest(@JsonProperty("sessions") List<SessionRef> sessions, @JsonProperty("token") String token,
+                              @JsonProperty("reason") String reason) {
         this.sessions = sessions;
         this.token = token;
+        this.reason = reason;
+    }
+
+    public String reason() {
+        return reason;
     }
 
     public List<SessionRef> sessions() {

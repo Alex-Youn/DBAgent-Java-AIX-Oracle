@@ -43,21 +43,18 @@ public class CheckDetailService {
         LABEL.put("TEMP", "TEMP 사용률");
         LABEL.put("JOB_FAIL", "스케줄러 잡 실패");
         LABEL.put("INVALID_OBJ", "무효 객체");
-        LABEL.put("STALE_STATS", "통계 정보 오래됨");
         ACTION.put("TABLESPACE", "데이터파일을 추가하거나 자동 확장 MAXSIZE를 늘리세요. 큰 세그먼트의 불필요한 데이터 정리(파티션 삭제·아카이빙)도 검토하세요.");
         ACTION.put("TABLE_SIZE", "보관 주기 정책과 파티셔닝·아카이빙을 검토하고, 삭제 후 공간 회수(SHRINK/MOVE)가 필요한지 확인하세요.");
         ACTION.put("FRA", "RMAN으로 아카이브 로그를 백업·삭제하거나 DB_RECOVERY_FILE_DEST_SIZE를 늘리세요. FRA가 가득 차면 아카이브가 멈춰 DB가 정지합니다.");
         ACTION.put("TEMP", "TEMP를 많이 쓰는 세션·SQL(대량 정렬·해시 조인)을 확인하고, 필요하면 TEMP 파일을 추가하세요.");
         ACTION.put("JOB_FAIL", "최근 실행 이력의 오류 번호와 메시지를 확인하고 잡을 수동 재실행해 원인을 확인하세요.");
         ACTION.put("INVALID_OBJ", "대상 객체를 재컴파일(UTL_RECOMP 또는 ALTER ... COMPILE)하고, 다시 무효가 되면 의존 객체 변경을 확인하세요.");
-        ACTION.put("STALE_STATS", "대상 테이블의 통계를 다시 수집(DBMS_STATS.GATHER_TABLE_STATS)하세요. 자동 통계 수집 작업이 도는지도 확인하세요.");
         QUERY.put("TABLESPACE", "SELECT m.tablespace_name, used_space*block_size, tablespace_size*block_size, used_percent FROM dba_tablespace_usage_metrics m JOIN dba_tablespaces t ... WHERE used_percent >= :warn_pct");
         QUERY.put("TABLE_SIZE", "SELECT owner, segment_name, SUM(bytes) FROM dba_segments WHERE segment_type IN ('TABLE','TABLE PARTITION','TABLE SUBPARTITION') AND owner NOT IN (...) GROUP BY owner, segment_name HAVING SUM(bytes) >= :min_gb");
         QUERY.put("FRA", "SELECT name, space_limit, space_used, space_reclaimable, (space_used-space_reclaimable)/NULLIF(space_limit,0)*100 FROM v$recovery_file_dest WHERE space_limit > 0");
         QUERY.put("TEMP", "SELECT f.tablespace_name, tablespace_size-free_space, max_bytes FROM dba_temp_free_space f JOIN (SELECT tablespace_name, SUM(CASE WHEN autoextensible='YES' THEN GREATEST(maxbytes,bytes) ELSE bytes END) max_bytes FROM dba_temp_files GROUP BY tablespace_name) m ...");
         QUERY.put("JOB_FAIL", "SELECT owner, job_name, status, error#, additional_info FROM dba_scheduler_job_run_details WHERE log_date > SYSDATE - 1 AND status <> 'SUCCEEDED'");
         QUERY.put("INVALID_OBJ", "SELECT owner, object_type, object_name, last_ddl_time FROM dba_objects WHERE status = 'INVALID' AND owner NOT IN (...)");
-        QUERY.put("STALE_STATS", "SELECT owner, table_name, partition_name, last_analyzed, num_rows FROM dba_tab_statistics WHERE stale_stats = 'YES' AND owner NOT IN (...)");
     }
 
     private final MonitorStoreService storeService;

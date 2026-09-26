@@ -24,8 +24,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -546,6 +548,8 @@ public class MonitorController {
         }
     }
 
+    private static final int MAX_KILL_SESSIONS = 200;
+
     @PostMapping("/kill_session")
     public ResponseEntity<Object> killSession(
             @RequestParam(required = false) String db_id,
@@ -553,15 +557,32 @@ public class MonitorController {
         if (!authService.isAdmin(req.token())) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Maps.of("error", "세션 Kill 권한이 없습니다."));
         }
+        // 2026-09-26 보강: 새 대시보드 KILL·RDB Kill과 같이 DB 접근 권한도 본다(관리자라도 허용 DB 밖은 거부).
+        if (!authService.canAccessDb(req.token(), db_id)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Maps.of("error", "해당 DB에 대한 접근 권한이 없습니다."));
+        }
         if (req.sessions() == null || req.sessions().isEmpty()) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "No sessions provided"));
+        }
+        if (req.sessions().size() > MAX_KILL_SESSIONS) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "Kill 대상이 너무 많습니다(최대 " + MAX_KILL_SESSIONS + ")."));
+        }
+        List<long[]> parsed = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (KillSessionRequest.SessionRef s : req.sessions()) {
+            if (s == null || s.sid() == null || s.serial() == null || s.sid() <= 0 || s.serial() <= 0) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "sid/serial은 양의 정수여야 합니다."));
+            }
+            if (seen.add(s.sid() + ":" + s.serial())) parsed.add(new long[]{s.sid(), s.serial()});
         }
         TargetDbConfig target = configService.resolve(db_id);
         if (target == null) {
             return dbNotFound();
         }
+        String executedBy = authService.sessionForToken(req.token()).map(AuthService.AuthSession::username).orElse("?");
+        String reason = "FAILOVER".equals(req.reason()) ? "FAILOVER" : "MANUAL_SESSION";
         try {
-            List<Map<String, Object>> results = monitorService.killSessions(target, req.sessions());
+            List<Map<String, Object>> results = monitorService.killSessions(target, executedBy, reason, parsed);
             return ResponseEntity.ok(Maps.of("results", results));
         } catch (SQLException e) {
             return dbError(e);
