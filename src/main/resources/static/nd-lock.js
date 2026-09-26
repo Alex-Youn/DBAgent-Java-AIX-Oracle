@@ -15,7 +15,10 @@
     // 예전엔 대기 클래스 토큰을 빌려 써서 TX가 붉은색, TM이 보라로 뒤바뀌어 보였다).
     const TX_COLOR = '#7c3aed';
     const TM_COLOR = '#be123c';
-    const TX_WARN = 5;
+    // TX·TM 대기 세션 기준(Waiter 수) - 5건 이상 주의, 10건 이상 위험, 1~4건은 정상(2026-09-26 오케스트레이터 결정.
+    // 예전: TX 1~4 주의/5 위험, TM 1~2 주의/3 위험). 그래프 점선은 주의 기준(5건).
+    const LOCK_WARN = 5;
+    const LOCK_CRIT = 10;
 
     const st = {
         last: null,        // 마지막 정상 응답
@@ -145,8 +148,8 @@
         const ocPill = oc >= lim ? pill({ c: 'crit' }, '장애 기준 도달')
             : oc >= 3 ? pill({ c: 'warn' }, `기준까지 ${lim - oc}개`) : pill({ c: 'good' }, `전체 Holder ${d.holderTotal}개`);
         box.innerHTML =
-            cell('TX 대기 세션', String(d.txWait), '건', d.txWait ? pill(lvl(d.txWait, 1, TX_WARN)) : pill({ c: 'good' }, '대기 없음'), TX_COLOR) +
-            cell('TM 대기 세션', String(d.tmWait), '건', d.tmWait ? pill(lvl(d.tmWait, 1, 3)) : pill({ c: 'good' }, '대기 없음'), TM_COLOR) +
+            cell('TX 대기 세션', String(d.txWait), '건', d.txWait ? pill(lvl(d.txWait, LOCK_WARN, LOCK_CRIT)) : pill({ c: 'good' }, '대기 없음'), TX_COLOR) +
+            cell('TM 대기 세션', String(d.tmWait), '건', d.tmWait ? pill(lvl(d.tmWait, LOCK_WARN, LOCK_CRIT)) : pill({ c: 'good' }, '대기 없음'), TM_COLOR) +
             cell(`블로킹 TM Holder (${th}초↑)`, String(oc), `/ ${lim}개`, ocPill) +
             cell('최장 last_call_et', d.maxLastCallEt ? esc(mmss(d.maxLastCallEt)) : '—', '',
                 d.maxLastCallEt ? pill(lvl(d.maxLastCallEt, 30, th)) : pill({ c: 'good' }, 'Holder 없음'));
@@ -182,7 +185,7 @@
         const W = Math.max(220, plot.clientWidth), H = Math.max(60, plot.clientHeight);
         const ml = 30, mr = W < 420 ? 44 : 56, mt = 8, mb = 20, pw = W - ml - mr, ph = H - mt - mb;
         const t1 = hist[hist.length - 1].t, t0 = Math.min(hist[0].t, t1 - 10 * 60000);
-        const mx = Math.max(TX_WARN + 1, ...hist.map(h => Math.max(h.tx, h.tm)));
+        const mx = Math.max(LOCK_WARN + 1, ...hist.map(h => Math.max(h.tx, h.tm)));
         const step = mx <= 8 ? 2 : mx <= 20 ? 5 : 10, top = Math.ceil(mx * 1.1 / step) * step;
         const x = (t) => ml + (t - t0) / Math.max(1, t1 - t0) * pw, y = (v) => mt + ph - v / top * ph;
         G = { W, ml, pw, t0, t1, x, hist };
@@ -210,7 +213,7 @@
         for (let t = Math.ceil((t0 + off()) / 120000) * 120000 - off(); t <= t1; t += 120000) {
             s += `<text class="nd-tick" x="${x(t).toFixed(1)}" y="${H - 5}" text-anchor="middle">${hms(t).slice(0, 5)}</text>`;
         }
-        const wy = y(TX_WARN).toFixed(1);
+        const wy = y(LOCK_WARN).toFixed(1);
         s += `<line class="nd-thl" x1="${ml}" x2="${ml + pw}" y1="${wy}" y2="${wy}"/>`;
         const path = (pts, k) => {
             let p = `M${x(pts[0].t).toFixed(1)},${y(pts[0][k]).toFixed(1)}`;
