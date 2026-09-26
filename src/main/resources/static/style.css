@@ -2094,3 +2094,23 @@ body {
 .nd-chk-rel .nd-table { font-family: inherit; }
 .nd-chk-rel .nd-table td, .nd-chk-rel .nd-table th { text-align: left; }
 .nd-chk-trend { display: block; max-width: 100%; }
+
+
+/* ===== G3 성능 분석(2026-09-26) - #history 섹션, 동작은 perf-analysis.js ===== */
+.perf-subtitle { font-size: 0.8em; font-weight: 400; color: var(--text-secondary); }
+.perf-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+.perf-select { max-width: 180px; padding: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-main); }
+.perf-time { padding: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-main); font-weight: bold; outline: none; color-scheme: dark; }
+[data-theme="light"] .perf-time { color-scheme: light; }
+.perf-label { color: var(--text-secondary); font-size: 0.9rem; }
+.perf-meta { color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 8px; }
+.perf-meta b { color: var(--text-main); }
+.perf-chart-box { position: relative; height: 300px; margin-bottom: 8px; user-select: none; }
+.perf-events-box { height: 360px; }
+.perf-brush { position: absolute; top: 0; height: 100%; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10; }
+.perf-sel-bar { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; font-size: 0.9rem; }
+.perf-sel-bar #perf-sel-text { font-weight: 600; }
+.perf-link-btn { border: 1px solid var(--border-color); background: var(--bg-card); color: var(--primary); border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 0.85rem; }
+.perf-hint { color: var(--text-secondary); font-size: 0.8rem; font-weight: 400; }
+.perf-h3 { margin: 0 0 8px; color: var(--text-primary); font-size: 1.05rem; }
+.perf-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); }

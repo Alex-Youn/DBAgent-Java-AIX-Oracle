@@ -175,6 +175,65 @@ final class AshRange {
         int bind(PreparedStatement ps, int idx) throws SQLException;
     }
 
+    /**
+     * G3 성능 분석(2026-09-26)의 계정·접속 호스트 필터 - 예전 성능 이력 조회의 users/machines 드롭다운(2026-09-14
+     * 요청)을 그대로 잇는다. 예전 코드는 값을 문자열로 이어 붙였지만 여기서는 바인드 변수로 넘긴다.
+     * 쉼표로 구분한 값, 빈 값은 "전체". 각각 최대 MAX_FILTER_VALUES개.
+     */
+    static final class Filter {
+        static final int MAX_FILTER_VALUES = 50;
+        final java.util.List<String> users;
+        final java.util.List<String> machines;
+
+        private Filter(java.util.List<String> users, java.util.List<String> machines) {
+            this.users = users;
+            this.machines = machines;
+        }
+
+        static Filter of(String usersCsv, String machinesCsv) {
+            return new Filter(split(usersCsv), split(machinesCsv));
+        }
+
+        private static java.util.List<String> split(String csv) {
+            java.util.List<String> out = new java.util.ArrayList<>();
+            if (csv == null) return out;
+            for (String v : csv.split(",")) {
+                String t = v.trim();
+                if (!t.isEmpty() && !out.contains(t) && out.size() < MAX_FILTER_VALUES) out.add(t);
+            }
+            return out;
+        }
+
+        boolean isEmpty() {
+            return users.isEmpty() && machines.isEmpty();
+        }
+
+        /** "AND ..." 조건(별칭 h). 없으면 빈 문자열. */
+        String sql() {
+            StringBuilder sb = new StringBuilder();
+            if (!users.isEmpty()) {
+                sb.append("AND h.user_id IN (SELECT u.user_id FROM dba_users u WHERE u.username IN (")
+                        .append(placeholders(users.size())).append(")) ");
+            }
+            if (!machines.isEmpty()) {
+                sb.append("AND h.machine IN (").append(placeholders(machines.size())).append(") ");
+            }
+            return sb.toString();
+        }
+
+        int bind(PreparedStatement ps, int idx) throws SQLException {
+            for (String u : users) ps.setString(idx++, u);
+            for (String m : machines) ps.setString(idx++, m);
+            return idx;
+        }
+
+        private static String placeholders(int n) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < n; i++) sb.append(i == 0 ? "?" : ", ?");
+            return sb.toString();
+        }
+    }
+
     /** 구간 시작을 step 분 단위로 내린 버킷 경계(DB 시각). */
     static LocalDateTime floorToStep(LocalDateTime t, int stepMinutes) {
         int minuteOfDay = t.getHour() * 60 + t.getMinute();

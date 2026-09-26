@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=55">
+    <link rel="stylesheet" href="style.css?v=56">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=12"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -208,7 +208,7 @@
                     </a>
                     <a href="#history" class="nav-item" data-target="history">
                         <i data-lucide="history"></i>
-                        <span>성능 이력 조회</span>
+                        <span>성능 분석</span>
                     </a>
                     <a href="#tmlock" class="nav-item" data-target="tmlock">
                         <i data-lucide="lock"></i>
@@ -1251,22 +1251,21 @@
 
                 <!-- History Inquiry Section -->
                 <section id="history" class="content-section">
+                    <!-- G3 성능 분석(구 "성능 이력 조회", 2026-09-26) - 상단 wait class 막대(드래그로 구간 선택) →
+                         하단 선택 구간의 event별 막대 → 막대 클릭 시 세션 목록 팝업(perf-event-sessions.html).
+                         동작은 perf-analysis.js. 시각은 모두 DB 시각. -->
                     <div class="panel">
                         <div class="panel-header">
-                            <h2>성능 이력 조회 (Active Session History)</h2>
-                            <div class="search-bar" style="margin-bottom: 10px; display: flex; gap: 10px; flex-wrap: wrap;">
-                                <select id="history-users" class="form-input" style="max-width: 150px; display: inline-block; padding: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-main); margin-right: 10px;"></select>
-                                <select id="history-machines" class="form-input" title="WAS 서버 등 접속 호스트(machine) 기준으로 필터링합니다." style="max-width: 180px; display: inline-block; padding: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-main); margin-right: 10px;"></select>
-<div style="display: flex; align-items: center; gap: 5px;">
-                                    <label style="color: var(--text-secondary); font-size: 0.9rem;">시작:</label>
-                                    <input type="datetime-local" id="history-start-time" class="form-input" style="padding: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-main); font-weight: bold; outline: none; color-scheme: dark;">
-                                </div>
-                                <span style="align-self: center; color: var(--text-secondary);">~</span>
-                                <div style="display: flex; align-items: center; gap: 5px;">
-                                    <label style="color: var(--text-secondary); font-size: 0.9rem;">종료:</label>
-                                    <input type="datetime-local" id="history-end-time" class="form-input" style="padding: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-main); font-weight: bold; outline: none; color-scheme: dark;">
-                                </div>
-                                <button id="history-search-btn" class="primary-btn"><i data-lucide="search"></i> 조회</button>
+                            <h2>성능 분석 <span class="perf-subtitle">(Active Session History · DB 시각)</span></h2>
+                            <div class="search-bar perf-toolbar">
+                                <select id="history-users" class="form-input perf-select" title="DB 계정으로 걸러 봅니다."></select>
+                                <select id="history-machines" class="form-input perf-select" title="WAS 서버 등 접속 호스트(machine) 기준으로 필터링합니다."></select>
+                                <label class="perf-label">시작</label>
+                                <input type="datetime-local" id="history-start-time" class="form-input perf-time">
+                                <span class="perf-label">~</span>
+                                <label class="perf-label">종료</label>
+                                <input type="datetime-local" id="history-end-time" class="form-input perf-time">
+                                <button id="perf-search-btn" class="primary-btn"><i data-lucide="search"></i> 조회</button>
                             </div>
                         </div>
                         <div class="panel-body" style="position: relative;">
@@ -1274,33 +1273,20 @@
                                 <div class="circular-progress"></div>
                                 <span style="color: #fff; font-weight: 600;">조회 중입니다...</span>
                             </div>
-                            <div style="height: 300px; position: relative; margin-bottom: 20px;" id="history-scatter-container">
-                                <canvas id="history-scatter-chart"></canvas>
-                                <div id="history-scatter-selection-box" style="position: absolute; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10;"></div>
+                            <div class="perf-meta" id="perf-meta">조회할 구간을 정하고 조회 버튼을 눌러 주세요. 최대 24시간, ASH 보관 범위 밖은 AWR로 보충합니다.</div>
+                            <div class="perf-chart-box" id="perf-activity-container">
+                                <canvas id="perf-activity-chart"></canvas>
+                                <div id="perf-activity-selection-box" class="perf-brush"></div>
                             </div>
-                            
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                <h3 style="color: var(--text-primary); margin: 0;">이력 세션 목록</h3>
+                            <div class="perf-sel-bar">
+                                <span id="perf-sel-text">선택 구간: 전체</span>
+                                <button type="button" id="perf-sel-reset" class="perf-link-btn" style="display: none;">전체 구간으로</button>
+                                <span class="perf-hint">위 그래프를 좌우로 드래그하면 그 구간만 아래에 집계합니다.</span>
                             </div>
-                            <div style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px;">
-                                <table class="data-table" style="border: none;">
-                                    <thead>
-                                        <tr>
-                                            <th>시간(Sample Time)</th>
-                                            <th>SID</th>
-                                            <th>Serial#</th>
-                                            <th>Duration Time(sec)</th>
-                                            <th>Event Name</th>
-                                            <th>SQL ID</th>
-                                            <th>Plan Hash Value</th>
-                                            <th>Program Name</th>
-                                            <th>Oracle User Name</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="history-tbody">
-                                        <tr><td colspan="9" style="text-align:center; padding: 30px;">조회할 시간 범위를 선택하고 조회 버튼을 눌러주세요.</td></tr>
-                                    </tbody>
-                                </table>
+                            <h3 class="perf-h3">Event별 대기 시간 <span class="perf-hint">막대를 누르면 그 Event의 세션 목록이 열립니다.</span></h3>
+                            <div class="perf-chart-box perf-events-box" id="perf-events-container">
+                                <canvas id="perf-events-chart"></canvas>
+                                <div id="perf-events-empty" class="perf-empty" style="display: none;"></div>
                             </div>
                         </div>
                     </div>
@@ -1387,5 +1373,6 @@
     <script src="nd-lock.js?v=2"></script>
     <script src="nd-top.js?v=2"></script>
     <script src="nd-checks.js?v=3"></script>
+    <script src="perf-analysis.js?v=1"></script>
 </body>
 </html>

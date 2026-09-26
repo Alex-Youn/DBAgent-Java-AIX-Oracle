@@ -214,7 +214,9 @@ public class MonitorController {
                                                @RequestParam(name = "range_minutes", required = false, defaultValue = "60") int rangeMinutes,
                                                @RequestParam(name = "step_minutes", required = false, defaultValue = "1") int stepMinutes,
                                                @RequestParam(required = false) String from,
-                                               @RequestParam(required = false) String to) {
+                                               @RequestParam(required = false) String to,
+                                               @RequestParam(required = false) String users,
+                                               @RequestParam(required = false) String machines) {
         if (!authService.canAccessDb(token, db_id)) {
             return dbAccessDenied();
         }
@@ -242,7 +244,10 @@ public class MonitorController {
         }
         try {
             long started = System.nanoTime();
-            Map<String, Object> result = monitorService.getAshActivity(target, rangeMinutes, stepMinutes, fromTime, toTime);
+            // users/machines: G3 성능 분석의 계정·접속 호스트 필터(2026-09-26). 없으면 예전과 같다.
+            AshRange.Filter filter = AshRange.Filter.of(users, machines);
+            Map<String, Object> result = monitorService.getAshActivity(target, rangeMinutes, stepMinutes, fromTime, toTime,
+                    filter.isEmpty() ? null : filter);
             return ResponseEntity.ok(withQueryMs("ash_activity", db_id, result, started));
         } catch (SQLException e) {
             return dbError(e);

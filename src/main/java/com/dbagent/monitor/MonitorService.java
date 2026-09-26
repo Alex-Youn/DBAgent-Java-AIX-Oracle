@@ -322,6 +322,12 @@ public class MonitorService {
      */
     public Map<String, Object> getAshActivity(TargetDbConfig target, int rangeMinutes, int stepMinutes,
                                               LocalDateTime from, LocalDateTime to) throws SQLException {
+        return getAshActivity(target, rangeMinutes, stepMinutes, from, to, null);
+    }
+
+    /** G3 성능 분석(2026-09-26): 계정·접속 호스트 필터(null이면 전체). */
+    public Map<String, Object> getAshActivity(TargetDbConfig target, int rangeMinutes, int stepMinutes,
+                                              LocalDateTime from, LocalDateTime to, AshRange.Filter filter) throws SQLException {
         String[] categoryLabels = {"CPU", "Latch", "User I/O", "TX Lock", "Sys I/O", "TM Lock", "Other"};
         // 버그 수정(2026-09-22, code-inspector 점검): 아래 CASE 문은 System I/O를 'system_io'로
         // 분류하는데 이 배열은 'sys_io'를 쓰고 있어 raw 맵에서 절대 안 걸려 Sys I/O가 항상 0으로
@@ -355,7 +361,7 @@ public class MonitorService {
                     "SELECT TRUNC(CAST(b.sample_time AS DATE)) + FLOOR((CAST(b.sample_time AS DATE) - TRUNC(CAST(b.sample_time AS DATE))) * 1440 / ?) * (? / 1440) AS bucket_time, " +
                     "b.category, b.w FROM (" +
                     // 7분류 CASE는 60초 샘플러(ash_*)와 반드시 같아야 해서 공용 상수를 쓴다(2026-09-25).
-                    AshRange.baseSql(window, "h.sample_time, " + AshCategories.CASE7 + " AS category", "") +
+                    AshRange.baseSql(window, "h.sample_time, " + AshCategories.CASE7 + " AS category", filter == null ? "" : filter.sql()) +
                     ") b) WHERE category IS NOT NULL " +
                     "GROUP BY bucket_time, category " +
                     "ORDER BY bucket_time";
@@ -363,7 +369,7 @@ public class MonitorService {
                 ps.setQueryTimeout(window.useAwr ? ashAwrQueryTimeoutSeconds : ashActivityQueryTimeoutSeconds);
                 ps.setInt(1, stepMinutes);
                 ps.setInt(2, stepMinutes);
-                AshRange.bind(ps, 3, window, null);
+                AshRange.bind(ps, 3, window, filter == null || filter.isEmpty() ? null : filter::bind);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         raw.computeIfAbsent(rs.getString("bucket_label"), k -> new LinkedHashMap<>())

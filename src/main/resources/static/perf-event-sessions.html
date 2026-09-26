@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Event 세션 목록</title>
+    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="popup.css?v=1">
+    <script>
+        (function () {
+            const saved = localStorage.getItem('dbagent_theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
+    <style>
+        /* 목록 열이 많아 SQL Text만 남는 폭을 쓰고 나머지는 한 줄로 */
+        .pp-table td { white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+        .pp-table td.sqltext { max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+    </style>
+</head>
+<body class="pp-body">
+    <!-- G3 성능 분석: event 막대 클릭 → 그 event로 샘플된 세션 목록. G2 팝업 스펙(popup.css)의 첫 신규 적용.
+         필드는 설계 9.3절 확정대로 getSessions() 기준에서 status·session_wait_pct·has_transaction을 뺀 것이고,
+         ASH에 없는 Server PID·OS User는 넣지 않는다. 행을 누르면 세션 상세정보(session-detail.html)가 열린다. -->
+    <div id="content" class="pp-root">불러오는 중...</div>
+    <script>
+        (function () {
+            const getToken = () => sessionStorage.getItem('dbagent_token') || '';
+            const params = new URLSearchParams(window.location.search);
+            const esc = (s) => String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+            const val = (v) => (v === null || v === undefined || v === '' ? '-' : String(v));
+            const human = (s) => String(s || '').replace('T', ' ').slice(0, 16);
+            const contentEl = document.getElementById('content');
+            const dbId = params.get('db_id') || '';
+            const event = params.get('event') || '';
+
+            if (!getToken()) {
+                contentEl.innerHTML = '<h3 class="pp-error">인증 정보가 없습니다. 메인 화면에서 다시 열어주세요.</h3>';
+                return;
+            }
+
+            const COLS = [
+                ['SID', r => r.sid, 'num'], ['Serial#', r => r.serial, 'num'], ['DB User', r => r.username],
+                ['Machine', r => r.machine_name], ['Program', r => r.program_name], ['Module', r => r.module],
+                ['Command', r => r.command], ['SQL ID', r => r.sql_id, 'em'], ['Plan Hash', r => r.plan_hash_value, 'num'],
+                ['대기 시간(초)', r => r.duration_time, 'num'], ['마지막 샘플', r => r.capture_time], ['SQL Text', r => r.sql_text, 'sqltext']
+            ];
+
+            function kv(label, v) {
+                const t = val(v);
+                return `<th>${esc(label)}</th><td title="${esc(t)}">${esc(t)}</td>`;
+            }
+
+            const q = ['db_id', 'event', 'from', 'to', 'users', 'machines']
+                .filter(k => params.get(k)).map(k => `${k}=${encodeURIComponent(params.get(k))}`).join('&');
+            fetch(`/api/perf/event_sessions?${q}&token=${encodeURIComponent(getToken())}`)
+                .then(res => res.json().then(d => ({ ok: res.ok, d })))
+                .then(({ ok, d }) => {
+                    if (!ok || d.error) {
+                        contentEl.innerHTML = `<h3 class="pp-error">오류 발생</h3><p>${esc(d.error || '조회 실패')}</p>`;
+                        return;
+                    }
+                    const rows = d.sessions || [];
+                    const sum = rows.reduce((a, r) => a + (r.duration_time || 0), 0);
+                    const src = d.source === 'awr' ? 'AWR(10초 간격)' : d.source === 'mixed' ? 'ASH + AWR 보충' : 'ASH';
+                    const filt = [params.get('users') && ('계정 ' + params.get('users')), params.get('machines') && ('호스트 ' + params.get('machines'))].filter(Boolean).join(', ') || '전체';
+                    document.title = `Event 세션 목록 - ${event}`;
+                    contentEl.innerHTML = `
+                        <div class="pp-head">
+                            <h3>Event 세션 목록</h3>
+                            <span class="pp-note">행을 누르면 세션 상세정보가 열립니다.${rows.length >= d.limit ? ` 대기 시간 상위 ${d.limit}개만 표시합니다.` : ''}</span>
+                        </div>
+                        <table class="pp-kv"><tbody>
+                            <tr>${kv('Event', event)}${kv('구간(DB 시각)', human(d.from) + ' ~ ' + human(d.to))}${kv('데이터', src)}${kv('필터', filt)}</tr>
+                            <tr>${kv('세션 수', rows.length)}${kv('대기 시간 합계', sum + '초')}${kv('DB', dbId)}${kv('조회 시각', human(d.dbNow))}</tr>
+                        </tbody></table>
+                        <div class="pp-table-wrap">
+                            ${rows.length ? `<table class="pp-table"><thead><tr>${COLS.map(c => `<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>
+                                ${rows.map((r, i) => `<tr class="clickable" data-i="${i}">${COLS.map(c => {
+                                    const t = val(c[1](r));
+                                    return `<td${c[2] ? ` class="${c[2]}"` : ''} title="${esc(t)}">${esc(t)}</td>`;
+                                }).join('')}</tr>`).join('')}
+                            </tbody></table>` : '<div class="pp-empty">이 구간에 해당 Event로 샘플된 세션이 없습니다.</div>'}
+                        </div>`;
+
+                    contentEl.querySelectorAll('tr.clickable').forEach(tr => {
+                        tr.addEventListener('click', () => {
+                            const r = rows[+tr.dataset.i];
+                            const url = `session-detail.html?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(r.sid)}&serial=${encodeURIComponent(r.serial)}&sql_id=${encodeURIComponent(r.sql_id || '')}`;
+                            const opener = window.opener && !window.opener.closed ? window.opener : null;
+                            const features = opener && typeof opener.dbagentPopupFeatures === 'function'
+                                ? opener.dbagentPopupFeatures() : 'width=1100,height=680,resizable=yes,scrollbars=yes';
+                            const popup = window.open(url, `dbagent_session_detail_${r.sid}`, features);
+                            if (popup) {
+                                // 세션 상세의 Tuning 버튼은 메인 화면(opener)의 함수를 부른다 - session-list.html과 같은 이유로 opener를 넘긴다.
+                                try { if (opener) popup.opener = opener; } catch (e) { /* ignore */ }
+                                popup.focus();
+                            }
+                        });
+                    });
+                })
+                .catch(err => {
+                    contentEl.innerHTML = `<h3 class="pp-error">오류 발생</h3><p>${esc(err.message)}</p>`;
+                });
+        })();
+    </script>
+</body>
+</html>
