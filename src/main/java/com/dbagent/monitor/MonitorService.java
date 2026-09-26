@@ -2246,7 +2246,7 @@ public class MonitorService {
     // 사용자 요청(2026-09-14): 성능 이력 조회(ASH)에 WAS 서버 기준 필터가 없어 DBA 툴/배치/모니터링
     // 계정 등 업무와 무관한 세션까지 섞여 나오는 문제 - v$active_session_history/AWR에 남아있는
     // 세션이 실제로 접속했던 machine(호스트명) 목록을 뽑아 드롭다운으로 골라 쓰게 한다. dba_hist_
-    // active_sess_history 전체를 훑으면 무거우니 최근 7일로 제한(대부분 폐쇄망 조회 목적엔 충분).
+    // active_sess_history 전체를 훑으면 무거우니 최근 1일로 제한(DROPDOWN_AWR_WINDOW, 2026-09-26).
     public List<String> getHistoryMachines(TargetDbConfig target) throws SQLException {
         String query = "SELECT DISTINCT h.machine FROM (" +
                 "SELECT machine, user_id FROM v$active_session_history WHERE session_type = 'FOREGROUND' AND machine IS NOT NULL " +

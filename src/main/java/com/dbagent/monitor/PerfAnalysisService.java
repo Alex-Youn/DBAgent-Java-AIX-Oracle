@@ -216,8 +216,11 @@ public class PerfAnalysisService {
             if (minute < (Long) g.get("first")) g.put("first", minute);
             if (minute >= (Long) g.get("last")) {
                 g.put("last", minute);
-                g.put("sid", num(row, "last_sid"));
-                g.put("serial", num(row, "last_serial"));
+                // 가장 늦은 분의 SID로 바꾸되, 그 분 값이 비어 있으면 앞에서 잡은 값을 지우지 않는다(code-inspector 지적)
+                if (num(row, "last_sid") != null) {
+                    g.put("sid", num(row, "last_sid"));
+                    g.put("serial", num(row, "last_serial"));
+                }
                 Number op = num(row, "sql_opcode");
                 if (op != null) g.put("opcode", op.intValue());
             }
