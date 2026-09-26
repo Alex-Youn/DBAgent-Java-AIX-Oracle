@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>세션 상세정보</title>
     <link rel="stylesheet" href="style.css?v=55">
+    <link rel="stylesheet" href="popup.css?v=1">
     <script>
         // Match the main app's saved theme choice so this popup doesn't clash when kept open
         // side-by-side with the dashboard on a second monitor.
@@ -13,37 +14,10 @@
             if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
         })();
     </script>
-    <style>
-        /* G1(2026-09-26, 체크리스트 4-3): 가로형 창(1100x680) + 상단 4쌍x3행 정보 표 + 탭(SQL Text / DBMS Plan / Bind Variable).
-           글씨는 본문보다 조금 작게(13px 기준). */
-        body { margin: 0; padding: 16px 18px; background: var(--bg-main); color: var(--text-main); font-size: 13px; }
-        .sd-head { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-        .sd-head h3 { margin: 0; font-size: 15px; }
-        .sd-note { color: var(--text-secondary); font-size: 12px; }
-        .sd-tuning { margin-left: auto; padding: 5px 14px; border-radius: 6px; border: none; background: var(--primary); color: #fff; cursor: pointer; font-size: 12px; }
-        .sd-info { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 12px; font-size: 12.5px; }
-        .sd-info th, .sd-info td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .sd-info th { width: 11%; background: var(--bg-card); color: var(--text-secondary); font-weight: 600; }
-        .sd-info td { width: 14%; }
-        .sd-st-active { color: var(--success, #22c55e); font-weight: 700; }
-        .sd-st-inactive { color: var(--text-secondary); font-weight: 700; }
-        .sd-tabs { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-        .sd-tab-headers { display: flex; background: var(--bg-card); border-bottom: 1px solid var(--border); }
-        .sd-tab-btn { padding: 8px 18px; cursor: pointer; border: none; border-right: 1px solid var(--border); background: transparent; color: inherit; font-weight: 700; font-size: 12.5px; }
-        .sd-tab-btn.active { background: var(--bg-hover); color: var(--primary); }
-        .sd-tab-body { background: var(--bg-main); padding: 12px; }
-        .sd-pre { background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 12px; border-radius: 4px; overflow: auto; font-family: monospace; font-size: 12.5px; margin: 0; max-height: calc(100vh - 260px); }
-        .sd-pre.wrap { white-space: pre-wrap; }
-        .sd-pre.plan { white-space: pre; font-size: 12px; line-height: 1.25; }
-        .sd-binds { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-        .sd-binds th { background: var(--bg-hover); border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; }
-        .sd-binds td { border-bottom: 1px solid var(--border); padding: 6px 8px; }
-        .sd-binds td.val { font-weight: 700; color: var(--primary); }
-        .sd-empty { padding: 18px; text-align: center; color: var(--text-secondary); }
-    </style>
 </head>
-<body>
-    <div id="content">불러오는 중...</div>
+<body class="pp-body">
+    <!-- G1(4-3) 세션 상세 = G2 팝업 통일 스펙(popup.css)의 기준 사례 -->
+    <div id="content" class="pp-root">불러오는 중...</div>
     <script>
         (function () {
             function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
@@ -58,7 +32,7 @@
             const contentEl = document.getElementById('content');
 
             if (!getToken()) {
-                contentEl.innerHTML = '<h3 style="color: var(--danger);">인증 정보가 없습니다. 메인 화면에서 다시 열어주세요.</h3>';
+                contentEl.innerHTML = '<h3 class="pp-error">인증 정보가 없습니다. 메인 화면에서 다시 열어주세요.</h3>';
                 return;
             }
 
@@ -70,9 +44,9 @@
             function infoTable(r) {
                 const sidSpid = r.spid ? `${val(r.sid)}.${r.spid}` : val(r.sid);
                 const st = r.status ? String(r.status).toUpperCase() : '';
-                const stCls = st === 'ACTIVE' ? 'sd-st-active' : (st ? 'sd-st-inactive' : '');
+                const stCls = st === 'ACTIVE' ? 'pp-ok' : (st ? 'pp-muted' : '');
                 const stText = st === 'ACTIVE' ? 'Active' : (st === 'INACTIVE' ? 'InActive' : (st || (r.session_state === 'ENDED' ? '종료됨' : '')));
-                return '<table class="sd-info"><tbody>' +
+                return '<table class="pp-kv"><tbody>' +
                     '<tr>' + cell('SID.SPID', sidSpid) + cell('Serial Number', r.serial) + cell('Program', r.program) + cell('Machine', r.machine) + '</tr>' +
                     '<tr>' + cell('OS User', r.osuser) + cell('DB User', r.username) + cell('Command', r.command) + cell('Status', stText, stCls) + '</tr>' +
                     '<tr>' + cell('Module', r.module) + cell('Logon Time', r.logon_time) + cell('SQL ID', r.sql_id) + cell('Hash Value', r.hash_value) + '</tr>' +
@@ -80,10 +54,10 @@
             }
 
             function bindsTable(binds) {
-                if (!binds || !binds.length) return '<div class="sd-empty">바인드 변수 정보가 없습니다.</div>';
-                return '<table class="sd-binds"><thead><tr><th>Name</th><th>Position</th><th>Type</th><th>Value</th><th>Captured At</th></tr></thead><tbody>' +
+                if (!binds || !binds.length) return '<div class="pp-empty">바인드 변수 정보가 없습니다.</div>';
+                return '<table class="pp-table"><thead><tr><th>Name</th><th>Position</th><th>Type</th><th>Value</th><th>Captured At</th></tr></thead><tbody>' +
                     binds.map(b => `<tr><td>${esc(val(b.name))}</td><td>${esc(val(b.position))}</td><td>${esc(val(b.datatype))}</td>` +
-                        `<td class="val">${esc(b.value == null ? 'NULL' : b.value)}</td><td>${esc(val(b.last_captured))}</td></tr>`).join('') +
+                        `<td class="em">${esc(b.value == null ? 'NULL' : b.value)}</td><td>${esc(val(b.last_captured))}</td></tr>`).join('') +
                     '</tbody></table>';
             }
 
@@ -91,37 +65,37 @@
                 .then(res => res.json())
                 .then(result => {
                     if (result.error) {
-                        contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${esc(result.error)}</p>`;
+                        contentEl.innerHTML = `<h3 class="pp-error">오류 발생</h3><p>${esc(result.error)}</p>`;
                         return;
                     }
                     document.title = `세션 상세정보 (SID: ${result.sid})`;
                     const note = result.session_state === 'ENDED'
-                        ? '<span class="sd-note">세션이 이미 종료되어 ASH 마지막 기록으로 표시합니다(SPID·OS User·Command·Status·Logon Time 없음).</span>' : '';
+                        ? '<span class="pp-note">세션이 이미 종료되어 ASH 마지막 기록으로 표시합니다(SPID·OS User·Command·Status·Logon Time 없음).</span>' : '';
 
                     contentEl.innerHTML = `
-                        <div class="sd-head">
+                        <div class="pp-head">
                             <h3>세션 상세정보 (SID: ${esc(val(result.sid))})</h3>${note}
-                            <button type="button" id="jump-to-tuning-btn" class="sd-tuning">Tuning</button>
+                            <span class="pp-actions"><button type="button" id="jump-to-tuning-btn" class="pp-btn primary">Tuning</button></span>
                         </div>
                         ${infoTable(result)}
-                        <div class="sd-tabs">
-                            <div class="sd-tab-headers" role="tablist">
-                                <button type="button" class="sd-tab-btn active" data-tab="sql" role="tab">SQL Text</button>
-                                <button type="button" class="sd-tab-btn" data-tab="plan" role="tab">DBMS Plan</button>
-                                <button type="button" class="sd-tab-btn" data-tab="bind" role="tab">Bind Variable</button>
+                        <div class="pp-tabs">
+                            <div class="pp-tab-headers" role="tablist">
+                                <button type="button" class="pp-tab-btn active" data-tab="sql" role="tab">SQL Text</button>
+                                <button type="button" class="pp-tab-btn" data-tab="plan" role="tab">DBMS Plan</button>
+                                <button type="button" class="pp-tab-btn" data-tab="bind" role="tab">Bind Variable</button>
                             </div>
-                            <div class="sd-tab-body">
-                                <div id="tab-sql" class="sess-tab"><pre class="sd-pre wrap">${esc(result.sql_fulltext || 'SQL 텍스트가 없습니다.')}</pre></div>
-                                <div id="tab-plan" class="sess-tab" style="display: none;"><pre class="sd-pre plan">${esc(result.plan_text || '실행 계획 정보가 없습니다.')}</pre></div>
+                            <div class="pp-tab-body">
+                                <div id="tab-sql" class="sess-tab"><pre class="pp-pre wrap">${esc(result.sql_fulltext || 'SQL 텍스트가 없습니다.')}</pre></div>
+                                <div id="tab-plan" class="sess-tab" style="display: none;"><pre class="pp-pre plan">${esc(result.plan_text || '실행 계획 정보가 없습니다.')}</pre></div>
                                 <div id="tab-bind" class="sess-tab" style="display: none;">${bindsTable(result.binds)}</div>
                             </div>
                         </div>
                     `;
 
-                    document.querySelectorAll('.sd-tab-btn').forEach(btn => {
+                    document.querySelectorAll('.pp-tab-btn').forEach(btn => {
                         btn.addEventListener('click', () => {
                             document.querySelectorAll('.sess-tab').forEach(el => el.style.display = 'none');
-                            document.querySelectorAll('.sd-tab-btn').forEach(el => el.classList.toggle('active', el === btn));
+                            document.querySelectorAll('.pp-tab-btn').forEach(el => el.classList.toggle('active', el === btn));
                             document.getElementById('tab-' + btn.dataset.tab).style.display = 'block';
                         });
                     });
@@ -142,7 +116,7 @@
                     }
                 })
                 .catch(err => {
-                    contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${esc(err.message)}</p>`;
+                    contentEl.innerHTML = `<h3 class="pp-error">오류 발생</h3><p>${esc(err.message)}</p>`;
                 });
         })();
     </script>

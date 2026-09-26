@@ -1,0 +1,64 @@
+/* 팝업 통일 스펙(G2, 2026-09-26, 체크리스트 4-2) - 설계문서/팝업_통일_스펙_G2.md
+ *
+ * - 대상: 환경설정 팝업을 뺀 모든 팝업 창(window.open). style.css 다음에 로드한다.
+ * - 창: 가로형 기본 1100x680(dbagentPopupFeatures), 내용이 많은 팝업만 폭을 넓힌다.
+ * - 배율: 본문(.app-container)과 같은 zoom 90%. zoom은 뷰포트 단위를 줄이지 않으므로 높이는 100vh/0.9로 보정한다.
+ * - 글씨: 기준 14px(화면상 약 12.6px), 표 13.5px, 코드 13px.
+ * - 구성: .pp-head(제목 + 안내 + 오른쪽 버튼) → .pp-kv(라벨·값 쌍 요약 표) → .pp-tabs(탭) 또는 .pp-table(목록).
+ */
+html, body { margin: 0; }
+body.pp-body { background: var(--bg-main); color: var(--text-main); overflow: hidden; }
+
+.pp-root {
+    zoom: 90%;
+    box-sizing: border-box;
+    height: calc(100vh / 0.9);
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    font-size: 14px;
+    overflow: auto;
+}
+
+/* 제목 줄 */
+.pp-head { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.pp-head h3 { margin: 0; font-size: 16px; }
+.pp-note { color: var(--text-secondary); font-size: 12.5px; }
+.pp-actions { margin-left: auto; display: flex; gap: 6px; }
+.pp-btn { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text-main); cursor: pointer; font-size: 13px; }
+.pp-btn.primary { border-color: transparent; background: var(--primary); color: #fff; }
+.pp-btn.danger { border-color: transparent; background: var(--danger); color: #fff; }
+
+/* 라벨·값 쌍 요약 표 - 한 행에 4쌍(8칸) 기준. 값이 넘치면 말줄임, 전체 값은 title로. */
+.pp-kv { width: 100%; border-collapse: collapse; table-layout: fixed; flex: 0 0 auto; margin-bottom: 12px; font-size: 13.5px; }
+.pp-kv th, .pp-kv td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-kv th { width: 11%; background: var(--bg-card); color: var(--text-secondary); font-weight: 600; }
+.pp-kv td { width: 14%; }
+.pp-ok { color: var(--success, #22c55e); font-weight: 700; }
+.pp-muted { color: var(--text-secondary); }
+
+/* 탭 - 남은 높이를 탭 본문이 채우고, 본문 안에서만 스크롤 */
+.pp-tabs { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.pp-tab-headers { display: flex; flex: 0 0 auto; background: var(--bg-card); border-bottom: 1px solid var(--border); }
+.pp-tab-btn { padding: 8px 18px; cursor: pointer; border: none; border-right: 1px solid var(--border); background: transparent; color: inherit; font-weight: 700; font-size: 13.5px; }
+.pp-tab-btn.active { background: var(--bg-hover); color: var(--primary); }
+.pp-tab-body { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--bg-main); padding: 12px; }
+
+/* 목록 표 - 머리글 고정, 표 영역 안에서만 스크롤 */
+.pp-table-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.pp-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.pp-table th { position: sticky; top: 0; z-index: 1; background: var(--bg-hover); border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; white-space: nowrap; }
+.pp-table td { border-bottom: 1px solid var(--border); padding: 6px 8px; }
+.pp-table tr.clickable { cursor: pointer; }
+.pp-table tr.clickable:hover td { background: var(--bg-hover); }
+.pp-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pp-table td.em { font-weight: 700; color: var(--primary); }
+
+/* 코드(SQL·Plan) */
+.pp-pre { background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 12px; border-radius: 4px; overflow: auto; font-family: monospace; font-size: 13px; margin: 0; }
+.pp-pre.wrap { white-space: pre-wrap; }
+.pp-pre.plan { white-space: pre; font-size: 12.5px; line-height: 1.25; }
+[data-theme="light"] .pp-pre { background: #1e293b; }
+
+.pp-empty { padding: 18px; text-align: center; color: var(--text-secondary); }
+.pp-error { color: var(--danger); }

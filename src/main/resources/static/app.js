@@ -98,6 +98,12 @@ function dbagentLatestRequest() {
     };
 }
 
+// 팝업 통일 스펙(G2, 2026-09-26) - 창은 가로형 기본 1100x680, 내용이 많은 팝업만 폭을 넓힌다(설계문서/팝업_통일_스펙_G2.md).
+// 창 안쪽은 popup.css(.pp-root, zoom 90%)로 본문과 같은 배율을 쓴다.
+function dbagentPopupFeatures(width, height) {
+    return `width=${width || 1100},height=${height || 680},resizable=yes,scrollbars=yes`;
+}
+
 // /api/kill_session 결과 요약(2026-09-26) - 서버가 실행 직전 재조회해서 사라진/SERIAL# 바뀐/USER 아닌 세션은
 // skipped로 돌려주므로 "실패"와 따로 센다. 건너뜀·실패 사유는 세션별로 덧붙인다.
 function dbagentKillSummary(title, results) {
@@ -4361,7 +4367,7 @@ document.addEventListener('click', (e) => {
         const url = `session-detail.html?db_id=${encodeURIComponent(window.currentDbId || '')}&sid=${encodeURIComponent(sid || '')}&serial=${encodeURIComponent(serial)}&sql_id=${encodeURIComponent(sql_id)}`;
         // Window name keyed on sid/sql_id: re-clicking the same row focuses/reloads its existing
         // popup instead of spawning a duplicate, while different sessions each get their own window.
-        const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, 'width=1100,height=680,resizable=yes,scrollbars=yes');
+        const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, dbagentPopupFeatures());
         if (popup) popup.focus();
     }
 });
