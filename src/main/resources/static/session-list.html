@@ -107,7 +107,7 @@
 
                 const dbId = (window.opener && !window.opener.closed && window.opener.currentDbId) ? window.opener.currentDbId : '';
                 const url = `session-detail.html?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(sid || '')}&serial=${encodeURIComponent(serial)}&sql_id=${encodeURIComponent(sql_id)}`;
-                const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, 'width=640,height=720,resizable=yes,scrollbars=yes');
+                const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, 'width=1100,height=680,resizable=yes,scrollbars=yes');
                 if (popup) {
                     // A window's `.opener` defaults to whatever actually called window.open() on it -
                     // that would be this session-list.html popup, not the main dashboard. session-

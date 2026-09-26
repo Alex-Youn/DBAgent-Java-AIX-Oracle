@@ -1555,12 +1555,20 @@ public class MonitorService {
             // breaks entirely once Oracle recycles the SID for an unrelated session.
             boolean haveClientSqlId = sqlIdVal != null && !Strings.isBlank(sqlIdVal);
             boolean haveSerial = serialVal != null && !Strings.isBlank(serialVal);
+            // G1(2026-09-26, 체크리스트 4-3) 세션 상세 상단 표: SID.SPID ~ Hash Value. 세션이 살아 있으면 v$session,
+            // 끝났으면 ASH 마지막 샘플에서 채운다(SPID·OS User·Command·Status·Logon Time은 ASH에 없어 빈 값).
+            Map<String, Object> info = new LinkedHashMap<>();
+            String sessionState = "UNKNOWN";
 
             if (sidVal != null && !Strings.isBlank(sidVal)) {
                 // Match serial# too when the caller has one, so a SID that's since been recycled by a
                 // different session isn't mistaken for the one that was actually selected.
-                String sessionSql = "SELECT sid, serial#, NVL(sql_id, prev_sql_id) as sql_id, NVL(sql_child_number, prev_child_number) as child_number " +
-                        "FROM v$session WHERE sid = ?" + (haveSerial ? " AND serial# = ?" : "");
+                // command 이름은 audit_actions(모든 버전에 있음)로 푼다 - v$sqlcommand는 11.2 이상.
+                String sessionSql = "SELECT s.sid, s.serial#, NVL(s.sql_id, s.prev_sql_id) as sql_id, NVL(s.sql_child_number, s.prev_child_number) as child_number, " +
+                        "p.spid, s.program, s.machine, s.osuser, s.username, " +
+                        "(SELECT a.name FROM audit_actions a WHERE a.action = s.command) AS command_name, " +
+                        "s.status, s.module, TO_CHAR(s.logon_time, 'YYYY-MM-DD HH24:MI:SS') AS logon_time " +
+                        "FROM v$session s LEFT JOIN v$process p ON p.addr = s.paddr WHERE s.sid = ?" + (haveSerial ? " AND s.serial# = ?" : "");
                 try (PreparedStatement ps = conn.prepareStatement(sessionSql)) {
                     ps.setString(1, sidVal);
                     if (haveSerial) ps.setString(2, serialVal);
@@ -1568,6 +1576,17 @@ public class MonitorService {
                         if (rs.next()) {
                             sSid = rs.getObject(1);
                             sSerial = rs.getObject(2);
+                            sessionState = "LIVE";
+                            info.put("spid", rs.getString("spid"));
+                            info.put("program", rs.getString("program"));
+                            info.put("machine", rs.getString("machine"));
+                            info.put("osuser", rs.getString("osuser"));
+                            info.put("username", rs.getString("username"));
+                            String cmd = rs.getString("command_name");
+                            info.put("command", cmd == null || "UNKNOWN".equals(cmd) ? null : cmd);
+                            info.put("status", rs.getString("status"));
+                            info.put("module", rs.getString("module"));
+                            info.put("logon_time", rs.getString("logon_time"));
                             if (!haveClientSqlId) {
                                 String rowSqlId = rs.getString(3);
                                 if (rowSqlId != null && !Strings.isBlank(rowSqlId)) {
@@ -1576,24 +1595,38 @@ public class MonitorService {
                                     sChildNumber = childNum == null ? null : ((Number) childNum).intValue();
                                 }
                             }
-                        } else if (!haveClientSqlId) {
+                        } else {
                             // Session already ended, or (when a serial# was given) a different session has
                             // since reused the same SID - fall back to ASH's last known sql_id, matched on
-                            // the same sid/serial# pair when available.
-                            String ashSql = "SELECT sql_id, sql_child_number FROM (" +
-                                    "SELECT sql_id, sql_child_number FROM v$active_session_history " +
-                                    "WHERE session_id = ?" + (haveSerial ? " AND session_serial# = ?" : "") +
-                                    " AND sql_id IS NOT NULL ORDER BY sample_time DESC) WHERE ROWNUM = 1";
+                            // the same sid/serial# pair when available. 상단 표의 Program·Machine·Module·DB User도
+                            // 같은 샘플에서 채운다(caller가 sql_id를 이미 줬으면 sql_id는 덮어쓰지 않는다).
+                            sessionState = "ENDED";
+                            String ashSql = "SELECT sql_id, sql_child_number, program, machine, module, username FROM (" +
+                                    "SELECT a.sql_id, a.sql_child_number, a.program, a.machine, a.module, " +
+                                    "(SELECT u.username FROM dba_users u WHERE u.user_id = a.user_id) AS username " +
+                                    "FROM v$active_session_history a " +
+                                    "WHERE a.session_id = ?" + (haveSerial ? " AND a.session_serial# = ?" : "") +
+                                    " AND a.sql_id IS NOT NULL ORDER BY a.sample_time DESC) WHERE ROWNUM = 1";
                             try (PreparedStatement ashPs = conn.prepareStatement(ashSql)) {
                                 ashPs.setString(1, sidVal);
                                 if (haveSerial) ashPs.setString(2, serialVal);
                                 try (ResultSet ashRs = ashPs.executeQuery()) {
                                     if (ashRs.next()) {
-                                        sSqlId = ashRs.getString(1);
-                                        Object childNum = ashRs.getObject(2);
-                                        sChildNumber = childNum == null ? null : ((Number) childNum).intValue();
+                                        if (!haveClientSqlId) {
+                                            sSqlId = ashRs.getString(1);
+                                            Object childNum = ashRs.getObject(2);
+                                            sChildNumber = childNum == null ? null : ((Number) childNum).intValue();
+                                        }
+                                        info.put("program", ashRs.getString(3));
+                                        info.put("machine", ashRs.getString(4));
+                                        info.put("module", ashRs.getString(5));
+                                        info.put("username", ashRs.getString(6));
                                     }
                                 }
+                            } catch (SQLException e) {
+                                // 표 보조 정보일 뿐이라 ASH 조회 실패(권한 등)로 팝업 전체를 실패시키지 않는다 -
+                                // 단, caller가 sql_id를 안 줬으면 예전처럼 아래 "SQL_ID 없음"으로 끝난다.
+                                log.debug("session_query ASH fallback failed for sid={}: {}", sidVal, e.toString());
                             }
                         }
                     }
@@ -1680,6 +1713,8 @@ public class MonitorService {
             result.put("serial", sSerial);
             result.put("sql_id", sSqlId);
             result.put("hash_value", hashValue);
+            result.putAll(info);
+            result.put("session_state", sessionState); // LIVE | ENDED(ASH에서 채움) | UNKNOWN(sid 없이 sql_id만)
             result.put("sql_fulltext", sqlText);
             result.put("plan_text", planText);
             result.put("binds", binds);

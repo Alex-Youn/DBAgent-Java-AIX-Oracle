@@ -4361,7 +4361,7 @@ document.addEventListener('click', (e) => {
         const url = `session-detail.html?db_id=${encodeURIComponent(window.currentDbId || '')}&sid=${encodeURIComponent(sid || '')}&serial=${encodeURIComponent(serial)}&sql_id=${encodeURIComponent(sql_id)}`;
         // Window name keyed on sid/sql_id: re-clicking the same row focuses/reloads its existing
         // popup instead of spawning a duplicate, while different sessions each get their own window.
-        const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, 'width=640,height=720,resizable=yes,scrollbars=yes');
+        const popup = window.open(url, `dbagent_session_detail_${sid || sql_id}`, 'width=1100,height=680,resizable=yes,scrollbars=yes');
         if (popup) popup.focus();
     }
 });
