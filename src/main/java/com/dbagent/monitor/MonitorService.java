@@ -2213,20 +2213,31 @@ public class MonitorService {
     // 같은 기준(성능 이력에 실제로 잡힌 계정만)으로 통일. 이력이 전혀 없는 스키마 계정은 이제 목록에
     // 안 뜬다. 필터링용 드롭다운 값이라 user_id가 dba_users에 없는 행은 애초에 고를 대상이 아니므로
     // getHistorySessions/getHistoryTopSessions 본문 필터와 달리 여기선 LEFT JOIN이 아니라 JOIN.
+    // 성능 분석 계정·서버 드롭다운의 AWR 범위(2026-09-26 오케스트레이터 결정): 예전 "최근 7일(sample_time만)"은
+    // dba_hist_active_sess_history가 (dbid, snap_id) 파티션이라 보관 기간 전체를 훑을 수 있어 운영 부하가 컸다.
+    // 최근 1일 + 그 구간을 덮는 snap_id 하한으로 자른다(AshRange와 같은 방식). 접속 인스턴스 기준(RAC 원칙).
+    private static final String DROPDOWN_AWR_WINDOW =
+            "dbid = (SELECT dbid FROM v$database) AND instance_number = (SELECT instance_number FROM v$instance) " +
+            "AND snap_id >= (SELECT NVL(MIN(s.snap_id), 0) FROM dba_hist_snapshot s " +
+            "WHERE s.dbid = (SELECT dbid FROM v$database) AND s.instance_number = (SELECT instance_number FROM v$instance) " +
+            "AND s.end_interval_time >= SYSDATE - 1) " +
+            "AND sample_time >= SYSDATE - 1";
+
     public List<String> getHistoryUsers(TargetDbConfig target) throws SQLException {
         String query = "SELECT DISTINCT u.username FROM (" +
                 "SELECT user_id FROM v$active_session_history WHERE session_type = 'FOREGROUND' " +
                 "UNION ALL " +
                 "SELECT user_id FROM dba_hist_active_sess_history " +
-                "WHERE session_type = 'FOREGROUND' AND sample_time >= SYSDATE - 7" +
+                "WHERE session_type = 'FOREGROUND' AND " + DROPDOWN_AWR_WINDOW +
                 ") h JOIN dba_users u ON h.user_id = u.user_id " +
                 "WHERE u.username != " + monitoringAccountLiteral(target) + " " +
                 "ORDER BY u.username";
         List<String> users = new ArrayList<>();
-        try (Connection conn = poolManager.getConnection(target);
-             Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(query)) {
-            while (rs.next()) users.add(rs.getString(1));
+        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+            st.setQueryTimeout(ashAwrQueryTimeoutSeconds);
+            try (ResultSet rs = st.executeQuery(query)) {
+                while (rs.next()) users.add(rs.getString(1));
+            }
         }
         return users;
     }
@@ -2241,15 +2252,16 @@ public class MonitorService {
                 "SELECT machine, user_id FROM v$active_session_history WHERE session_type = 'FOREGROUND' AND machine IS NOT NULL " +
                 "UNION ALL " +
                 "SELECT machine, user_id FROM dba_hist_active_sess_history " +
-                "WHERE session_type = 'FOREGROUND' AND machine IS NOT NULL AND sample_time >= SYSDATE - 7" +
+                "WHERE session_type = 'FOREGROUND' AND machine IS NOT NULL AND " + DROPDOWN_AWR_WINDOW +
                 ") h LEFT JOIN dba_users u ON h.user_id = u.user_id " +
                 "WHERE (u.username IS NULL OR u.username != " + monitoringAccountLiteral(target) + ") " +
                 "ORDER BY h.machine";
         List<String> machines = new ArrayList<>();
-        try (Connection conn = poolManager.getConnection(target);
-             Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(query)) {
-            while (rs.next()) machines.add(rs.getString(1));
+        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+            st.setQueryTimeout(ashAwrQueryTimeoutSeconds);
+            try (ResultSet rs = st.executeQuery(query)) {
+                while (rs.next()) machines.add(rs.getString(1));
+            }
         }
         return machines;
     }
