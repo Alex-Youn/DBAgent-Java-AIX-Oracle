@@ -4787,7 +4787,8 @@ const dbSelectElem = document.getElementById('db-select');
 if (dbSelectElem) {
     dbSelectElem.addEventListener('change', (e) => {
         dbUsersLoaded = false; // reset when db changes
-        if(document.getElementById('history').style.display !== 'none' || document.getElementById('history-top').style.display !== 'none') {
+        // 성능 분석(#history)의 계정·서버 목록은 perf-analysis.js가 수집 저장소에서 채운다(2026-09-26) - 여기서는 예전 Top 화면만.
+        if (dbagentSectionVisible('history-top')) {
             loadDbUsers(e.target.value);
         }
     });
@@ -4809,7 +4810,9 @@ document.querySelectorAll('.sidebar .nav-link').forEach(link => {
 // Aggressive DB Users loader - 성능 이력 화면이 보일 때만, 아직 안 불러왔거나 DB가 바뀌었을 때 불러온다(2026-09-26).
 // 예전엔 "탭과 무관하게 미리" 불러와 대시보드에서도 history_users/history_machines가 원본 DB로 나갔다.
 setInterval(() => {
-    if (!dbagentSectionVisible('history')) return;
+    // 성능 분석(#history)은 수집 저장소 목록을 쓴다(perf-analysis.js, 2026-09-26) - 원본 DB 조회(history_users/machines,
+    // AWR 스캔)는 예전 Top 화면이 보일 때만.
+    if (!dbagentSectionVisible('history-top')) return;
     if (window.currentDbId && (!dbUsersLoaded || dbUsersLoadedFor !== window.currentDbId || (document.getElementById("history-users") && document.getElementById("history-users").options && document.getElementById("history-users").options.length <= 1))) {
         const histDisplay = document.getElementById('history') ? document.getElementById('history').style.display : 'none';
         const topDisplay = document.getElementById('history-top') ? document.getElementById('history-top').style.display : 'none';

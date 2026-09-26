@@ -39,6 +39,12 @@
                 return;
             }
 
+            // 수집 저장소(기본)는 (계정, 서버, SQL) 조합 단위, 원본 ASH/AWR은 세션 단위 - 열 구성이 다르다.
+            const STORE_COLS = [
+                ['DB User', r => r.username], ['Machine', r => r.machine_name], ['SQL ID', r => r.sql_id, 'em'],
+                ['Command', r => r.command], ['대기 시간(초)', r => r.duration_time, 'num'], ['최대 동시 세션', r => r.sessions, 'num'],
+                ['처음', r => r.first_time], ['마지막', r => r.capture_time], ['마지막 SID', r => r.sid, 'num'], ['SQL Text', r => r.sql_text, 'sqltext']
+            ];
             const COLS = [
                 ['SID', r => r.sid, 'num'], ['Serial#', r => r.serial, 'num'], ['DB User', r => r.username],
                 ['Machine', r => r.machine_name], ['Program', r => r.program_name], ['Module', r => r.module],
@@ -51,7 +57,7 @@
                 return `<th>${esc(label)}</th><td title="${esc(t)}">${esc(t)}</td>`;
             }
 
-            const q = ['db_id', 'event', 'from', 'to', 'users', 'machines']
+            const q = ['db_id', 'event', 'from', 'to', 'users', 'machines', 'source']
                 .filter(k => params.get(k)).map(k => `${k}=${encodeURIComponent(params.get(k))}`).join('&');
             fetch(`/api/perf/event_sessions?${q}&token=${encodeURIComponent(getToken())}`)
                 .then(res => res.json().then(d => ({ ok: res.ok, d })))
@@ -62,7 +68,8 @@
                     }
                     const rows = d.sessions || [];
                     const sum = rows.reduce((a, r) => a + (r.duration_time || 0), 0);
-                    const src = d.source === 'awr' ? 'AWR(10초 간격)' : d.source === 'mixed' ? 'ASH + AWR 보충' : 'ASH';
+                    const src = d.source === 'store' ? '수집 저장소(1분 요약)' : d.source === 'awr' ? '원본 AWR(10초 간격)' : d.source === 'mixed' ? '원본 ASH + AWR 보충' : '원본 ASH';
+                    const cols = d.source === 'store' ? STORE_COLS : COLS;
                     const filt = [params.get('users') && ('계정 ' + params.get('users')), params.get('machines') && ('호스트 ' + params.get('machines'))].filter(Boolean).join(', ') || '전체';
                     document.title = `Event 세션 목록 - ${event}`;
                     contentEl.innerHTML = `
@@ -72,11 +79,11 @@
                         </div>
                         <table class="pp-kv"><tbody>
                             <tr>${kv('Event', event)}${kv('구간(DB 시각)', human(d.from) + ' ~ ' + human(d.to))}${kv('데이터', src)}${kv('필터', filt)}</tr>
-                            <tr>${kv('세션 수', rows.length)}${kv('대기 시간 합계', sum + '초')}${kv('DB', dbId)}${kv('조회 시각', human(d.dbNow))}</tr>
+                            <tr>${kv(d.source === 'store' ? '조합 수(계정·서버·SQL)' : '세션 수', rows.length)}${kv('대기 시간 합계', sum + '초')}${kv('DB', dbId)}${kv('조회 시각', human(d.dbNow))}</tr>
                         </tbody></table>
                         <div class="pp-table-wrap">
-                            ${rows.length ? `<table class="pp-table"><thead><tr>${COLS.map(c => `<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>
-                                ${rows.map((r, i) => `<tr class="clickable" data-i="${i}">${COLS.map(c => {
+                            ${rows.length ? `<table class="pp-table"><thead><tr>${cols.map(c => `<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>
+                                ${rows.map((r, i) => `<tr class="clickable" data-i="${i}">${cols.map(c => {
                                     const t = val(c[1](r));
                                     return `<td${c[2] ? ` class="${c[2]}"` : ''} title="${esc(t)}">${esc(t)}</td>`;
                                 }).join('')}</tr>`).join('')}
@@ -86,11 +93,11 @@
                     contentEl.querySelectorAll('tr.clickable').forEach(tr => {
                         tr.addEventListener('click', () => {
                             const r = rows[+tr.dataset.i];
-                            const url = `session-detail.html?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(r.sid)}&serial=${encodeURIComponent(r.serial)}&sql_id=${encodeURIComponent(r.sql_id || '')}`;
+                            const url = `session-detail.html?db_id=${encodeURIComponent(dbId)}&sid=${encodeURIComponent(r.sid || '')}&serial=${encodeURIComponent(r.serial || '')}&sql_id=${encodeURIComponent(r.sql_id || '')}`;
                             const opener = window.opener && !window.opener.closed ? window.opener : null;
                             const features = opener && typeof opener.dbagentPopupFeatures === 'function'
                                 ? opener.dbagentPopupFeatures() : 'width=1100,height=680,resizable=yes,scrollbars=yes';
-                            const popup = window.open(url, `dbagent_session_detail_${r.sid}`, features);
+                            const popup = window.open(url, `dbagent_session_detail_${r.sid || r.sql_id}`, features);
                             if (popup) {
                                 // 세션 상세의 Tuning 버튼은 메인 화면(opener)의 함수를 부른다 - session-list.html과 같은 이유로 opener를 넘긴다.
                                 try { if (opener) popup.opener = opener; } catch (e) { /* ignore */ }

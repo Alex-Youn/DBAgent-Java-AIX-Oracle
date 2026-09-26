@@ -90,6 +90,18 @@ public class InstanceMetricSamplerService {
     private final OracleConnectionPoolManager poolManager;
     private final DatabaseConfigService configService;
     private final InstanceMetricHistoryService historyService;
+    private final PerfStoreService perfStore;
+
+    // 성능 분석 수집(2026-09-26) - 분 단위 (7분류, event, 계정, 서버, SQL) 요약. 기존 ash_* 스캔과 같은 sample_id 구간을
+    // 따로 한 번 더 묶는다(실패해도 ash_*에 영향 없게 별도 쿼리·별도 제한시간).
+    private static final int PERF_QUERY_TIMEOUT_SECONDS = 10;
+    // 한 사이클에 새로 잡는 SQL 텍스트 수 - v$sqlstats 단건 조회라 가볍지만 폭주는 막는다.
+    private static final int SQL_TEXT_PER_CYCLE = 30;
+    // 이만큼 지난 SQL 텍스트는 다시 보이면 새로 잡는다(보관 삭제 기준 captured_key를 갱신).
+    private static final long SQL_TEXT_REFRESH_MINUTES = 7L * 1440;
+    // db_id -> (user_id -> username), db_id -> (sql_id -> captured minute_key)
+    private final ConcurrentHashMap<String, ConcurrentHashMap<Long, String>> usernameCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ConcurrentHashMap<String, Long>> sqlTextKnown = new ConcurrentHashMap<>();
 
     // MonitorService.lockQueryTimeoutSeconds와 같은 값 - 이 환경 일부 인스턴스에서 v$lock 스캔이
     // 49초까지 걸리는 걸 실측했으므로, 여기서도 동일하게 짧게 캡을 건다.
@@ -103,10 +115,11 @@ public class InstanceMetricSamplerService {
     private int sampleIntervalSeconds;
 
     public InstanceMetricSamplerService(OracleConnectionPoolManager poolManager, DatabaseConfigService configService,
-                                         InstanceMetricHistoryService historyService) {
+                                         InstanceMetricHistoryService historyService, PerfStoreService perfStore) {
         this.poolManager = poolManager;
         this.configService = configService;
         this.historyService = historyService;
+        this.perfStore = perfStore;
     }
 
     @Scheduled(fixedDelayString = "${dbagent.monitor.metric-sample-interval-seconds:60}000")
@@ -196,6 +209,20 @@ public class InstanceMetricSamplerService {
                 historyService.record(r.instanceId, ASH_WC_METRIC_NAMES[i], r.sampledAt, r.ashWaitClassAas[i]);
             }
         }
+        savePerf(r.instanceId, r.perf);
+    }
+
+    /** 성능 분석 저장소 기록 - 실패해도 다른 수집값에는 영향 없게 삼킨다. */
+    private void savePerf(String dbId, PerfSample perf) {
+        if (perf == null) return;
+        try {
+            perfStore.saveRows(dbId, perf.rows);
+            for (String[] t : perf.sqlTexts) {
+                perfStore.saveSqlText(dbId, t[0], t[1], perf.capturedKey);
+            }
+        } catch (Exception e) {
+            log.warn("perf store write failed for db_id={}: {}", dbId, e.toString());
+        }
     }
 
     private SampleResult sampleOne(TargetDbConfig target, long sampledAt) {
@@ -239,10 +266,12 @@ public class InstanceMetricSamplerService {
             // 실패하면 둘 다 null(= 이번 사이클은 기록하지 않음).
             double[] ashCategoryAas = null;
             double[] ashWaitClassAas = null;
+            PerfSample perf = null;
             try {
-                double[][] ash = sampleAsh(conn, target);
-                ashCategoryAas = ash[0];
-                ashWaitClassAas = ash[1];
+                AshSample ash = sampleAsh(conn, target);
+                ashCategoryAas = ash.c7;
+                ashWaitClassAas = ash.c8;
+                perf = ash.perf;
             } catch (SQLException ashScanFailed) {
                 log.debug("ASH category sampling skipped for db_id={}: {}", target.id(), ashScanFailed.toString());
             }
@@ -277,7 +306,7 @@ public class InstanceMetricSamplerService {
             }
 
             return new SampleResult(target.id(), sampledAt, cpuPct, dbTimeAas, tmLockWaiting, txLockWaiting,
-                    cpuCores, ashCategoryAas, ashWaitClassAas);
+                    cpuCores, ashCategoryAas, ashWaitClassAas, perf);
         } catch (Exception e) {
             log.warn("Instance metric sampling failed for db_id={}: {}", target.id(), e.toString());
             return null;
@@ -314,7 +343,7 @@ public class InstanceMetricSamplerService {
      * 지난번 이후의 sample_id 구간을 세고(C1), 기준이 없거나(앱 재기동 직후) 인스턴스 재기동으로 번호가 줄었거나
      * 공백이 너무 길면 예전처럼 "최근 sampleIntervalSeconds초" 시간 창으로 센다.
      */
-    private double[][] sampleAsh(Connection conn, TargetDbConfig target) throws SQLException {
+    private AshSample sampleAsh(Connection conn, TargetDbConfig target) throws SQLException {
         Long last = ashWatermark.get(target.id());
         long latest = latestAshSampleId(conn);
         boolean byId = latest > 0 && last != null && latest > last
@@ -351,10 +380,137 @@ public class InstanceMetricSamplerService {
         }
         for (int i = 0; i < c7.length; i++) c7[i] = Math.round((c7[i] / windowSeconds) * 100.0) / 100.0;
         for (int i = 0; i < c8.length; i++) c8[i] = Math.round((c8[i] / windowSeconds) * 100.0) / 100.0;
+
+        // 성능 분석 수집 - 같은 sample_id(또는 시간) 구간을 (분, 7분류, event, 계정, 서버, SQL)로 묶는다.
+        PerfSample perf = null;
+        try {
+            final boolean byIdF = byId;
+            final Long lastF = last;
+            final long latestF = latest;
+            perf = collectPerf(conn, target, where, ps -> {
+                if (byIdF) {
+                    ps.setLong(1, lastF);
+                    ps.setLong(2, latestF);
+                } else {
+                    ps.setInt(1, sampleIntervalSeconds);
+                }
+            }, null);
+        } catch (SQLException perfFailed) {
+            log.debug("perf sampling skipped for db_id={}: {}", target.id(), perfFailed.toString());
+        }
         if (latest > 0) {
             ashWatermark.put(target.id(), latest);
         }
-        return new double[][]{c7, c8};
+        return new AshSample(c7, c8, perf);
+    }
+
+    private interface Binder {
+        void bind(PreparedStatement ps) throws SQLException;
+    }
+
+    /**
+     * 구간(where, 별칭 h)의 ASH를 (분, 7분류, event, 계정, 서버, SQL)로 묶어 저장 행으로 만든다. skipMinutes에 든 분은
+     * 뺀다(backfill이 이미 있는 분을 겹쳐 쓰지 않게). 새 sql_id는 v$sqlstats에서 텍스트를 잡는다.
+     */
+    private PerfSample collectPerf(Connection conn, TargetDbConfig target, String where, Binder binder,
+                                   java.util.Set<Long> skipMinutes) throws SQLException {
+        String last = " KEEP (DENSE_RANK LAST ORDER BY st)";
+        String sql = "SELECT m, cat7, ev, user_id, machine, sql_id, MAX(sql_opcode) AS op, COUNT(*) AS cnt, " +
+                "COUNT(DISTINCT sid || ',' || ser) AS sess, MAX(sid)" + last + " AS lsid, MAX(ser)" + last + " AS lser FROM (" +
+                "SELECT TO_CHAR(TRUNC(CAST(h.sample_time AS DATE), 'MI'), 'YYYY-MM-DD HH24:MI') AS m, " +
+                AshCategories.CASE7 + " AS cat7, " +
+                "CASE WHEN h.session_state = 'ON CPU' THEN 'ON CPU' ELSE h.event END AS ev, h.user_id, h.machine, h.sql_id, " +
+                "h.sql_opcode, h.session_id AS sid, h.session_serial# AS ser, h.sample_time AS st " +
+                "FROM v$active_session_history h WHERE " + where +
+                "AND h.session_type = 'FOREGROUND' " + EXCLUDE_SELF_SQL +
+                ") WHERE cat7 IS NOT NULL GROUP BY m, cat7, ev, user_id, machine, sql_id";
+        List<Object[]> rows = new ArrayList<>();
+        java.util.Set<Long> userIds = new java.util.HashSet<>();
+        List<Object[]> raw = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setQueryTimeout(skipMinutes == null ? PERF_QUERY_TIMEOUT_SECONDS : BACKFILL_QUERY_TIMEOUT_SECONDS);
+            binder.bind(ps);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long key = PerfStoreService.minuteKey(LocalDateTime.parse(rs.getString("m"), BUCKET_FORMAT));
+                    if (skipMinutes != null && skipMinutes.contains(key)) continue;
+                    long uid = rs.getLong("user_id");
+                    Long userId = rs.wasNull() ? null : uid;
+                    if (userId != null) userIds.add(userId);
+                    int op = rs.getInt("op");
+                    Integer opcode = rs.wasNull() || op == 0 ? null : op;
+                    raw.add(new Object[]{key, rs.getString("cat7"), cut(rs.getString("ev"), 64), userId,
+                            cut(rs.getString("machine"), 64), rs.getString("sql_id"), opcode, rs.getLong("cnt"),
+                            rs.getLong("sess"), rs.getLong("lsid"), rs.getLong("lser")});
+                }
+            }
+        }
+        Map<Long, String> names = resolveUsernames(conn, target.id(), userIds);
+        java.util.Set<String> sqlIds = new java.util.LinkedHashSet<>();
+        long maxKey = 0;
+        for (Object[] r : raw) {
+            String user = r[3] == null ? "" : names.getOrDefault((Long) r[3], "#" + r[3]);
+            String sqlId = r[5] == null ? "" : (String) r[5];
+            if (!sqlId.isEmpty()) sqlIds.add(sqlId);
+            maxKey = Math.max(maxKey, (Long) r[0]);
+            rows.add(new Object[]{r[0], r[1], r[2] == null ? "-" : r[2], user, r[4] == null ? "" : r[4], sqlId, r[6],
+                    ((Long) r[7]).intValue(), ((Long) r[8]).intValue(), r[9], r[10]});
+        }
+        long nowKey = maxKey > 0 ? maxKey : PerfStoreService.minuteKey(LocalDateTime.now());
+        return new PerfSample(rows, fetchNewSqlTexts(conn, target.id(), sqlIds, nowKey), nowKey);
+    }
+
+    private static String cut(String s, int n) {
+        return s == null || s.length() <= n ? s : s.substring(0, n);
+    }
+
+    private Map<Long, String> resolveUsernames(Connection conn, String dbId, java.util.Set<Long> ids) {
+        ConcurrentHashMap<Long, String> cache = usernameCache.computeIfAbsent(dbId, k -> new ConcurrentHashMap<>());
+        try (PreparedStatement ps = conn.prepareStatement("SELECT username FROM dba_users WHERE user_id = ?")) {
+            for (Long id : ids) {
+                if (cache.containsKey(id)) continue;
+                ps.setLong(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) cache.put(id, rs.getString(1));
+                }
+            }
+        } catch (SQLException e) {
+            log.debug("perf username lookup failed for db_id={}: {}", dbId, e.toString());
+        }
+        return cache;
+    }
+
+    /** 처음 보거나 오래전에 잡은 sql_id의 텍스트 - {sql_id, text}. 실패하면 빈 목록(다음 사이클에 다시 시도). */
+    private List<String[]> fetchNewSqlTexts(Connection conn, String dbId, java.util.Set<String> sqlIds, long nowKey) {
+        List<String[]> out = new ArrayList<>();
+        if (sqlIds.isEmpty()) return out;
+        ConcurrentHashMap<String, Long> known = sqlTextKnown.computeIfAbsent(dbId, k -> {
+            ConcurrentHashMap<String, Long> m = new ConcurrentHashMap<>();
+            try {
+                m.putAll(perfStore.knownSqlIds(dbId));
+            } catch (Exception e) {
+                log.debug("perf known sql ids load failed for db_id={}: {}", dbId, e.toString());
+            }
+            return m;
+        });
+        try (PreparedStatement ps = conn.prepareStatement("SELECT sql_text FROM v$sqlstats WHERE sql_id = ? AND ROWNUM = 1")) {
+            ps.setQueryTimeout(lockQueryTimeoutSeconds);
+            for (String id : sqlIds) {
+                if (out.size() >= SQL_TEXT_PER_CYCLE) break;
+                Long seen = known.get(id);
+                if (seen != null && nowKey - seen < SQL_TEXT_REFRESH_MINUTES) continue;
+                ps.setString(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        out.add(new String[]{id, rs.getString(1)});
+                        known.put(id, nowKey);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            log.debug("perf sql text lookup failed for db_id={}: {}", dbId, e.toString());
+        }
+        return out;
     }
 
     // 모니터링 계정(= 이 커넥션의 접속 계정) 세션 제외. 예전 방식(dba_users LEFT JOIN + 계정명 리터럴)과
@@ -450,6 +606,23 @@ public class InstanceMetricSamplerService {
                 historyService.recordBatch(rows);
                 log.info("ASH backfill for db_id={}: {} minute(s), {} value(s)", target.id(), buckets.size(), rows.size());
             }
+            // 성능 분석 저장소도 같은 구간을 채운다 - 이미 행이 있는 분은 건너뛴다.
+            try {
+                final LocalDateTime s0 = start;
+                final LocalDateTime e0 = end;
+                java.util.Set<Long> have = perfStore.minutesWithData(target.id(),
+                        PerfStoreService.minuteKey(s0), PerfStoreService.minuteKey(e0));
+                PerfSample perf = collectPerf(conn, target,
+                        "h.sample_time >= TO_DATE(?, 'YYYY-MM-DD HH24:MI') AND h.sample_time < TO_DATE(?, 'YYYY-MM-DD HH24:MI') ",
+                        ps -> {
+                            ps.setString(1, s0.format(BUCKET_FORMAT));
+                            ps.setString(2, e0.format(BUCKET_FORMAT));
+                        }, have);
+                savePerf(target.id(), perf);
+                log.info("perf backfill for db_id={}: {} row(s)", target.id(), perf.rows.size());
+            } catch (Exception perfFailed) {
+                log.warn("perf backfill skipped for db_id={}: {}", target.id(), perfFailed.toString());
+            }
         } catch (Exception e) {
             log.warn("ASH backfill skipped for db_id={}: {}", target.id(), e.toString());
         }
@@ -476,6 +649,31 @@ public class InstanceMetricSamplerService {
     // sampleOne()의 오라클 조회 결과를 SQLite 기록 없이 들고만 있는 값 객체 - 기록은 sampleAll()이
     // 모든 병렬 조회가 끝난 뒤 순차로 한다(위 sampleAll() 주석 참고). Java 8(AIX 빌드) 호환을 위해
     // record 대신 평범한 클래스를 쓴다.
+    private static final class AshSample {
+        final double[] c7;
+        final double[] c8;
+        final PerfSample perf;
+
+        AshSample(double[] c7, double[] c8, PerfSample perf) {
+            this.c7 = c7;
+            this.c8 = c8;
+            this.perf = perf;
+        }
+    }
+
+    /** 성능 분석 저장소에 넣을 한 구간치 - rows는 PerfStoreService.saveRows 형식, sqlTexts는 {sql_id, text}. */
+    private static final class PerfSample {
+        final List<Object[]> rows;
+        final List<String[]> sqlTexts;
+        final long capturedKey;
+
+        PerfSample(List<Object[]> rows, List<String[]> sqlTexts, long capturedKey) {
+            this.rows = rows;
+            this.sqlTexts = sqlTexts;
+            this.capturedKey = capturedKey;
+        }
+    }
+
     private static final class SampleResult {
         final String instanceId;
         final long sampledAt;
@@ -486,10 +684,11 @@ public class InstanceMetricSamplerService {
         final double cpuCores;
         final double[] ashCategoryAas; // 7분류(AshCategories.KEYS7 순서), ASH 조회 실패 시 null
         final double[] ashWaitClassAas; // 8분류(AshCategories.KEYS8 순서), ASH 조회 실패 시 null (2026-09-25)
+        final PerfSample perf; // 성능 분석 수집, 실패 시 null (2026-09-26)
 
         SampleResult(String instanceId, long sampledAt, double cpuPct, double dbTimeAas,
                      int tmLockWaiting, int txLockWaiting, double cpuCores, double[] ashCategoryAas,
-                     double[] ashWaitClassAas) {
+                     double[] ashWaitClassAas, PerfSample perf) {
             this.instanceId = instanceId;
             this.sampledAt = sampledAt;
             this.cpuPct = cpuPct;
@@ -499,6 +698,7 @@ public class InstanceMetricSamplerService {
             this.cpuCores = cpuCores;
             this.ashCategoryAas = ashCategoryAas;
             this.ashWaitClassAas = ashWaitClassAas;
+            this.perf = perf;
         }
     }
 }

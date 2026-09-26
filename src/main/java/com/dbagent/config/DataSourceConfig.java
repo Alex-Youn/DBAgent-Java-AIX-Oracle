@@ -84,4 +84,49 @@ public class DataSourceConfig {
     public JdbcTemplate dbConfigJdbcTemplate(@Qualifier("dbConfigDataSource") DataSource dataSource) {
         return new JdbcTemplate(dataSource);
     }
+
+    /**
+     * 성능 분석 수집 저장소(2026-09-26, 오케스트레이터 결정 - PerfStoreService). metrics 저장소와 파일을 나눠 분 단위
+     * 계정·서버·SQL 요약 쓰기가 대시보드·샘플러 쓰기와 잠금을 다투지 않게 한다.
+     * application.properties는 현장에서 pull로 갱신되지 않으므로(skip-worktree) 키가 없어도 동작해야 한다 -
+     * dbagent.perf.datasource.url이 없으면 metrics URL의 파일 이름만 perf로 바꿔 같은 폴더(db_config/)에 만든다.
+     * 드라이버·계정·접속 초기화 SQL도 metrics 설정을 그대로 따른다(SQLite WAL / H2 LOCK_TIMEOUT).
+     */
+    @Bean(name = "perfDataSource")
+    public HikariDataSource perfDataSource(org.springframework.core.env.Environment env) {
+        String metricsUrl = env.getProperty("dbagent.metrics.datasource.url", "jdbc:sqlite:metrics.db?busy_timeout=5000");
+        HikariDataSource ds = new HikariDataSource();
+        ds.setPoolName("perf");
+        ds.setJdbcUrl(env.getProperty("dbagent.perf.datasource.url", derivePerfUrl(metricsUrl)));
+        String driver = env.getProperty("dbagent.metrics.datasource.driver-class-name");
+        if (driver != null) ds.setDriverClassName(driver);
+        String user = env.getProperty("dbagent.metrics.datasource.username");
+        if (user != null) ds.setUsername(user);
+        String password = env.getProperty("dbagent.metrics.datasource.password");
+        if (password != null) ds.setPassword(password);
+        ds.setMaximumPoolSize(env.getProperty("dbagent.perf.datasource.hikari.maximum-pool-size", Integer.class, 4));
+        String initSql = env.getProperty("dbagent.metrics.datasource.hikari.connection-init-sql");
+        if (initSql != null) ds.setConnectionInitSql(initSql);
+        return ds;
+    }
+
+    @Bean(name = "perfJdbcTemplate")
+    public JdbcTemplate perfJdbcTemplate(@Qualifier("perfDataSource") DataSource dataSource) {
+        return new JdbcTemplate(dataSource);
+    }
+
+    /** ...metrics.db?x → ...perf.db?x (SQLite), ...db_config/metrics;x → ...db_config/perf;x (H2). */
+    static String derivePerfUrl(String metricsUrl) {
+        int cut = metricsUrl.length();
+        for (char c : new char[]{'?', ';'}) {
+            int i = metricsUrl.indexOf(c);
+            if (i >= 0 && i < cut) cut = i;
+        }
+        String path = metricsUrl.substring(0, cut);
+        String rest = metricsUrl.substring(cut);
+        int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf(':'));
+        String file = path.substring(slash + 1);
+        String renamed = file.contains("metrics") ? file.replace("metrics", "perf") : "perf" + (file.endsWith(".db") ? ".db" : "");
+        return path.substring(0, slash + 1) + renamed + rest;
+    }
 }

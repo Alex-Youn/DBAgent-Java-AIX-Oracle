@@ -27,6 +27,9 @@ public class PerfAnalysisController {
     private final DatabaseConfigService configService;
     private final PerfAnalysisService perfService;
 
+    @org.springframework.beans.factory.annotation.Value("${dbagent.monitor.perf-retention-days:15}")
+    private int perfRetentionDays;
+
     public PerfAnalysisController(AuthService authService, DatabaseConfigService configService, PerfAnalysisService perfService) {
         this.authService = authService;
         this.configService = configService;
@@ -54,14 +57,49 @@ public class PerfAnalysisController {
         }
     }
 
+    /** 상단 차트(수집 저장소) - step_minutes 1/5/10/15/30/60. 원본 ASH/AWR 경로는 /api/ash_activity. */
+    @GetMapping("/activity")
+    public ResponseEntity<Object> activity(@RequestParam(required = false) String db_id,
+                                           @RequestParam(required = false) String token,
+                                           @RequestParam(required = false) String from,
+                                           @RequestParam(required = false) String to,
+                                           @RequestParam(name = "step_minutes", required = false, defaultValue = "1") int step,
+                                           @RequestParam(required = false) String users,
+                                           @RequestParam(required = false) String machines) {
+        if (!java.util.Arrays.asList(1, 5, 10, 15, 30, 60).contains(step)) {
+            return error(HttpStatus.BAD_REQUEST, "step_minutes는 1/5/10/15/30/60 중 하나입니다.");
+        }
+        return run(db_id, token, from, to, users, machines, (t, f, e, fl) -> perfService.storeActivity(t, f, e, step, fl));
+    }
+
+    /** 계정·서버 드롭다운(수집 저장소, 보관 기간 안 값). */
+    @GetMapping("/filters")
+    public ResponseEntity<Object> filters(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return error(HttpStatus.FORBIDDEN, "해당 DB에 대한 접근 권한이 없습니다.");
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null || !"oracle".equalsIgnoreCase(target.dbType())) {
+            return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
+        }
+        try {
+            return ResponseEntity.ok(perfService.storeFilters(target, perfRetentionDays));
+        } catch (SQLException e) {
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "조회 중 DB 오류: " + e.getMessage());
+        }
+    }
+
+    /** source=store(기본, 수집 저장소) | oracle(원본 ASH/AWR - 수집 전 구간용). */
     @GetMapping("/events")
     public ResponseEntity<Object> events(@RequestParam(required = false) String db_id,
                                          @RequestParam(required = false) String token,
                                          @RequestParam(required = false) String from,
                                          @RequestParam(required = false) String to,
                                          @RequestParam(required = false) String users,
-                                         @RequestParam(required = false) String machines) {
-        return run(db_id, token, from, to, users, machines, perfService::events);
+                                         @RequestParam(required = false) String machines,
+                                         @RequestParam(required = false, defaultValue = "store") String source) {
+        return run(db_id, token, from, to, users, machines,
+                "oracle".equals(source) ? perfService::events : perfService::storeEvents);
     }
 
     @GetMapping("/event_sessions")
@@ -71,11 +109,14 @@ public class PerfAnalysisController {
                                                 @RequestParam(required = false) String from,
                                                 @RequestParam(required = false) String to,
                                                 @RequestParam(required = false) String users,
-                                                @RequestParam(required = false) String machines) {
+                                                @RequestParam(required = false) String machines,
+                                                @RequestParam(required = false, defaultValue = "store") String source) {
         if (event == null || event.trim().isEmpty() || event.length() > 64) {
             return error(HttpStatus.BAD_REQUEST, "event가 필요합니다(64자 이하).");
         }
-        return run(db_id, token, from, to, users, machines, (t, f, e, fl) -> perfService.eventSessions(t, event, f, e, fl));
+        boolean oracle = "oracle".equals(source);
+        return run(db_id, token, from, to, users, machines, (t, f, e, fl) -> oracle
+                ? perfService.eventSessions(t, event, f, e, fl) : perfService.storeEventSessions(t, event, f, e, fl));
     }
 
     private ResponseEntity<Object> run(String dbId, String token, String from, String to, String users, String machines, Query q) {

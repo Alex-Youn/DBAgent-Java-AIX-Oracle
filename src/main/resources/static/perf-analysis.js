@@ -1,7 +1,11 @@
 // G3 성능 분석(구 "성능 이력 조회", 2026-09-26) - 설계문서 `성능이력조회_개편_검토_2026-09-24.md` 9절.
 // app.js 다음에 로드한다(전역 getToken·chartLineColor·dbagentPopupFeatures 사용).
 //
-// 3단 드릴다운: 상단 wait class 막대(/api/ash_activity from/to, 드래그로 구간 선택)
+// 데이터 출처(2026-09-26 오케스트레이터 결정): 기본은 수집 저장소(main SQLite / AIX H2의 perf 저장소 - 60초 샘플러가
+// 분 단위로 (7분류, event, 계정, 서버, SQL) 요약을 쌓는다, 15일 보관). 운영 DB에는 조회가 가지 않는다. 수집 전 구간을
+// 봐야 할 때만 화면의 "원본 DB(ASH/AWR)에서 조회" 버튼으로 예전 경로를 쓴다.
+//
+// 3단 드릴다운: 상단 wait class 막대(/api/perf/activity, 원본은 /api/ash_activity - 드래그로 구간 선택)
 //   → 하단 선택 구간의 event별 막대(/api/perf/events)
 //   → 막대 클릭 시 그 event의 세션 목록 팝업(perf-event-sessions.html, G2 팝업 스펙의 첫 신규 적용).
 // 시각은 전부 DB 시각이다. 입력칸 기본값도 /api/perf/db_now 기준 최근 15분(브라우저·DB 시간대가 달라도 맞게)이고,
@@ -31,7 +35,8 @@
         activity: null,
         gen: 0,
         eventsGen: 0,
-        initFor: null      // 입력칸 기본값을 채운 DB
+        initFor: null,     // 입력칸 기본값을 채운 DB
+        source: 'store'    // 'store'(수집 저장소, 기본) | 'oracle'(원본 ASH/AWR)
     };
     let activityChart = null;
     let eventsChart = null;
@@ -64,7 +69,8 @@
     }
 
     function sourceText(src) {
-        return src === 'awr' ? 'AWR(10초 간격)' : src === 'mixed' ? 'ASH + AWR 보충' : 'ASH';
+        if (src === 'store') return '수집 저장소(1분 요약)';
+        return src === 'awr' ? '원본 AWR(10초 간격)' : src === 'mixed' ? '원본 ASH + AWR 보충' : '원본 ASH';
     }
 
     function filterParams() {
@@ -97,12 +103,33 @@
             const now = parseLocal(d.dbNow);
             $('history-end-time').value = fmtMinute(now);
             $('history-start-time').value = fmtMinute(new Date(now.getTime() - DEFAULT_RANGE_MS));
+            loadFilters(dbId);
             // 초기 화면(2026-09-26 오케스트레이터 요청): 메뉴에 들어오면 빈 화면 대신 최근 15분을 바로 조회해
             // 상단 차트와 하단 event 막대를 보여 준다. 이미 조회한 결과가 있으면(같은 DB) 다시 조회하지 않는다.
             if (!st.range && dbId === window.currentDbId) search();
         } catch (e) {
             st.initFor = null; // 다음에 다시 시도
             console.warn('[DBAgent] perf db_now 실패:', e.message);
+        }
+    }
+
+    // 계정·서버 드롭다운 - 수집 저장소의 보관 기간 안 값(운영 DB 조회 없음). 고른 값이 목록에 있으면 유지한다.
+    async function loadFilters(dbId) {
+        try {
+            const d = await getJson(`/api/perf/filters?db_id=${encodeURIComponent(dbId)}`);
+            if (dbId !== window.currentDbId) return;
+            const fill = (id, list, allLabel) => {
+                const el = $(id);
+                if (!el) return;
+                const cur = el.value;
+                el.innerHTML = `<option value="">${allLabel}</option>` + (list || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+                if (cur && (list || []).indexOf(cur) >= 0) el.value = cur;
+                el.style.display = 'inline-block';
+            };
+            fill('history-users', d.users, '전체 계정(All)');
+            fill('history-machines', d.machines, '전체 서버(All)');
+        } catch (e) {
+            console.warn('[DBAgent] perf filters 실패:', e.message);
         }
     }
 
@@ -127,7 +154,8 @@
         if (overlay) overlay.style.display = 'flex';
         try {
             const step = stepFor(minutes);
-            const act = await getJson(`/api/ash_activity?db_id=${encodeURIComponent(dbId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&step_minutes=${step}${st.filter}`);
+            const actPath = st.source === 'oracle' ? '/api/ash_activity' : '/api/perf/activity';
+            const act = await getJson(`${actPath}?db_id=${encodeURIComponent(dbId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&step_minutes=${step}${st.filter}`);
             if (my !== st.gen || dbId !== window.currentDbId) return;
             st.activity = act;
             // 서버가 확정한 구간(종료가 DB 현재 시각보다 뒤면 현재 시각으로 잘림)을 기준으로 삼는다.
@@ -156,7 +184,7 @@
         const w = currentWindow();
         clearEvents('불러오는 중…');
         try {
-            const d = await getJson(`/api/perf/events?db_id=${encodeURIComponent(dbId)}&from=${encodeURIComponent(w.from)}&to=${encodeURIComponent(w.to)}${st.filter}`);
+            const d = await getJson(`/api/perf/events?db_id=${encodeURIComponent(dbId)}&from=${encodeURIComponent(w.from)}&to=${encodeURIComponent(w.to)}${st.filter}&source=${st.source}`);
             if (my !== st.eventsGen || dbId !== window.currentDbId) return;
             renderEvents(d);
         } catch (e) {
@@ -169,8 +197,19 @@
     function renderActivity(d) {
         const series = d.series || [];
         const total = series.reduce((a, p) => a + p.values.reduce((x, y) => x + y, 0), 0);
+        const store = d.source === 'store';
+        const empty = total === 0
+            ? (store ? ` · <span style="color: var(--warning);">이 구간에 수집 데이터가 없습니다${d.storedFrom ? ` (수집 시작 ${esc(human(d.storedFrom))})` : ''}</span>`
+                : ' · <span style="color: var(--warning);">이 구간에 샘플이 없습니다(ASH/AWR 보관 기간 밖일 수 있음)</span>')
+            : '';
+        // 수집 저장소가 비어 있는 구간(수집 시작 전·앱이 꺼져 있던 시간)만 원본 ASH/AWR로 볼 수 있게 - 운영 DB 조회라 버튼으로만
+        const switchBtn = store
+            ? (total === 0 ? ' <button type="button" class="perf-link-btn" id="perf-src-toggle" data-src="oracle">원본 DB(ASH/AWR)에서 조회</button>' : '')
+            : ' <button type="button" class="perf-link-btn" id="perf-src-toggle" data-src="store">수집 저장소로 돌아가기</button>';
         $('perf-meta').innerHTML = `조회 구간 <b>${esc(human(d.from))} ~ ${esc(human(d.to))}</b> · 데이터 <b>${esc(sourceText(d.source))}</b>` +
-            ` · ${d.step_minutes}분 막대 · CPU 코어 ${d.cpu_cores || '-'}` + (total === 0 ? ' · <span style="color: var(--warning);">이 구간에 샘플이 없습니다(ASH/AWR 보관 기간 밖일 수 있음)</span>' : '');
+            ` · ${d.step_minutes}분 막대 · CPU 코어 ${d.cpu_cores || '-'}` + empty + switchBtn;
+        const tg = $('perf-src-toggle');
+        if (tg) tg.addEventListener('click', () => { st.source = tg.dataset.src; search(); });
         const datasets = CATS.map((c, i) => ({
             label: c.label,
             data: series.map(p => ({ x: parseLocal(p.time).getTime(), y: p.values[i] })),
@@ -368,7 +407,7 @@
 
     function openEventSessions(event) {
         const w = currentWindow();
-        const q = `db_id=${encodeURIComponent(st.dbId)}&event=${encodeURIComponent(event)}&from=${encodeURIComponent(w.from)}&to=${encodeURIComponent(w.to)}${st.filter}`;
+        const q = `db_id=${encodeURIComponent(st.dbId)}&event=${encodeURIComponent(event)}&from=${encodeURIComponent(w.from)}&to=${encodeURIComponent(w.to)}${st.filter}&source=${st.source}`;
         const popup = window.open('perf-event-sessions.html?' + q, 'dbagent_perf_event_sessions', dbagentPopupFeatures());
         if (popup) popup.focus();
     }
@@ -381,6 +420,7 @@
         st.range = null;
         st.sel = null;
         st.activity = null;
+        st.source = 'store';
         if (activityChart) { activityChart.destroy(); activityChart = null; }
         clearEvents('');
         const meta = $('perf-meta');

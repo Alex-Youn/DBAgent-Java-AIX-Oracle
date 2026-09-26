@@ -37,7 +37,8 @@ public class InstanceMetricHistoryService {
 
     // AuthService.sessionTtlDays와 같은 이유로 설정값화 - 운영 중 보존 기간을 재빌드 없이 바꿀 수 있어야 함
     // (2026-09-15 agent 백로그 논의에서 정한 원칙을 이 테이블에도 그대로 적용).
-    @Value("${dbagent.monitor.metric-retention-days:30}")
+    // 2026-09-26 오케스트레이터 결정: 30일 → 15일(성능 분석 수집 저장소 perf-retention-days와 같은 기간).
+    @Value("${dbagent.monitor.metric-retention-days:15}")
     private int retentionDays;
 
     public InstanceMetricHistoryService(@Qualifier("metricsJdbcTemplate") JdbcTemplate jdbc,
