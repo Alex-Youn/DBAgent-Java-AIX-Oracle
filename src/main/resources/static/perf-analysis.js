@@ -4,7 +4,8 @@
 // 3단 드릴다운: 상단 wait class 막대(/api/ash_activity from/to, 드래그로 구간 선택)
 //   → 하단 선택 구간의 event별 막대(/api/perf/events)
 //   → 막대 클릭 시 그 event의 세션 목록 팝업(perf-event-sessions.html, G2 팝업 스펙의 첫 신규 적용).
-// 시각은 전부 DB 시각이다. 입력칸 기본값도 /api/perf/db_now 기준 최근 1시간(브라우저·DB 시간대가 달라도 맞게).
+// 시각은 전부 DB 시각이다. 입력칸 기본값도 /api/perf/db_now 기준 최근 1시간(브라우저·DB 시간대가 달라도 맞게)이고,
+// 메뉴에 처음 들어오거나 DB를 바꾸면 그 구간을 바로 조회한다.
 (function () {
     'use strict';
 
@@ -94,6 +95,9 @@
             const now = parseLocal(d.dbNow);
             $('history-end-time').value = fmtMinute(now);
             $('history-start-time').value = fmtMinute(new Date(now.getTime() - 3600000));
+            // 초기 화면(2026-09-26 오케스트레이터 요청): 메뉴에 들어오면 빈 화면 대신 최근 1시간을 바로 조회해
+            // 상단 차트와 하단 event 막대를 보여 준다. 이미 조회한 결과가 있으면(같은 DB) 다시 조회하지 않는다.
+            if (!st.range && dbId === window.currentDbId) search();
         } catch (e) {
             st.initFor = null; // 다음에 다시 시도
             console.warn('[DBAgent] perf db_now 실패:', e.message);
