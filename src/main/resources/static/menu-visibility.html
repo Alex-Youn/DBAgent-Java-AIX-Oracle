@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>메뉴 표시 설정</title>
-    <link rel="stylesheet" href="style.css?v=27">
+    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="popup.css?v=2">
     <script>
         // Match the main app's saved theme choice (same as session-detail.html).
         (function () {
@@ -12,13 +13,12 @@
             if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
         })();
     </script>
-    <script src="dbagent-common.js?v=10"></script>
+    <script src="dbagent-common.js?v=13"></script>
     <style>
-        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); }
     </style>
 </head>
-<body>
-    <div id="content">불러오는 중...</div>
+<body class="pp-body">
+    <div id="content" class="pp-root">불러오는 중...</div>
     <script>
         (function () {
             const contentEl = document.getElementById('content');

@@ -4,17 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>계정 관리</title>
-    <link rel="stylesheet" href="style.css?v=27">
+    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="popup.css?v=2">
     <script>
         (function () {
             const saved = localStorage.getItem('dbagent_theme') || 'dark';
             if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
         })();
     </script>
-    <script src="dbagent-common.js?v=10"></script>
+    <script src="dbagent-common.js?v=13"></script>
     <style>
-        html, body { height: 100%; }
-        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); box-sizing: border-box; }
         .login-card { max-width: 1200px; margin: 0; max-height: none; box-sizing: border-box; }
         .field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
         /* 메뉴/DB 두 목록은 각자 필요한 만큼만 차지하고 나란히 놓인다. 1fr 그리드로 두면
@@ -57,8 +56,8 @@
         }
     </style>
 </head>
-<body>
-    <div id="content">불러오는 중...</div>
+<body class="pp-body">
+    <div id="content" class="pp-root">불러오는 중...</div>
     <script>
         (function () {
             const contentEl = document.getElementById('content');

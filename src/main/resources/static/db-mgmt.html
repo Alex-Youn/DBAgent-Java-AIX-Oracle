@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB 관리</title>
-    <link rel="stylesheet" href="style.css?v=17">
+    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="popup.css?v=2">
     <script>
         (function () {
             const saved = localStorage.getItem('dbagent_theme') || 'dark';
@@ -12,8 +13,6 @@
         })();
     </script>
     <style>
-        html, body { height: 100%; }
-        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); box-sizing: border-box; }
         /* width:100% already comes from the base .login-card rule in style.css - just raise the cap
            and let it track the popup window's actual width as the user resizes it (native window
            resize via the resizable=yes the popup was opened with), instead of a fixed max-width. */
@@ -57,8 +56,8 @@
         }
     </style>
 </head>
-<body>
-    <div id="content">불러오는 중...</div>
+<body class="pp-body">
+    <div id="content" class="pp-root">불러오는 중...</div>
     <script>
         (function () {
             const contentEl = document.getElementById('content');

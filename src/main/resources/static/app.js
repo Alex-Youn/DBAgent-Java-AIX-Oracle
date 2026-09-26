@@ -411,7 +411,7 @@ function dbagentSectionVisible(id) {
             openAdminPopup('account-mgmt.html', 'dbagent_account_mgmt', window.dbagentAdminPopupFeatures('account'));
         });
         document.getElementById('open-db-mgmt-btn')?.addEventListener('click', () => {
-            openAdminPopup('db-mgmt.html', 'dbagent_db_mgmt', 'width=980,height=820,resizable=yes,scrollbars=yes');
+            openAdminPopup('db-mgmt.html', 'dbagent_db_mgmt', window.dbagentAdminPopupFeatures('db'));
         });
         document.getElementById('open-menu-visibility-btn')?.addEventListener('click', () => {
             openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', window.dbagentAdminPopupFeatures('menu'));
@@ -1192,7 +1192,7 @@ let layoutHTML = "";
                                     // (Ctrl+휠 확대/축소도 팝업 자체 document에 새로 붙여야 동작함 - 부모
                                     // 창의 핸들러는 별개의 document인 팝업에는 적용되지 않음).
                                     popupBtn.addEventListener('click', () => {
-                                        const popup = window.open('', 'dbagent_erd_popup', 'width=1200,height=800,resizable=yes,scrollbars=yes');
+                                        const popup = window.open('', 'dbagent_erd_popup', dbagentPopupFeatures(1200, 800));
                                         if (!popup) return;
                                         popup.document.write(`
                                             <!DOCTYPE html>
@@ -1200,22 +1200,24 @@ let layoutHTML = "";
                                             <head>
                                                 <meta charset="UTF-8">
                                                 <title>ERD 형태</title>
-                                                <style>
-                                                    /* mermaid.initialize가 theme:'dark'라서(app.js) 관계선/텍스트가 밝은 색으로
-                                                       나온다 - 흰 배경이면 테이블이 몇 개 안 될 땐 안 보이다가, 테이블이 늘어나
-                                                       선으로 서로 연결되면 그 선이 흰 배경에 묻혀 안 보이게 된다 (사용자 확인,
-                                                       2026-08-29). 본문 화면(var(--bg-main))과 같은 어두운 배경으로 맞춘다. */
-                                                    body { margin: 0; padding: 50px; display: flex; justify-content: center; align-items: center; min-height: 100vh; box-sizing: border-box; background: #0d0d0d; }
-                                                    svg { max-width: none; transition: transform 0.1s ease; transform-origin: center center; }
-                                                </style>
+                                                <!-- G4(2026-09-26): 다른 팝업과 같은 틀(popup.css). about:blank 팝업은 opener의 주소를
+                                                     기준으로 상대 경로를 풀어 같은 CSS를 읽는다. mermaid theme:'dark'라 도식 영역
+                                                     배경은 어두운 색 고정(.pp-erd-area - 예전 사용자 확인 2026-08-29). -->
+                                                <link rel="stylesheet" href="style.css?v=56">
+                                                <link rel="stylesheet" href="popup.css?v=2">
+                                                <script>if ((localStorage.getItem('dbagent_theme') || 'dark') === 'light') document.documentElement.setAttribute('data-theme', 'light');<\/script>
                                             </head>
-                                            <body>
+                                            <body class="pp-body">
+                                                <div class="pp-root">
+                                                <div class="pp-head"><h3>ERD 형태</h3><span class="pp-note">Ctrl + 마우스 휠로 확대·축소합니다.</span></div>
+                                                <div class="pp-erd-area">
                                                 ${svg.outerHTML}
+                                                </div></div>
                                                 <script>
                                                     (function () {
                                                         var scale = 1;
                                                         var svgEl = document.querySelector('svg');
-                                                        document.body.addEventListener('wheel', function (e) {
+                                                        document.querySelector('.pp-erd-area').addEventListener('wheel', function (e) {
                                                             if (e.ctrlKey) {
                                                                 e.preventDefault();
                                                                 scale += e.deltaY * -0.001;
@@ -4336,7 +4338,7 @@ let layoutHTML = "";
     window.showTableInfoModal = function(tableName) {
         if (!tableName) return;
         const url = `table-info.html?db_id=${encodeURIComponent(window.currentDbId || '')}&table_name=${encodeURIComponent(tableName)}`;
-        const popup = window.open(url, `dbagent_table_info_${tableName}`, 'width=900,height=720,resizable=yes,scrollbars=yes');
+        const popup = window.open(url, `dbagent_table_info_${tableName}`, dbagentPopupFeatures());
         if (popup) popup.focus();
     };
 
@@ -4346,7 +4348,7 @@ let layoutHTML = "";
     window.showTablespaceDatafiles = function(tablespaceName) {
         if (!tablespaceName) return;
         const url = `tablespace-datafiles.html?db_id=${encodeURIComponent(window.currentDbId || '')}&tablespace_name=${encodeURIComponent(tablespaceName)}`;
-        const popup = window.open(url, `dbagent_ts_datafiles_${tablespaceName}`, 'width=1000,height=600,resizable=yes,scrollbars=yes');
+        const popup = window.open(url, `dbagent_ts_datafiles_${tablespaceName}`, dbagentPopupFeatures());
         if (popup) popup.focus();
     };
 
@@ -4562,7 +4564,7 @@ function showSelectedSessionsPopup(sessions) {
         console.error('Failed to stash selected sessions for the list popup', e);
         return;
     }
-    const popup = window.open('session-list.html', 'dbagent_selected_sessions', 'width=1000,height=600,resizable=yes,scrollbars=yes');
+    const popup = window.open('session-list.html', 'dbagent_selected_sessions', dbagentPopupFeatures());
     if (popup) popup.focus();
 }
 

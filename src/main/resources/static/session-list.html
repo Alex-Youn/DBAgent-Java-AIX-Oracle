@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>선택된 세션 리스트</title>
-    <link rel="stylesheet" href="style.css?v=17">
+    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="popup.css?v=2">
     <script>
         // Match the main app's saved theme choice so this popup doesn't clash when kept open
         // side-by-side with the dashboard on a second monitor (same as session-detail.html).
@@ -14,11 +15,10 @@
         })();
     </script>
     <style>
-        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); }
     </style>
 </head>
-<body>
-    <div id="content">불러오는 중...</div>
+<body class="pp-body">
+    <div id="content" class="pp-root">불러오는 중...</div>
     <script>
         (function () {
             // The opener stashes the drag-selected sessions in localStorage (not sessionStorage - a
@@ -36,7 +36,7 @@
 
                 const cmdMap = { 2: 'INSERT', 3: 'SELECT', 6: 'UPDATE', 7: 'DELETE' };
                 contentEl.innerHTML = `
-                    <h3 style="color:var(--text-main); margin-top:0;">선택된 세션 리스트 (${sessions.length}건)</h3>
+                    <h3 class="pp-title" style="color:var(--text-main); margin-top:0;">선택된 세션 리스트 (${sessions.length}건)</h3>
                     <p style="color:var(--text-secondary); font-size:13px; margin-bottom:15px;">행을 클릭하시면 세션 상세정보(SQL 텍스트, DBMS Plan, 바인드 변수)가 별도 창으로 열립니다.</p>
                     <div style="overflow-x:auto; border:1px solid var(--border); border-radius:4px;">
                         <table style="width:100%; border-collapse:collapse; color:var(--text-main); white-space: nowrap;">

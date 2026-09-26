@@ -62,3 +62,18 @@ body.pp-body { background: var(--bg-main); color: var(--text-main); overflow: hi
 
 .pp-empty { padding: 18px; text-align: center; color: var(--text-secondary); }
 .pp-error { color: var(--danger); }
+
+/* 환경설정(톱니 메뉴) 팝업 - 계정 관리·DB 관리·메뉴 표시 설정(2026-09-26 오케스트레이터 요청으로 G2 대상에 포함).
+   이 팝업들은 로그인 화면의 .login-card 카드 모양을 빌려 썼다 - 팝업 틀 안에서는 카드 장식을 걷고,
+   각 화면 첫 제목(h3)을 다른 팝업의 제목 줄(.pp-head)과 같은 모양으로 맞춘다. */
+body.pp-body { padding: 0; }
+.pp-root .login-card { background: transparent; backdrop-filter: none; border: none; box-shadow: none; border-radius: 0; padding: 0; width: 100%; max-width: none !important; margin: 0 !important; text-align: left; }
+.pp-root .login-card > h3,
+.pp-root .login-card > div > h3 { margin: 0 0 12px !important; padding-bottom: 8px; border-bottom: 1px solid var(--border); font-size: 16px; }
+
+/* G4(2026-09-26): 예전 팝업들(선택 세션 목록·테이블 정보·데이터파일)의 제목(h2/h3)을 .pp-head와 같은 모양으로 -
+   인라인 스타일이 박혀 있어 !important로 덮는다. */
+.pp-root .pp-title { margin: 0 0 12px !important; padding-bottom: 8px !important; border-bottom: 1px solid var(--border) !important; font-size: 16px !important; color: var(--text-main) !important; }
+/* ERD: 도식 영역이 남은 높이를 채우고 그 안에서 스크롤(Ctrl+휠 확대는 도식에만) */
+.pp-erd-area { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; justify-content: center; align-items: center; border: 1px solid var(--border); border-radius: 6px; background: #0d0d0d; padding: 24px; }
+.pp-erd-area svg { max-width: none; transition: transform 0.1s ease; transform-origin: center center; }

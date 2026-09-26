@@ -321,7 +321,7 @@
         return 'rdb-dashboard.html';
     };
 
-    /** 항목 수에 맞춘 열 수. 창 크기 예측(dbagentAdminPopupFeatures)도 같은 값을 써야 맞는다. */
+    /** 항목 수에 맞춘 열 수. */
     function gridCols(count) {
         return Math.min(4, Math.max(2, Math.ceil(count / 8)));
     }
@@ -415,132 +415,16 @@
     };
 
     /**
-     * 관리자 팝업을 "열 때" 넘길 window.open 피처 문자열을 항목 수로 계산한다.
-     *
-     * 예전에는 'width=620,height=760' 처럼 고정값이라 메뉴/DB 가 늘어나도 창은 그대로였고 안에서
-     * 스크롤만 생겼다(사용자 지적, 2026-09-05). 열고 난 뒤 dbagentAutoSizePopup() 이 실제 콘텐츠로
-     * 다시 맞추지만, resizeTo 를 무시하는 브라우저/환경이 있어서 처음 열 때부터 근사치를 준다.
-     * 정확한 픽셀이 아니라 "항목이 늘면 창도 커진다"를 보장하는 게 목적이다.
+     * 환경설정(톱니 메뉴) 팝업 창 크기 - 2026-09-26 오케스트레이터 요청으로 다른 팝업과 같은 기본 크기(1100x680)로
+     * 통일했다(설계문서/팝업_통일_스펙_G2.md). 예전엔 메뉴·DB 항목 수로 창 크기를 계산하고(dbagentAdminPopupFeatures)
+     * 로드 뒤 콘텐츠에 맞춰 늘렸는데(dbagentAutoSizePopup), 이제 창은 고정 크기이고 넘치는 내용은 팝업 틀(.pp-root)
+     * 안에서 스크롤한다. kind('account'|'db'|'menu')는 호출부 호환을 위해 받기만 한다.
      */
     window.dbagentAdminPopupFeatures = function (kind) {
-        var groups = window.DBAGENT_MENU_GROUPS;
-        var dbs = (cachedInstances && cachedInstances.length) || 12;
-        var availW = (window.screen && window.screen.availWidth) || 1280;
-        var availH = (window.screen && window.screen.availHeight) || 900;
-
-        // 메뉴는 그룹마다 별도 그리드라 열 수/줄 수를 그룹별로 계산해 합친다.
-        var mCols = 1, mRows = 0;
-        groups.forEach(function (g) {
-            var cols = gridCols(g.items.length);
-            if (cols > mCols) mCols = cols;
-            mRows += Math.ceil(g.items.length / cols);
-        });
-        var mHeadRows = groups.length;          // 그룹 머리글
-        var dCols = gridCols(dbs);
-        var dRows = Math.ceil(dbs / dCols);
-
-        // 한 칸 폭: 메뉴는 라벨만, DB 는 엔진 배지가 붙어 더 넓다. 그리드 padding/border 포함.
-        var mBlock = mCols * 180 + (mCols - 1) * 24 + 26;
-        var dBlock = dCols * 215 + (dCols - 1) * 24 + 26;
-        // 전체 선택 1줄 + 그룹 머리글
-        var mExtra = 34 + mHeadRows * 34;   // 전체 선택 1줄 + 그룹 머리글(색 막대/여백 포함)
-        var dExtra = 34;
-
-        var w, h;
-        if (kind === 'menu') {
-            w = mBlock + 80 + 40 + 40;                 // 카드 padding + body padding + 창 테두리
-            h = 240 + mRows * 30 + mExtra + 90;
-        } else {                                        // 'account'
-            w = mBlock + dBlock + 16 + 80 + 40 + 40;   // 두 목록이 나란히 + 사이 gap
-            h = 430 + Math.max(mRows * 30 + mExtra, dRows * 30 + dExtra) + 90;
-        }
-        w = Math.max(560, Math.min(w, availW - 80));
-        h = Math.max(620, Math.min(h, availH - 100));
-        return 'width=' + Math.round(w) + ',height=' + Math.round(h) + ',resizable=yes,scrollbars=yes';
+        return 'width=1100,height=680,resizable=yes,scrollbars=yes';
     };
 
-    /**
-     * 팝업 창을 콘텐츠 크기에 맞춘다.
-     *
-     * window.open() 이 고정 크기(예: 620x760)로 열기 때문에 메뉴/DB 가 늘어나도 창은 그대로였고
-     * 안쪽에 스크롤만 생겼다(사용자 지적, 2026-09-05).
-     *
-     * 가로는 scrollWidth 로 잴 수 없다 - 창이 좁으면 콘텐츠가 그 폭에 맞춰 줄바꿈돼서
-     * scrollWidth 가 항상 innerWidth 언저리로 나온다. 카드를 잠깐 width:max-content 로 만들어
-     * "줄바꿈하지 않았을 때 필요한 폭"을 재고 되돌린다. 세로는 폭이 확정된 뒤 한 프레임 지나야
-     * 정확하므로 requestAnimationFrame 뒤에 잰다.
-     */
-    window.dbagentAutoSizePopup = function (opts) {
-        opts = opts || {};
-        // 스크립트로 연 팝업이 아니면 브라우저가 resizeTo 를 무시한다(일반 탭에서 URL 직접 연 경우).
-        if (!window.opener) return;
-        // 창이 만들어지는 도중(load 전)의 resizeTo 도 무시된다 - 2026-09-05 실측: 초기 렌더에서 부른
-        // 것은 전혀 반영되지 않고 사용자 클릭 뒤에 부른 것만 반영됐다. 그래서 메뉴 표시 설정 팝업은
-        // 콘텐츠가 창보다 넓은 채로 남아 글씨가 팝업 밖으로 삐져나왔다. load 이후로 미뤄서 호출한다.
-        if (document.readyState !== 'complete') {
-            window.addEventListener('load', function () {
-                setTimeout(function () { autoSize(opts); }, 0);
-            });
-            return;
-        }
-        autoSize(opts);
-    };
+    /** 예전 자동 창 맞춤 - 고정 크기로 바꾸면서 아무것도 하지 않는다(팝업 페이지의 호출은 그대로 둔다). */
+    window.dbagentAutoSizePopup = function () {};
 
-    function autoSize(opts) {
-        var card = document.querySelector('.login-card') || document.body;
-        var minW = opts.minWidth || 520;
-        var minH = opts.minHeight || 360;
-        var bodyPad = 40; // body { padding: 20px }
-
-        var prevWidth = card.style.width;
-        var prevMaxWidth = card.style.maxWidth;
-        card.style.maxWidth = 'none';
-        card.style.width = 'max-content';
-        var naturalW = Math.ceil(card.getBoundingClientRect().width);
-        card.style.width = prevWidth;
-        card.style.maxWidth = prevMaxWidth;
-
-        var availW = window.screen.availWidth || 1280;
-        var availH = window.screen.availHeight || 900;
-        var maxInnerW = Math.max(minW, availW - 120);
-        var maxInnerH = Math.max(minH, availH - 140);
-        // **줄이지는 않는다.** 브라우저는 창이 만들어질 때 한 번만 resizeTo 를 받아주고 그 뒤 호출은
-        // 조용히 무시한다(2026-09-05 실측: 로드 시 축소는 먹었는데 이후 확대는 opener/자기 자신 어느
-        // 쪽에서 불러도 무효). 계정 관리처럼 뷰마다 필요한 크기가 다른 팝업에서 처음에 작은 메인 뷰에
-        // 맞춰 줄여버리면, 목록이 있는 큰 뷰로 바꿀 때 다시 키우지 못해 콘텐츠가 잘린다. 그래서
-        // window.open 이 항목 수로 계산해 준 크기(dbagentAdminPopupFeatures)를 하한으로 삼는다.
-        var wantW = Math.min(Math.max(naturalW + bodyPad + 8, minW, window.innerWidth), maxInnerW);
-
-        // resizeTo 는 창 바깥(테두리 포함) 크기를 받는데, 테두리 두께를 outerWidth-innerWidth 로
-        // 구하면 안 된다 - 브라우저/상황에 따라 outerWidth 가 부모 창 값이나 옛 값을 돌려준다
-        // (실측: 팝업 inner 가 544 인데 outer 가 1500 으로 나옴). 그래서 두께를 계산하지 않고,
-        // 일단 맞춰 본 뒤 실제 innerWidth/innerHeight 와의 차이만큼 한 번 더 보정한다.
-        function step(reqW, reqH, pass) {
-            try {
-                window.resizeTo(reqW, reqH);
-            } catch (e) {
-                return; // 창 크기 조정 실패는 기능에 영향 없음 - 스크롤로 볼 수 있다
-            }
-            requestAnimationFrame(function () {
-                try {
-                    var wantH = Math.min(
-                        Math.max(document.documentElement.scrollHeight + 8, minH, window.innerHeight), maxInnerH);
-                    var dw = wantW - window.innerWidth;
-                    var dh = wantH - window.innerHeight;
-                    if (pass < 2 && (Math.abs(dw) > 2 || Math.abs(dh) > 2)) {
-                        step(reqW + dw, reqH + dh, pass + 1);
-                        return;
-                    }
-                    // 커진 창이 화면 밖으로 밀려나면 안쪽으로 당긴다.
-                    var left = window.screenX;
-                    var top = window.screenY;
-                    var newLeft = Math.max(0, Math.min(left, availW - reqW));
-                    var newTop = Math.max(0, Math.min(top, availH - reqH));
-                    if (newLeft !== left || newTop !== top) window.moveTo(newLeft, newTop);
-                } catch (e) { /* 위와 같음 */ }
-            });
-        }
-        step(wantW, Math.min(
-            Math.max(document.documentElement.scrollHeight + 8, minH, window.innerHeight), maxInnerH), 0);
-    }
 })();

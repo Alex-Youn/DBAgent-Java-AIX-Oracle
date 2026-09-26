@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>데이터파일 정보</title>
-    <link rel="stylesheet" href="style.css?v=14">
+    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="popup.css?v=2">
     <script src="lib/lucide.js"></script>
     <script>
         // Match the main app's saved theme choice so this popup doesn't clash when kept open
@@ -15,11 +16,10 @@
         })();
     </script>
     <style>
-        body { margin: 0; padding: 20px; background: var(--bg-main); color: var(--text-main); }
     </style>
 </head>
-<body>
-    <div id="content">불러오는 중...</div>
+<body class="pp-body">
+    <div id="content" class="pp-root">불러오는 중...</div>
     <script>
         (function () {
             function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
@@ -76,7 +76,7 @@
 
                     contentEl.innerHTML = `
                         <div style="color: var(--text-main); text-align: left;">
-                            <h2 style="margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; font-size: 1.5rem; color: var(--primary-color);">${tsName} 데이터파일 정보</h2>
+                            <h2 class="pp-title" style="margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; font-size: 1.5rem; color: var(--primary-color);">${tsName} 데이터파일 정보</h2>
                             <div class="table-container" style="max-height: 500px; overflow-y: auto;">
                                 <table class="data-table" style="width: 100%;">
                                     <thead>

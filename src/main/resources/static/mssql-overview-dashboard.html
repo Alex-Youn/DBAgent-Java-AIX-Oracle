@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MS SQL Server Overview</title>
 <script src="lib/lucide.js"></script>
-<script src="dbagent-common.js?v=10"></script>
+<script src="dbagent-common.js?v=13"></script>
 <script src="rdb-session-views.js?v=10"></script>
 <style>
     :root {
@@ -1229,7 +1229,7 @@
             openAdminPopup('account-mgmt.html', 'dbagent_account_mgmt', window.dbagentAdminPopupFeatures('account'));
         });
         document.getElementById('pmmOpenDbMgmt')?.addEventListener('click', () => {
-            openAdminPopup('db-mgmt.html', 'dbagent_db_mgmt', 'width=980,height=820,resizable=yes,scrollbars=yes');
+            openAdminPopup('db-mgmt.html', 'dbagent_db_mgmt', window.dbagentAdminPopupFeatures('db'));
         });
         document.getElementById('pmmOpenMenuVisibility')?.addEventListener('click', () => {
             openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', window.dbagentAdminPopupFeatures('menu'));

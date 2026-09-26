@@ -11,8 +11,10 @@
     const ND = window.ndDashboard;
     if (!ND) return;
 
-    const TX_COLOR = 'var(--nd-c-application)';
-    const TM_COLOR = 'var(--nd-c-network)';
+    // TX 보라·TM 붉은색 - Current Session Wait Class 차트·세션 목록 대기 분해 막대와 같은 색(2026-09-26 오케스트레이터 지적:
+    // 예전엔 대기 클래스 토큰을 빌려 써서 TX가 붉은색, TM이 보라로 뒤바뀌어 보였다).
+    const TX_COLOR = '#7c3aed';
+    const TM_COLOR = '#be123c';
     const TX_WARN = 5;
 
     const st = {
