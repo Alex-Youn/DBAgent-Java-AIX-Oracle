@@ -97,6 +97,10 @@
 # 막고 있는 TM Lock Holder 만 장애 판정(장애조치 버튼)과 "Blocking Session 감지" 알림에 센다.
 # 값이 없거나 잘못된 값이면 60 으로 동작한다.
 #dbagent.monitor.tm-holder-last-call-et-seconds=60
+# /api/health(대시보드 상단 인스턴스/리스너 Alive 표시)의 Busy 세이프티넷. waiting>0 휴리스틱이
+# 폴링 동시성으로 self-inflicted pool contention과 진짜 DB 다운을 오판할 수 있어, Busy가 이 시간
+# 이상 끊기지 않고 지속되면 강제로 Not Alive 로 확정한다(2026-09-28).
+#dbagent.monitor.health-busy-max-seconds=30
 
 # ASH 구간 조회(성능 분석·대시보드 Top 등)에서 ASH 인메모리 보관 범위를 벗어난 구간을
 # dba_hist_active_sess_history(AWR, 10초 간격)로 보충할지. Diagnostics Pack이 없는 사이트는 false (2026-09-25)
