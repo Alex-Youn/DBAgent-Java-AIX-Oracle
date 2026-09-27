@@ -15,8 +15,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$pidFile = "dbagent-java.pid"
-$jar = "target\dbagent-java-0.1.0.jar"
+$pidFile = Join-Path $PSScriptRoot "dbagent-java.pid"
+$jar = Join-Path $PSScriptRoot "target\dbagent-java-0.1.0.jar"
 $distDir = Join-Path $PSScriptRoot "dist"
 $distJar = Join-Path $distDir "dbagent-java-0.1.0.jar"
 $distPidFile = Join-Path $distDir "dbagent-java.pid"

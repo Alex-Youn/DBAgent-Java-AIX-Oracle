@@ -16,6 +16,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -24,6 +25,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -43,6 +45,16 @@ public class MonitorService {
     // 느린 인스턴스 등) 재빌드 없이 조정 가능해야 한다.
     @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
     private int lockQueryTimeoutSeconds;
+
+    // getHealth()의 "Busy" 안전장치(원본 DBAgent-Java에서 포팅, 2026-09-28): waiting>0 휴리스틱은 폴링
+    // 동시성이 자기 자신을 오판하게 만들 수 있어(같은 tick에 여러 위젯이 동시에 죽은 풀을 두드리면 매번
+    // self-inflicted로 잡혀 Not Alive로 전환이 몇 분씩 밀리는 걸 오케스트레이터가 실측) - Busy가 이
+    // 시간 이상 끊기지 않고 지속되면 더는 "일시적 경합"으로 보지 않고 강제로 Not Alive 처리한다.
+    // target별 마지막 Busy 시작 시각은 busySince에 둔다.
+    @Value("${dbagent.monitor.health-busy-max-seconds:30}")
+    private int healthBusyMaxSeconds;
+
+    private final Map<String, Instant> busySince = new ConcurrentHashMap<>();
 
     // ASH 시간대별 집계(getAshActivity)는 v$lock류보다 스캔 범위가 넓어(최근 N분 전체 샘플) lock-query-
     // timeout-seconds(3초, 락 조회 전용값)보다 여유를 둔다 - 별도 프로퍼티로 분리.
@@ -1910,6 +1922,17 @@ public class MonitorService {
             }
         } catch (Exception e) {
             errorMessage = e.getMessage();
+        }
+
+        if ("Busy".equals(instanceStatus)) {
+            Instant since = busySince.computeIfAbsent(target.id(), k -> Instant.now());
+            if (Duration.between(since, Instant.now()).getSeconds() >= healthBusyMaxSeconds) {
+                // Busy로만 계속 남아있기엔 근거(경합 해소 기대)가 이미 무너진 상태 - Not Alive로 확정.
+                instanceStatus = "Not Alive";
+                listenerStatus = "Not Alive";
+            }
+        } else {
+            busySince.remove(target.id());
         }
 
         Map<String, Object> result = new LinkedHashMap<>();

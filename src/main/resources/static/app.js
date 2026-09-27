@@ -3250,12 +3250,17 @@ let layoutHTML = "";
             });
         };
 
+        // 반환값은 "이번 tick에 나머지 4종(fetchBasic/Locks/SessionData/Events)을 쏴도 되는가" -
+        // DB가 죽었을 때도 5종을 매번 동시에 쏘면 그 동시성 자체가 HikariCP의 "waiting>0"을 만들어
+        // 진짜 다운을 self-inflicted pool contention(Busy)으로 오판하게 된다(원본 DBAgent-Java에서
+        // 포팅, 2026-09-28: Not Alive 전환이 5분 가까이 걸림). 헬스체크를 먼저 단독으로 보내 진짜
+        // 다운이면 waiting=0인 상태로 곧바로 실패를 기록시키고, 나머지 4종은 그 tick에 아예 스킵한다.
         const fetchHealth = async () => {
-            if (fetchingHealthForDbId === dbId) return;
+            if (fetchingHealthForDbId === dbId) return true; // 이전 호출 진행 중 - 판단 보류, 나머지는 평소대로 진행
             fetchingHealthForDbId = dbId;
             try {
                 const hRes = await fetch(`/api/health?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-                if (dbId !== window.currentDbId) return; // stale: user switched DBs while this was in flight
+                if (dbId !== window.currentDbId) return true; // stale: user switched DBs while this was in flight
                 if (hRes.ok) {
                     const hData = await hRes.json();
                     
@@ -3298,11 +3303,14 @@ let layoutHTML = "";
                     setStat('mini-status-max-process', hData.max_processes);
                     setStat('mini-status-dedicated-session', hData.dedicated_sessions);
                     setStat('mini-status-shared-session', hData.shared_sessions);
+                    return hData.instance_status === 'Alive';
                 } else {
                     markHealthDown();
+                    return false;
                 }
             } catch(e) {
                 if (dbId === window.currentDbId) markHealthDown();
+                return false;
             } finally {
                 if (fetchingHealthForDbId === dbId) fetchingHealthForDbId = null;
             }
@@ -3467,12 +3475,16 @@ let layoutHTML = "";
             }
         };
 
-        // Fire all independent fetches without awaiting so they run fully in parallel
-        fetchBasic();
-        fetchHealth();
-        fetchLocks();
-        fetchSessionData();
-        fetchEvents();
+        // 헬스체크를 먼저 단독으로 보내고(false면 DB가 죽은 것으로 확정), 살아있을 때만 나머지
+        // 4종을 병렬로 쏜다 - 죽은 DB에 5종을 매번 동시에 쏘던 예전 방식은 그 동시성 자체가
+        // Busy 오판/장기 지속의 원인이었다(위 fetchHealth 주석 참조).
+        const alive = await fetchHealth();
+        if (alive) {
+            fetchBasic();
+            fetchLocks();
+            fetchSessionData();
+            fetchEvents();
+        }
     }
     
     // Start dashboard polling. Interval comes from application.properties (dbagent.ui.polling-interval-ms,

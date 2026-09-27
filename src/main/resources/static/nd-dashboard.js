@@ -231,9 +231,28 @@
         ['nd-st-instance-dot', 'nd-st-listener-dot'].forEach(id => { const d = $(id); if (d) d.style.background = ''; });
     }
 
+    // 서버(앱) 자체가 죽으면 fetchJson이 네트워크 에러를 그대로 던지는데, loadStatus에는 이걸 잡는
+    // 코드가 없어서 run('slow')의 Promise.allSettled가 콘솔에만 에러를 찍고 화면은 마지막으로
+    // 성공했을 때의 "Alive"가 그대로 남아있었다(원본 DBAgent-Java에서 포팅, 2026-09-28). loadLock처럼
+    // 실패를 명시적으로 화면에 반영한다.
+    function markStatusDown() {
+        setText('nd-st-instance', 'Not Alive');
+        setText('nd-st-listener', 'Not Alive');
+        ['nd-st-max-session', 'nd-st-active', 'nd-st-inactive', 'nd-st-max-process', 'nd-st-dedicated', 'nd-st-shared']
+            .forEach(id => setText(id, null));
+        const id = $('nd-st-instance-dot'); if (id) id.style.background = 'var(--nd-crit)';
+        const ld = $('nd-st-listener-dot'); if (ld) ld.style.background = 'var(--nd-crit)';
+    }
+
     async function loadStatus(ctx) {
-        const h = await ctx.fetchJson('/api/health', { db_id: ctx.dbId });
-        if (!h) return;
+        let h;
+        try {
+            h = await ctx.fetchJson('/api/health', { db_id: ctx.dbId });
+        } catch (e) {
+            if (!ctx.isStale()) markStatusDown();
+            return;
+        }
+        if (!h || ctx.isStale()) return;
         setText('nd-st-instance', h.instance_status);
         setText('nd-st-listener', h.listener_status);
         const id = $('nd-st-instance-dot'); if (id) id.style.background = statusColor(h.instance_status);
