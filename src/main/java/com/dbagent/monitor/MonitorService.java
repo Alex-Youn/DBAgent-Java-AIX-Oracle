@@ -1949,6 +1949,14 @@ public class MonitorService {
         return result;
     }
 
+    // DbConfigAdminController가 update/delete 성공 시 poolManager.evictPoolsForDbId()와 나란히 호출한다
+    // (2026-09-28) - 안 그러면 id가 삭제 후 재사용됐을 때 예전 target의 busySince 타임스탬프가 그대로
+    // 남아있다가 새 target의 첫 Busy 판정에 즉시 30초 경과로 오인되어 세이프티넷이 조기 발동할 수 있고,
+    // 순수 삭제만 된 경우에도 엔트리가 영원히 누적된다.
+    public void clearBusyState(String targetId) {
+        busySince.remove(targetId);
+    }
+
     /** True for OracleConnectionPoolManager's own pool-exhaustion/cooldown errors, never a real Oracle response. */
     private boolean isSelfInflicted(SQLException e) {
         return OracleConnectionPoolManager.isPoolExhausted(e)

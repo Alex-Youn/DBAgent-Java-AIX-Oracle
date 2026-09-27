@@ -2,6 +2,7 @@ package com.dbagent.oracle;
 
 import com.dbagent.auth.AuthService;
 import com.dbagent.monitor.InstanceMetricSamplerService;
+import com.dbagent.monitor.MonitorService;
 import com.dbagent.rdb.RdbConnectionPoolManager;
 import com.dbagent.util.Maps;
 import org.springframework.http.HttpStatus;
@@ -29,15 +30,17 @@ public class DbConfigAdminController {
     private final OracleConnectionPoolManager poolManager;
     private final RdbConnectionPoolManager rdbPoolManager;
     private final InstanceMetricSamplerService metricSamplerService;
+    private final MonitorService monitorService;
 
     public DbConfigAdminController(AuthService authService, DatabaseConfigService configService,
             OracleConnectionPoolManager poolManager, RdbConnectionPoolManager rdbPoolManager,
-            InstanceMetricSamplerService metricSamplerService) {
+            InstanceMetricSamplerService metricSamplerService, MonitorService monitorService) {
         this.authService = authService;
         this.configService = configService;
         this.poolManager = poolManager;
         this.rdbPoolManager = rdbPoolManager;
         this.metricSamplerService = metricSamplerService;
+        this.monitorService = monitorService;
     }
 
     @PostMapping("/api/db_configs")
@@ -78,6 +81,7 @@ public class DbConfigAdminController {
             // between oracle and mysql/mariadb/postgres across the edit.
             poolManager.evictPoolsForDbId(id);
             rdbPoolManager.evictPoolsForDbId(id);
+            monitorService.clearBusyState(id);
         }
         return ResponseEntity.ok(result);
     }
@@ -92,6 +96,7 @@ public class DbConfigAdminController {
         if (Boolean.TRUE.equals(result.get("success"))) {
             poolManager.evictPoolsForDbId(id);
             rdbPoolManager.evictPoolsForDbId(id);
+            monitorService.clearBusyState(id);
         }
         return ResponseEntity.ok(result);
     }
