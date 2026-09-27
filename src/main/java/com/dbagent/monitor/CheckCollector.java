@@ -34,8 +34,8 @@ import java.util.stream.Collectors;
  *
  * <ul>
  *   <li>가벼운 항목(10분): 테이블스페이스(97/98%), FRA(미설정 DB 제외), TEMP(autoextend MAXSIZE 기준), 스케줄러 잡 실패(24시간).</li>
- *   <li>무거운 항목(1일, check-daily-hour 기본 새벽 3시 + 앱 기동 직후 1회): 테이블 용량(dba_segments 1회 조회로 세그먼트
- *       스냅샷 mon_segment_size도 함께), 무효 객체. 딕셔너리 뷰 스캔이라 무겁고 하루에 크게 바뀌지 않는다.</li>
+ *   <li>무거운 항목(1일, check-daily-hour 기본 새벽 3시 + 앱 기동 직후 1회): 세그먼트 크기 스냅샷 mon_segment_size
+ *       (알림 없음 - 용량 알림은 테이블스페이스 기준), 무효 객체. 딕셔너리 뷰 스캔이라 무겁고 하루에 크게 바뀌지 않는다.</li>
  *   <li>항목 종류마다 실행할 때 severity='OK', target_name='*' 행 1개를 남긴다 - 카드가 사라진 이유(해소 vs 점검 실패)를
  *       구분하기 위해. 쿼리가 실패하면 severity='ERROR' 행 + 오류 메시지(권한 없음·타임아웃을 "알림 없음"으로 보이게 하지 않음).</li>
  *   <li>임계치 미만이면 항목 행을 남기지 않는다. 시각은 앱 시각 epoch ms(다른 mon_* 테이블과 같음).</li>
@@ -76,10 +76,6 @@ public class CheckCollector {
     private double tsWarn;
     @Value("${dbagent.monitor.check-tablespace-crit-pct:98}")
     private double tsCrit;
-    @Value("${dbagent.monitor.check-table-size-warn-gb:30}")
-    private double tableWarnGb;
-    @Value("${dbagent.monitor.check-table-size-crit-gb:40}")
-    private double tableCritGb;
     @Value("${dbagent.monitor.check-segment-snapshot-min-gb:1}")
     private double snapshotMinGb;
     @Value("${dbagent.monitor.check-fra-warn-pct:80}")
@@ -319,7 +315,11 @@ public class CheckCollector {
         return list.isEmpty() ? "" : " AND owner NOT IN (" + list + ") ";
     }
 
-    /** 테이블 용량 + 세그먼트 크기 일 스냅샷 - dba_segments는 한 번만 읽는다. */
+    /**
+     * 세그먼트 크기 일 스냅샷(mon_segment_size) - dba_segments는 한 번만 읽는다.
+     * 2026-09-28: 용량 알림은 테이블스페이스(TABLESPACE, 97/98%) 기준으로만 낸다 - 테이블 크기(GB)로는 알림 행을 만들지
+     * 않고 스냅샷만 남긴다. OK('*') 행은 run()이 계속 남기므로 이전에 떠 있던 테이블 용량 카드는 다음 1일 점검에서 사라진다.
+     */
     private void checkTableSize(Connection conn, TargetDbConfig target, long ts, List<Object[]> rows) throws SQLException {
         long snapDate = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();
         List<Object[]> snap = new ArrayList<>();
@@ -328,19 +328,10 @@ public class CheckCollector {
                         "WHERE segment_type IN ('TABLE','TABLE PARTITION','TABLE SUBPARTITION')" + ownerNotIn() +
                         "GROUP BY owner, segment_name HAVING SUM(bytes) >= ? * POWER(1024,3) ORDER BY size_bytes DESC")) {
             ps.setQueryTimeout(dailyTimeout());
-            ps.setDouble(1, Math.min(snapshotMinGb, tableWarnGb));
+            ps.setDouble(1, snapshotMinGb);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    String owner = rs.getString(1), name = rs.getString(2);
-                    long bytes = rs.getLong(3);
-                    snap.add(new Object[]{target.id(), snapDate, owner, name, bytes});
-                    double gb = Math.round(bytes / Math.pow(1024, 3) * 10) / 10.0;
-                    if (gb >= tableWarnGb) {
-                        Map<String, Object> d = new LinkedHashMap<>();
-                        d.put("sizeGb", gb);
-                        rows.add(row(target, ts, "TABLE_SIZE", owner + "." + name, gb >= tableCritGb ? "CRIT" : "WARN", gb,
-                                gb >= tableCritGb ? tableCritGb : tableWarnGb, d));
-                    }
+                    snap.add(new Object[]{target.id(), snapDate, rs.getString(1), rs.getString(2), rs.getLong(3)});
                 }
             }
         }

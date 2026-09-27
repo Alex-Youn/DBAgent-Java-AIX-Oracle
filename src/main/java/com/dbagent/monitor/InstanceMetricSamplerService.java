@@ -163,7 +163,16 @@ public class InstanceMetricSamplerService {
      */
     @EventListener(ApplicationReadyEvent.class)
     void backfillOnStartup() {
-        for (TargetDbConfig target : configService.listAllInstances()) {
+        // ApplicationReadyEvent 리스너에서 던진 예외는 앱 기동 자체를 실패시킨다. 등록 DB 중 하나라도 비밀번호
+        // 복호화가 안 되면(마스터 키 불일치 등) listAllInstances()가 던지므로, 백필만 건너뛰고 기동은 계속한다.
+        List<TargetDbConfig> targets;
+        try {
+            targets = configService.listAllInstances();
+        } catch (RuntimeException e) {
+            log.warn("Startup ASH backfill skipped - could not load DB instances: {}", e.toString());
+            return;
+        }
+        for (TargetDbConfig target : targets) {
             if ("oracle".equalsIgnoreCase(target.dbType())) {
                 backfillAsync(target);
             }

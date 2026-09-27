@@ -126,8 +126,6 @@
 # 임계치
 #dbagent.monitor.check-tablespace-warn-pct=97
 #dbagent.monitor.check-tablespace-crit-pct=98
-#dbagent.monitor.check-table-size-warn-gb=30
-#dbagent.monitor.check-table-size-crit-gb=40
 #dbagent.monitor.check-fra-warn-pct=80
 #dbagent.monitor.check-fra-crit-pct=90
 #dbagent.monitor.check-temp-warn-pct=75
