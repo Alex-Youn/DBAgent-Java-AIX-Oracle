@@ -119,6 +119,11 @@
 #dbagent.monitor.tm-holder-kill-inactive-only=false
 #dbagent.monitor.lock-tx-row-lock-only=false
 #dbagent.monitor.lock-cache-millis=2000
+# ③ Lock 실시간 차트 A안(2026-09-28): 마지막으로 본 뒤 N분 동안은 화면이 없어도 3초마다 계속 수집(0=끔, B안만).
+# 켜면 그 시간 동안 원본 DB에 3초마다 Lock 조회가 나간다 - 운영 DB에서 조회 1회 부하를 실측한 뒤 정할 것.
+#dbagent.monitor.lock-keepalive-minutes=0
+# 동시에 백그라운드 수집하는 DB 수 상한(넘으면 가장 오래 전에 본 DB부터 제외, 0=상한 없음)
+#dbagent.monitor.lock-keepalive-max-dbs=5
 # ⑧ 점검 알림: 가벼운 항목 주기(분), 잡 실패 주기(분), 무거운 항목 실행 시각(시, 0~23 - 앱 기동 직후에도 1회)
 #dbagent.monitor.check-interval-minutes=10
 #dbagent.monitor.check-job-interval-minutes=30

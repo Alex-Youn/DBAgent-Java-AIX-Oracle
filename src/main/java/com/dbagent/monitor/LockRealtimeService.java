@@ -2,6 +2,7 @@ package com.dbagent.monitor;
 
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
+import javax.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -29,6 +30,8 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 대시보드 개편 ③ Lock 대기 세션(실시간)과 ③-1 TM Lock 장애 처리(KILL) - 설계문서 `대시보드 UI 개선 설계.md`
@@ -52,6 +55,12 @@ public class LockRealtimeService {
 
     private static final ExecutorService LOCK_EXECUTOR = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "lock-realtime");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private static final ScheduledExecutorService KEEPALIVE_SCHEDULER = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "lock-keepalive");
         t.setDaemon(true);
         return t;
     });
@@ -90,6 +99,24 @@ public class LockRealtimeService {
     @Value("${dbagent.monitor.lock-tx-row-lock-only:false}")
     private boolean txRowLockOnly;
 
+    // A안 - 최근 본 DB 백그라운드 수집(2026-09-28, 설계문서 `Lock실시간차트_빈구간_A+B_전환계획_2026-09-28.md` 4.1).
+    // 마지막으로 본 뒤 keepaliveMinutes 동안은 화면이 없어도 3초마다 조회해 history를 이어 붙인다. 그보다 오래 비운
+    // 구간은 지금처럼 B(fill)로 채운다. 0이면 A 비활성(= B만) - 운영 DB 부하 실측 전까지 기본값은 0.
+    @Value("${dbagent.monitor.lock-keepalive-minutes:0}")
+    private int keepaliveMinutes;
+
+    /** 동시에 백그라운드 수집하는 DB 수 상한 - 넘으면 가장 오래 전에 본 DB부터 제외. 0 이하면 상한 없음. */
+    @Value("${dbagent.monitor.lock-keepalive-max-dbs:5}")
+    private int keepaliveMaxDbs;
+
+    private static final long KEEPALIVE_INTERVAL_MS = 3000L;
+    // 화면 폴링(3초)이 방금 조회했으면 건너뛴다 - 화면이 열려 있는 동안 원본 DB 조회가 주기당 1회를 넘지 않게.
+    private static final long KEEPALIVE_SKIP_IF_FRESH_MS = KEEPALIVE_INTERVAL_MS - 500L;
+    // 접속 불가 DB에 3초마다 타임아웃을 거는 것 방지 - 연속 실패가 이 횟수면 일정 시간 백그라운드 수집을 멈춘다.
+    private static final int KEEPALIVE_FAIL_LIMIT = 5;
+    private static final long KEEPALIVE_FAIL_PAUSE_MS = 5 * 60 * 1000L;
+    private final Map<String, Viewed> viewed = new ConcurrentHashMap<>();
+
     private final Map<String, Snapshot> cache = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<Snapshot>> inFlight = new ConcurrentHashMap<>();
     private final Map<String, Deque<Map<String, Object>>> history = new ConcurrentHashMap<>();
@@ -116,6 +143,14 @@ public class LockRealtimeService {
     public Map<String, Object> realtime(TargetDbConfig target) {
         Snapshot cached = cache.get(target.id());
         long now = System.currentTimeMillis();
+        if (keepaliveMinutes > 0) {
+            viewed.compute(target.id(), (id, v) -> {
+                Viewed n = v != null ? v : new Viewed();
+                n.target = target; // 설정이 바뀌었으면 다음 백그라운드 조회부터 새 값으로
+                n.lastViewedAt = now;
+                return n;
+            });
+        }
         Snapshot snap;
         if (cached != null && now - cached.at < cacheMillis) {
             snap = cached;
@@ -145,6 +180,59 @@ public class LockRealtimeService {
             f.whenComplete((r, e) -> inFlight.remove(id, f));
             return f;
         });
+    }
+
+    /**
+     * A안이 켜져 있을 때만 전용 스레드로 3초 수집을 돌린다. 공용 @Scheduled 스케줄러(SchedulingConfig, 스레드 2개)를
+     * 쓰지 않는 이유: 기동 직후 점검 알림(CheckCollector)과 60초 샘플러가 두 스레드를 수십 초 잡고 있으면 이 작업이
+     * 밀려 3초 선이 끊겼다(2026-09-28 로컬 실측 - 기동 직후 44초 공백).
+     */
+    @PostConstruct
+    void startKeepalive() {
+        if (keepaliveMinutes <= 0) return;
+        KEEPALIVE_SCHEDULER.scheduleAtFixedRate(() -> {
+            try {
+                keepaliveCollect();
+            } catch (Exception e) {
+                log.debug("lock keepalive cycle failed: {}", e.toString()); // 예외가 새면 이후 주기가 모두 멈춘다
+            }
+        }, KEEPALIVE_INTERVAL_MS, KEEPALIVE_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        log.info("lock keepalive enabled: {} min after last view, max {} DBs", keepaliveMinutes,
+                keepaliveMaxDbs > 0 ? keepaliveMaxDbs : "unlimited");
+    }
+
+    /**
+     * A안 백그라운드 수집 - 최근 keepaliveMinutes 안에 본 DB를 3초마다 조회한다. 조회는 inFlightFor()를 그대로 타므로
+     * 캐시·진행 중 조회 공유·record()(10분 추이, 1분 요약)가 화면 조회와 똑같이 적용된다. 이 스레드는 조회를 기다리지
+     * 않는다(비동기) - 느린 DB가 다른 DB의 수집을 막지 않게.
+     */
+    void keepaliveCollect() {
+        long now = System.currentTimeMillis();
+        long keepaliveMs = keepaliveMinutes * 60000L;
+        viewed.entrySet().removeIf(e -> now - e.getValue().lastViewedAt >= keepaliveMs);
+        List<Map.Entry<String, Viewed>> targets = new ArrayList<>(viewed.entrySet());
+        targets.sort((a, b) -> Long.compare(b.getValue().lastViewedAt, a.getValue().lastViewedAt)); // 최근 본 순
+        if (keepaliveMaxDbs > 0 && targets.size() > keepaliveMaxDbs) {
+            targets = targets.subList(0, keepaliveMaxDbs);
+        }
+        for (Map.Entry<String, Viewed> e : targets) {
+            String id = e.getKey();
+            Viewed v = e.getValue();
+            if (now < v.pausedUntil) continue;
+            Snapshot cached = cache.get(id);
+            if (cached != null && now - cached.at < KEEPALIVE_SKIP_IF_FRESH_MS) continue;
+            if (inFlight.containsKey(id)) continue;
+            inFlightFor(v.target).whenComplete((s, ex) -> {
+                if (s != null && s.ok) {
+                    v.fails = 0;
+                } else if (++v.fails >= KEEPALIVE_FAIL_LIMIT) {
+                    v.fails = 0;
+                    v.pausedUntil = System.currentTimeMillis() + KEEPALIVE_FAIL_PAUSE_MS;
+                    log.info("lock keepalive paused for {} ({} consecutive failures, {} min): {}", id, KEEPALIVE_FAIL_LIMIT,
+                            KEEPALIVE_FAIL_PAUSE_MS / 60000L, s != null ? s.error : ex);
+                }
+            });
+        }
     }
 
     private Snapshot query(TargetDbConfig target) throws SQLException {
@@ -583,6 +671,14 @@ public class LockRealtimeService {
             s.error = e.getMessage() != null ? e.getMessage() : e.toString();
             return s;
         }
+    }
+
+    /** A안 백그라운드 수집 대상 - 마지막으로 본 시각과 연속 실패 상태. fails/pausedUntil은 조회 완료 스레드에서만 바뀐다. */
+    private static final class Viewed {
+        volatile TargetDbConfig target;
+        volatile long lastViewedAt;
+        volatile int fails;
+        volatile long pausedUntil;
     }
 
     private static final class MinuteSummary {
