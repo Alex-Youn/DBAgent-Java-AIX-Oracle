@@ -2409,6 +2409,28 @@ let layoutHTML = "";
         return pattern;
     }
 
+    // CPU 기준선 라벨(2026-09-28 결정) - 점선 오른쪽 끝 위에 "CPU N" 표시. 대시보드 ② AAS 차트(nd-aas.js의
+    // nd-corelbl)와 같은 위치·문구. cpuCores 표식이 있는 데이터셋(buildAshDatasets의 cpuLine)만 대상.
+    const ashCpuLabelPlugin = {
+        id: 'ashCpuLabel',
+        afterDatasetsDraw(chart) {
+            const idx = chart.data.datasets.findIndex(ds => ds.cpuCores);
+            if (idx < 0 || !chart.isDatasetVisible(idx)) return;
+            const cores = chart.data.datasets[idx].cpuCores;
+            const area = chart.chartArea;
+            const y = chart.scales.y.getPixelForValue(cores);
+            if (!area || y < area.top || y > area.bottom) return;
+            const ctx = chart.ctx;
+            ctx.save();
+            ctx.font = 'bold 12px sans-serif';
+            ctx.fillStyle = chartLineColor(0.9);
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(`CPU ${cores}`, area.right - 4, y - 4);
+            ctx.restore();
+        }
+    };
+
     function buildAshDatasets(data, form, texture) {
         const isBar = form === 'bar';
         const categoryDatasets = ASH_ACTIVITY_CATEGORIES.map((cat, i) => {
@@ -2437,7 +2459,8 @@ let layoutHTML = "";
             borderWidth: 1.5,
             pointRadius: 0,
             fill: false,
-            order: -1
+            order: -1,
+            cpuCores // ashCpuLabelPlugin이 라벨을 그릴 기준선 표식
         };
         return categoryDatasets.concat([cpuLine]);
     }
@@ -2495,6 +2518,7 @@ let layoutHTML = "";
             ashActivityChart = new Chart(canvas, {
                 type: ashActivityForm === 'bar' ? 'bar' : 'line',
                 data: { datasets },
+                plugins: [ashCpuLabelPlugin],
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,

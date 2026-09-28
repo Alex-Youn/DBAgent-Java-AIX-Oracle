@@ -190,10 +190,10 @@
     }
     window.addEventListener('resize', () => { if (state.active) fitHeight(); });
 
-    // ②③ 차트 행 높이: 창 높이에 맞춰 300~400px (2026-09-26 오케스트레이터 결정). 큰 모니터는 400px, 작은 모니터는
-    // 줄여서 스크롤을 줄이고, 300px 아래로는 줄이지 않는다(넘치면 대시보드 영역 안에서 스크롤).
+    // ②③ 차트 행 높이: 남는 높이를 모두 차지하고 최소 180px (2026-09-28 결정, UI개선_mockup.html - 기존 300~400px 대체).
+    // 180px 아래로는 줄이지 않는다(넘치면 대시보드 영역 안에서 스크롤).
     // 부하·데이터가 아니라 "대시보드 영역 높이 - 나머지 블록 높이"로만 정해지므로 같은 창에서는 크기가 흔들리지 않는다.
-    const CHART_MIN = 300, CHART_MAX = 400;
+    const CHART_MIN = 180, CHART_MAX = Infinity;
     function fitChart() {
         const el = $('dashboard-nd-view');
         const row = el && el.querySelector('.nd-chart-row');

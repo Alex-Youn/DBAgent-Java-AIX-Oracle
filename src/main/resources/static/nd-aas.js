@@ -96,7 +96,7 @@
         table.hidden = true;
         const foot = document.createElement('div');
         foot.className = 'nd-chart-foot';
-        foot.innerHTML = '<span class="nd-src">Oracle 대기 클래스 기준 · v$active_session_history · 60초 수집 · 1분 평균 · 접속 인스턴스 기준</span>' +
+        foot.innerHTML = '<span class="nd-src">v$active_session_history · 60초 수집 · 1분 평균 · 접속 인스턴스 기준</span>' +
             '<span class="nd-foot-btns"><button type="button" class="nd-link-btn" id="nd-aas-clear" hidden>선택 해제</button>' +
             '<button type="button" class="nd-link-btn" id="nd-aas-table-btn">표로 보기</button></span>';
         body.append(legend, plot, table, foot);
@@ -375,7 +375,7 @@
             const cy = y(cores).toFixed(1);
             s += `<line class="nd-corel" x1="${ml}" x2="${ml + pw}" y1="${cy}" y2="${cy}"/>`;
             s += mr > 36
-                ? `<text class="nd-corelbl" x="${ml + pw + 6}" y="${+cy - 2}">CPU</text><text class="nd-corelbl" x="${ml + pw + 6}" y="${+cy + 11}">${cores}</text>`
+                ? `<text class="nd-corelbl" x="${ml + pw + 6}" y="${+cy + 4}">CPU ${cores}</text>` // 오른쪽 여백(72px)에 한 줄 - 두 줄로 나누면 끊겨 보였다(2026-09-28)
                 : `<text class="nd-corelbl" x="${ml + pw - 4}" y="${+cy - 5}" text-anchor="end">CPU ${cores}</text>`;
         }
         if (st.sel) {
