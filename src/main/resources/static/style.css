@@ -87,6 +87,11 @@ body {
     overflow-x: hidden;
 }
 
+/* 메인 화면(index.html)만: 바깥 스크롤을 막는다. .app-container 높이(100vh/0.9 × zoom 90%)가 창 높이에 따라
+   0.1~0.2px 커져 브라우저 배율·화면 배율에서 1px 바깥 스크롤바가 생겼다(2026-09-28). 본문 스크롤은 .main-content가,
+   로그인 화면 스크롤은 #login-overlay가 따로 한다 - style.css를 쓰는 다른 화면(세션 목록 등)은 body 스크롤이 필요해 제외. */
+body.app-shell { overflow-y: hidden; }
+
 .app-container {
     display: flex;
     /* zoom: 90% is applied inline on this element (index.html) to fit more content on screen; zoom
@@ -1256,6 +1261,8 @@ body {
     display: flex;
     gap: 5px;
     overflow-x: auto;
+    /* 가로 스크롤만 쓴다 - 내용이 1px 넘쳐(높이 51 vs 52) 세로 스크롤바(▲▼)가 메뉴 오른쪽에 보였다(2026-09-28) */
+    overflow-y: hidden;
     border-top: 1px solid var(--border);
     /* 2026-09-06 사용자 요청: 우측 화면 전체(메뉴/인스턴스/그래프/Active 세션 목록 프레임)를 1.5mm
        위로. 이 margin 이 상단 줄과 메뉴 사이의 유일한 간격이라, 여기를 줄이면 아래가 통째로 올라간다.
@@ -1755,15 +1762,18 @@ body {
     --nd-crit-bg: rgba(208, 59, 59, 0.14);
     --nd-warn-bg: rgba(250, 178, 25, 0.12);
     --nd-skeleton: rgba(255, 255, 255, 0.06);
-    /* 대기 클래스 8분류 (2.3, 누적 순서 아래→위) */
-    --nd-c-cpu: #1c9a68;
-    --nd-c-user_io: #4270e8;
-    --nd-c-system_io: #13a9a4;
-    --nd-c-concurrency: #a45a2c;
-    --nd-c-application: #ec4868;
-    --nd-c-commit: #a8830a;
-    --nd-c-network: #8f7ae6;
-    --nd-c-other: #d46a9e;
+    /* 대기 클래스 8분류 (2.3, 누적 순서 아래→위). 2026-09-28 재배정(A안): CPU 초록·User I/O 파랑은 Oracle EM 관례 유지,
+       나머지는 색 구분 검증(dataviz validate_palette, 어두운 배경 #1a1a19)으로 붙은 층끼리 색약 ΔE≥9.4·일반 ΔE≥19.3 통과.
+       System I/O는 CPU와 헷갈리던 청록 대신 노랑, Network는 TX Lock(보라)과 겹치지 않게 청록(최상단, CPU와 떨어짐),
+       Other는 무채색 회색. Current Session 차트는 세션 목록 Session Wait 색과 묶여 있어 별도(변경 안 함). */
+    --nd-c-cpu: #008300;
+    --nd-c-user_io: #3987e5;
+    --nd-c-system_io: #c98500;
+    --nd-c-concurrency: #d55181;
+    --nd-c-application: #9085e9;
+    --nd-c-commit: #d95926;
+    --nd-c-network: #199e70;
+    --nd-c-other: #9a9a95;
     --nd-font-mono: Consolas, 'D2Coding', monospace;
 }
 
