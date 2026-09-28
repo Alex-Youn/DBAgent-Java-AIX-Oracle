@@ -165,21 +165,42 @@ public class LockRealtimeService {
     }
 
     private CompletableFuture<Snapshot> inFlightFor(TargetDbConfig target) {
-        return inFlight.computeIfAbsent(target.id(), id -> {
-            CompletableFuture<Snapshot> f = CompletableFuture.supplyAsync(() -> {
-                Snapshot s;
-                try {
-                    s = query(target);
-                } catch (Exception e) {
-                    s = Snapshot.failed(System.currentTimeMillis(), e);
-                }
-                cache.put(id, s);
-                record(id, s);
-                return s;
-            }, LOCK_EXECUTOR);
-            f.whenComplete((r, e) -> inFlight.remove(id, f));
-            return f;
-        });
+        String id = target.id();
+        CompletableFuture<Snapshot> f = inFlight.computeIfAbsent(id, k -> CompletableFuture.supplyAsync(() -> {
+            Snapshot s;
+            try {
+                s = query(target);
+            } catch (Exception e) {
+                s = Snapshot.failed(System.currentTimeMillis(), e);
+            }
+            cache.put(k, s);
+            record(k, s);
+            return s;
+        }, LOCK_EXECUTOR));
+        // 정리 콜백은 computeIfAbsent 밖에서 건다(2026-09-28 점검). 안에서 걸면 조회가 콜백 등록 전에 끝났을 때 콜백이
+        // computeIfAbsent 도중 같은 키로 remove를 불러 "Recursive update" 예외가 나거나 아무것도 지우지 못해, 끝난 future가
+        // inFlight에 영구히 남아 화면 폴링·A안 백그라운드 수집이 옛 결과만 재사용(Lock 카드 멈춤)할 수 있었다.
+        // 여러 호출자가 각각 걸어도 remove(id, f)는 같은 future일 때만 지우므로 무해하다.
+        f.whenComplete((r, e) -> inFlight.remove(id, f));
+        return f;
+    }
+
+    /**
+     * DB 설정 수정·삭제 시 이 DB의 상태를 모두 버린다(2026-09-28 점검). 안 지우면 A안 viewed에 남은 옛 TargetDbConfig로
+     * 백그라운드 수집이 계속돼 - 삭제한 DB는 풀이 다시 만들어져 방치되고, 수정한 DB는 옛 접속 정보로 조회한다.
+     * 추이·캐시도 옛 대상의 값이라 같이 지운다. 이미 진행 중인 옛 조회 1건은 끝나면서 한 번 기록될 수 있으나
+     * 다음 주기부터는 새 설정으로 조회하므로 그대로 둔다.
+     */
+    public void clearDb(String id) {
+        viewed.remove(id);
+        inFlight.remove(id);
+        cache.remove(id);
+        history.remove(id);
+        killEvents.remove(id);
+        minuteSummary.remove(id);
+        memoryCache.remove(id);
+        fillCache.remove(id);
+        objectNames.remove(id);
     }
 
     /**

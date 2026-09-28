@@ -57,8 +57,16 @@
             '<span><span class="nd-sw" style="background:' + TM_COLOR + '"></span>TM Lock</span>' +
             '<span class="nd-lk-rule" id="nd-lk-rule"></span></div>' +
             '<div class="nd-plot" id="nd-lk-plot" tabindex="0" role="img" aria-label="최근 10분 TX, TM Lock 대기 세션 수"><svg id="nd-lk-svg"></svg></div>' +
-            '<div class="nd-lk-log" id="nd-lk-log" hidden></div>' +
-            '<div class="nd-kill-panel" id="nd-kill-panel" hidden role="dialog" aria-label="TM Lock Holder KILL 확인"></div>';
+            '<div class="nd-lk-log" id="nd-lk-log" hidden></div>';
+        // KILL 확인 패널은 차트 본문이 아니라 카드 바로 아래에 둔다 - 본문 안(inset:0)이면 작은 화면(1920×1080)에서 카드 본문이
+        // 116px로 줄 때 패널도 같이 줄어 Holder 목록 표 높이가 0이 됐다(KILL 대상이 안 보이고 버튼만 보임, 2026-09-28 실측).
+        const killPanel = document.createElement('div');
+        killPanel.className = 'nd-kill-panel';
+        killPanel.id = 'nd-kill-panel';
+        killPanel.hidden = true;
+        killPanel.setAttribute('role', 'dialog');
+        killPanel.setAttribute('aria-label', 'TM Lock Holder KILL 확인');
+        $('nd-lock-card').appendChild(killPanel);
         const title = $('nd-lock-card').querySelector('.nd-card-title');
         const hold = document.createElement('span');
         hold.className = 'nd-badge-delay';

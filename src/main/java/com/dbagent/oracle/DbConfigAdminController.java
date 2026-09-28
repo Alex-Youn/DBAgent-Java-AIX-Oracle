@@ -2,6 +2,7 @@ package com.dbagent.oracle;
 
 import com.dbagent.auth.AuthService;
 import com.dbagent.monitor.InstanceMetricSamplerService;
+import com.dbagent.monitor.LockRealtimeService;
 import com.dbagent.monitor.MonitorService;
 import com.dbagent.rdb.RdbConnectionPoolManager;
 import com.dbagent.util.Maps;
@@ -31,16 +32,19 @@ public class DbConfigAdminController {
     private final RdbConnectionPoolManager rdbPoolManager;
     private final InstanceMetricSamplerService metricSamplerService;
     private final MonitorService monitorService;
+    private final LockRealtimeService lockRealtimeService;
 
     public DbConfigAdminController(AuthService authService, DatabaseConfigService configService,
             OracleConnectionPoolManager poolManager, RdbConnectionPoolManager rdbPoolManager,
-            InstanceMetricSamplerService metricSamplerService, MonitorService monitorService) {
+            InstanceMetricSamplerService metricSamplerService, MonitorService monitorService,
+            LockRealtimeService lockRealtimeService) {
         this.authService = authService;
         this.configService = configService;
         this.poolManager = poolManager;
         this.rdbPoolManager = rdbPoolManager;
         this.metricSamplerService = metricSamplerService;
         this.monitorService = monitorService;
+        this.lockRealtimeService = lockRealtimeService;
     }
 
     @PostMapping("/api/db_configs")
@@ -79,6 +83,9 @@ public class DbConfigAdminController {
             // target forever. Evicting both managers unconditionally is harmless (a no-op if this id
             // never had a pool of that kind) and correctly handles an instance's db_type changing
             // between oracle and mysql/mariadb/postgres across the edit.
+            // Lock 실시간 상태는 풀보다 먼저 지운다 - 풀을 지운 직후 A안 백그라운드 수집이 옛 설정으로
+            // 풀을 다시 만들지 않게(2026-09-28 점검).
+            lockRealtimeService.clearDb(id);
             poolManager.evictPoolsForDbId(id);
             rdbPoolManager.evictPoolsForDbId(id);
             monitorService.clearBusyState(id);
@@ -94,6 +101,7 @@ public class DbConfigAdminController {
         }
         Map<String, Object> result = configService.deleteInstance(id);
         if (Boolean.TRUE.equals(result.get("success"))) {
+            lockRealtimeService.clearDb(id);
             poolManager.evictPoolsForDbId(id);
             rdbPoolManager.evictPoolsForDbId(id);
             monitorService.clearBusyState(id);

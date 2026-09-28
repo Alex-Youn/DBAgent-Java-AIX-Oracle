@@ -1988,15 +1988,18 @@ body.app-shell { overflow-y: hidden; }
 .nd-inc-note { font-size: 0.78rem; opacity: 0.9; }
 
 /* 확인 패널 - 카드 위에 겹쳐 띄워 레이아웃을 밀지 않는다 */
+/* KILL 확인 패널: Lock 카드 전체를 덮고 최소 320px - 카드가 그보다 작으면(1920×1080 등) 아래(진단·Top)를 덮으며 펼쳐진다.
+   내용이 길면 화면 높이 70%까지 늘고 그 안에서 스크롤(2026-09-28). */
 .nd-kill-panel {
-    position: absolute; inset: 0; z-index: 6; overflow: auto; background: var(--nd-surface);
+    position: absolute; top: 0; left: 0; right: 0; min-height: max(100%, 320px); max-height: 70vh;
+    z-index: 20; overflow: auto; background: var(--nd-surface); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     border: 1px solid var(--nd-crit); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
 }
 .nd-kill-panel[hidden] { display: none; }
 .nd-kill-panel h3 { margin: 0; font-size: 0.95rem; color: var(--nd-crit); }
 .nd-kp-sub { margin: 0; font-size: 0.76rem; color: var(--nd-muted); }
 .nd-kp-note { margin: 0; font-size: 0.8rem; font-weight: 600; color: var(--nd-warn); background: var(--nd-warn-bg); padding: 4px 8px; border-radius: 4px; }
-.nd-kp-table { overflow: auto; max-height: 45%; flex: 0 1 auto; }
+.nd-kp-table { overflow: auto; max-height: 220px; flex: 0 0 auto; } /* 줄어들어 0이 되지 않게 - 약 7행까지 보이고 그 이상은 표 안에서 스크롤 */
 .nd-kill-panel .nd-table { font-family: inherit; }
 .nd-kill-panel .nd-table td, .nd-kill-panel .nd-table th { text-align: left; }
 .nd-kill-panel .nd-table td:nth-child(3), .nd-kill-panel .nd-table td:nth-child(4) { max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
