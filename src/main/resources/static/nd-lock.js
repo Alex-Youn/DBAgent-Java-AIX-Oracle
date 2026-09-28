@@ -169,7 +169,10 @@
     function renderIncident() {
         const bar = $('nd-inc-bar');
         const d = st.last;
+        const wasHidden = bar.hidden;
         bar.hidden = !st.incident || !d;
+        // 알림 바가 뜨거나 사라지면 차트 행 최소 높이(180/270)가 바뀐다 - nd-dashboard.js fitChart
+        if (bar.hidden !== wasHidden && window.ndDashboard && window.ndDashboard.fitChart) window.ndDashboard.fitChart();
         if (bar.hidden) return;
         $('nd-inc-txt').textContent = `TM Lock 장애 감지 — ${d.lastCallEtThreshold}초 이상 다른 세션을 막고 있는 TM Lock Holder ${d.holderOverCount}개 · 기준 ${d.incidentCount}개 이상 · 전체 Holder ${d.holderTotal}개`;
         const act = $('nd-inc-action');

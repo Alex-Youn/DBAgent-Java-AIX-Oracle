@@ -469,6 +469,10 @@
             }
         }
         box.innerHTML = `<div class="nd-banner-title">${esc(title)}</div><div class="nd-banner-msg">${msg}</div>`;
+        // 한 줄 고정(style.css) - 잘린 문구는 마우스를 올리면 전체를 본다
+        const m = box.querySelector('.nd-banner-msg');
+        m.title = m.textContent.trim();
+        box.querySelector('.nd-banner-title').title = title;
     }
 
     // ================================================================== 포인터·키보드

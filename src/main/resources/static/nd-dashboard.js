@@ -193,18 +193,23 @@
     // ②③ 차트 행 높이: 남는 높이를 모두 차지하고 최소 180px (2026-09-28 결정, UI개선_mockup.html - 기존 300~400px 대체).
     // 180px 아래로는 줄이지 않는다(넘치면 대시보드 영역 안에서 스크롤).
     // 부하·데이터가 아니라 "대시보드 영역 높이 - 나머지 블록 높이"로만 정해지므로 같은 창에서는 크기가 흔들리지 않는다.
-    const CHART_MIN = 180, CHART_MAX = Infinity;
+    // 단, Lock 장애 알림 바가 떠 있을 때만 최소 270px - 1920×1080에서 180px이면 Lock 카드 본문이 116px로
+    // 통계+알림 바+범례+차트가 안 들어가 차트 축이 카드 밖으로 넘친다. 평소엔 180 유지(스크롤 증가는 장애 때만)
+    // (2026-09-28 오케스트레이터 결정, 1920×1080 실측).
+    const CHART_MIN = 180, CHART_MIN_INCIDENT = 270, CHART_MAX = Infinity;
     function fitChart() {
         const el = $('dashboard-nd-view');
         const row = el && el.querySelector('.nd-chart-row');
         if (!row || el.style.display === 'none') return;
+        const incBar = $('nd-inc-bar');
+        const min = incBar && !incBar.hidden ? CHART_MIN_INCIDENT : CHART_MIN;
         const gap = parseFloat(getComputedStyle(el).rowGap) || 0;
         let others = 0, count = 0;
         for (const c of el.children) {
             if (c === row || c.offsetParent === null) continue;
             others += c.offsetHeight; count++;
         }
-        const h = Math.max(CHART_MIN, Math.min(CHART_MAX, Math.floor(el.clientHeight - others - gap * count)));
+        const h = Math.max(min, Math.min(CHART_MAX, Math.floor(el.clientHeight - others - gap * count)));
         if (row.style.height !== h + 'px') { row.style.height = h + 'px'; row.style.flexBasis = h + 'px'; }
     }
     // 다른 블록 높이가 바뀌면(⑧ 카드 줄 수, 상태바 줄바꿈 등) 다시 맞춘다.
@@ -358,6 +363,8 @@
         emit,
         /** DB 전환·표시 시작 때 호출 - 패널을 스켈레톤으로 되돌리고 드로어·확인 패널을 닫는다. */
         onReset(fn) { resetHooks.push(fn); },
+        /** 차트 행 높이를 다시 맞춘다 - 차트 행 안의 변화(Lock 장애 알림 바 표시 등)는 ResizeObserver가 못 잡는다. */
+        fitChart() { if (state.active) fitChart(); },
         show() {
             state.active = true;
             fitHeight();

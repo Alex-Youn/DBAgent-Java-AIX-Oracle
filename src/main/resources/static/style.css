@@ -1941,8 +1941,10 @@ body.app-shell { overflow-y: hidden; }
 .nd-tip-tot b { font-family: Consolas, monospace; }
 .nd-tip-empty { color: var(--text-muted); }
 
-.nd-banner-title { font-size: 0.82rem; color: var(--nd-muted); margin-bottom: 3px; }
-.nd-banner-msg { font-size: 0.9rem; color: var(--nd-ink); line-height: 1.45; }
+/* 진단 문구는 한 줄 고정 + 말줄임(전체는 title 툴팁) - 줄바꿈되면 57→119px로 커져 차트 행이 흔들렸다
+   (2026-09-28 오케스트레이터 결정, 2560 실측 차트 530→468px) */
+.nd-banner-title { font-size: 0.82rem; color: var(--nd-muted); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-banner-msg { font-size: 0.9rem; color: var(--nd-ink); line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nd-banner-msg .nd-sw { margin-right: 4px; }
 .nd-muted { color: var(--nd-muted); }
 .nd-crit-t { color: var(--nd-crit); }
