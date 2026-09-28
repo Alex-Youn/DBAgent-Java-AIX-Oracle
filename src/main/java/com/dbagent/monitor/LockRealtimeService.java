@@ -239,6 +239,10 @@ public class LockRealtimeService {
         for (Map.Entry<String, Viewed> e : targets) {
             String id = e.getKey();
             Viewed v = e.getValue();
+            // 목록을 복사한 뒤 DB 설정 수정·삭제로 clearDb()가 불렸으면 옛 설정으로 조회하지 않게 건너뛴다(2026-09-28 점검) -
+            // 안 그러면 삭제한 DB의 풀이 옛 접속 정보로 1회 재생성될 수 있었다. 확인~조회 사이의 아주 짧은 틈은 남지만
+            // 1회 조회 때문에 락까지 걸 일은 아니라고 판단.
+            if (viewed.get(id) != v) continue;
             if (now < v.pausedUntil) continue;
             Snapshot cached = cache.get(id);
             if (cached != null && now - cached.at < KEEPALIVE_SKIP_IF_FRESH_MS) continue;
