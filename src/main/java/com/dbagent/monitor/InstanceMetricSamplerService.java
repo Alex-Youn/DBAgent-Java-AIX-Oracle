@@ -236,8 +236,10 @@ public class InstanceMetricSamplerService {
         if (r == null) return;
         historyService.record(r.instanceId, "cpu_pct", r.sampledAt, r.cpuPct);
         historyService.record(r.instanceId, "db_time_aas", r.sampledAt, r.dbTimeAas);
-        historyService.record(r.instanceId, "tm_lock_waiting", r.sampledAt, r.tmLockWaiting);
-        historyService.record(r.instanceId, "tx_lock_waiting", r.sampledAt, r.txLockWaiting);
+        if (r.tmLockWaiting >= 0) { // -1 = 락 스캔 실패(sampleOne)
+            historyService.record(r.instanceId, "tm_lock_waiting", r.sampledAt, r.tmLockWaiting);
+            historyService.record(r.instanceId, "tx_lock_waiting", r.sampledAt, r.txLockWaiting);
+        }
         historyService.record(r.instanceId, "ash_cpu_cores", r.sampledAt, r.cpuCores);
         // ASH 조회가 실패한 사이클은 분류 값을 아예 남기지 않는다 - 예전엔 0으로 저장돼 차트에 "부하 없음"처럼
         // 보였다(값이 없는 분은 차트에서 끊겨 보이는 게 맞다).
@@ -298,6 +300,10 @@ public class InstanceMetricSamplerService {
                 }
             } catch (SQLException lockScanFailed) {
                 // 타임아웃(ORA-01013) 등으로 락 스캔만 실패해도 CPU/DBTime 샘플은 이미 확보했으니 버리지 않는다.
+                // 락 값은 -1(모름)로 두어 기록하지 않는다 - 0으로 남기면 "대기 없음"처럼 보인다(2026-09-28, Lock 차트
+                // 빈 구간을 이 값으로 채우게 되면서 정리).
+                tmLockWaiting = -1;
+                txLockWaiting = -1;
                 log.debug("Lock wait sampling skipped for db_id={}: {}", target.id(), lockScanFailed.toString());
             }
 

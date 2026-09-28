@@ -58,9 +58,19 @@ public class LockRealtimeService {
 
     private static final long HISTORY_WINDOW_MS = 10 * 60 * 1000L;
 
+    // 빈 구간 채움(2026-09-28): 화면이 없던 동안(다른 메뉴·다른 DB)은 3초 추이가 쌓이지 않아, 돌아오면 중간이 비거나
+    // (10분 넘게 비웠으면) 처음부터 다시 그려졌다. 그 구간을 60초 샘플러가 모든 DB에 대해 늘 남기는 tx/tm_lock_waiting
+    // (v$lock 요청 세션 수, 1분 해상도)으로 채워 "fill"로 내려준다 - 원본 DB 조회는 늘지 않는다. 3초마다 SQLite를 읽지
+    // 않게 DB별로 FILL_CACHE_MS 동안 재사용한다.
+    private static final long FILL_CACHE_MS = 30000L;
+    // 실시간 점이 이 거리 안에 있으면 그 1분 점은 쓰지 않는다(실시간 값이 있는 구간은 실시간 값만).
+    private static final long FILL_NEAR_LIVE_MS = 30000L;
+    private final Map<String, Object[]> fillCache = new ConcurrentHashMap<>(); // {조회 시각, List<{t, tx, tm}>}
+
     private final OracleConnectionPoolManager poolManager;
     private final MonitorService monitorService;
     private final MonitorStoreService storeService;
+    private final InstanceMetricHistoryService historyService;
 
     @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
     private int lockQueryTimeoutSeconds;
@@ -93,10 +103,11 @@ public class LockRealtimeService {
     private final Map<String, Map<Long, String>> objectNames = new ConcurrentHashMap<>();
 
     public LockRealtimeService(OracleConnectionPoolManager poolManager, MonitorService monitorService,
-                               MonitorStoreService storeService) {
+                               MonitorStoreService storeService, InstanceMetricHistoryService historyService) {
         this.poolManager = poolManager;
         this.monitorService = monitorService;
         this.storeService = storeService;
+        this.historyService = historyService;
     }
 
     // ------------------------------------------------------------------ 조회
@@ -361,6 +372,51 @@ public class LockRealtimeService {
         }
     }
 
+    /** 최근 10분 중 실시간 점이 없는 구간의 1분 샘플(tx/tm_lock_waiting) - {t, tx, tm}, 시각 오름차순. */
+    private List<Map<String, Object>> fillPoints(String dbId, List<Map<String, Object>> live) {
+        long now = System.currentTimeMillis();
+        Object[] cached = fillCache.get(dbId);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> coarse = cached != null && now - (Long) cached[0] < FILL_CACHE_MS
+                ? (List<Map<String, Object>>) cached[1] : null;
+        if (coarse == null) {
+            coarse = new ArrayList<>();
+            try {
+                long from = now - HISTORY_WINDOW_MS - FILL_CACHE_MS; // 캐시 동안 창이 밀려도 앞쪽이 모자라지 않게
+                Map<Long, Double> tm = new HashMap<>();
+                for (Map<String, Object> row : historyService.query(dbId, "tm_lock_waiting", from, now)) {
+                    tm.put((Long) row.get("sampledAt"), (Double) row.get("value"));
+                }
+                for (Map<String, Object> row : historyService.query(dbId, "tx_lock_waiting", from, now)) {
+                    Long t = (Long) row.get("sampledAt");
+                    Double tmv = tm.get(t);
+                    if (tmv == null) continue;
+                    Map<String, Object> p = new LinkedHashMap<>();
+                    p.put("t", t);
+                    p.put("tx", ((Double) row.get("value")).intValue());
+                    p.put("tm", tmv.intValue());
+                    coarse.add(p);
+                }
+                coarse.sort((a, b) -> Long.compare((Long) a.get("t"), (Long) b.get("t")));
+            } catch (Exception e) {
+                log.debug("lock fill query failed for {}: {}", dbId, e.toString());
+            }
+            fillCache.put(dbId, new Object[]{now, coarse});
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        long windowStart = now - HISTORY_WINDOW_MS;
+        int j = 0;
+        for (Map<String, Object> p : coarse) {
+            long t = (Long) p.get("t");
+            if (t < windowStart) continue;
+            // live는 시각 오름차순 - t 근처의 실시간 점만 본다
+            while (j < live.size() && (Long) live.get(j).get("t") < t - FILL_NEAR_LIVE_MS) j++;
+            boolean nearLive = j < live.size() && (Long) live.get(j).get("t") <= t + FILL_NEAR_LIVE_MS;
+            if (!nearLive) out.add(p);
+        }
+        return out;
+    }
+
     private Map<String, Object> toResponse(String dbId, Snapshot s) {
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("ts", s.at);
@@ -395,6 +451,7 @@ public class LockRealtimeService {
             }
         }
         r.put("history", hist);
+        r.put("fill", fillPoints(dbId, hist));
         Deque<Long> kills = killEvents.get(dbId);
         List<Long> killTs = new ArrayList<>();
         if (kills != null) {

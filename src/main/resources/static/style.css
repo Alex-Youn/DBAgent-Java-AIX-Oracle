@@ -1947,6 +1947,8 @@ body {
 .nd-lock .nd-plot { cursor: default; }
 .nd-lkarea { opacity: 0.18; }
 .nd-lkline { fill: none; stroke-width: 2; }
+/* 화면이 없던 구간을 60초 샘플로 채운 선 - 실시간(3초) 값이 아니라는 걸 흐린 점선으로 구분 */
+.nd-lkline-fill { fill: none; stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.55; }
 .nd-thl { stroke: var(--nd-warn); stroke-width: 1; stroke-dasharray: 4 4; opacity: 0.8; }
 .nd-incbg { fill: var(--nd-crit-bg); }
 .nd-killmk { stroke: var(--nd-crit); stroke-width: 1.5; }

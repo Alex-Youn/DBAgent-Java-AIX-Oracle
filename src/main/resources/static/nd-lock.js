@@ -184,14 +184,17 @@
         if (!plot || !svg) return;
         const d = st.last;
         const hist = d && d.history ? d.history : [];
-        if (hist.length < 1) { svg.innerHTML = ''; G = null; return; }
+        // 화면이 없던 구간(다른 메뉴·다른 DB)은 서버가 60초 샘플로 채워 준다(fill) - 흐린 점선, 툴팁에 "1분 샘플"
+        const fill = (d && d.fill ? d.fill : []).map(p => Object.assign({ coarse: true }, p));
+        const all = hist.concat(fill).sort((a, b) => a.t - b.t);
+        if (all.length < 1) { svg.innerHTML = ''; G = null; return; }
         const W = Math.max(220, plot.clientWidth), H = Math.max(60, plot.clientHeight);
         const ml = 30, mr = W < 420 ? 44 : 56, mt = 8, mb = 20, pw = W - ml - mr, ph = H - mt - mb;
-        const t1 = hist[hist.length - 1].t, t0 = Math.min(hist[0].t, t1 - 10 * 60000);
-        const mx = Math.max(TX_WARN + 1, ...hist.map(h => Math.max(h.tx, h.tm)));
+        const t1 = all[all.length - 1].t, t0 = Math.min(all[0].t, t1 - 10 * 60000);
+        const mx = Math.max(TX_WARN + 1, ...all.map(h => Math.max(h.tx, h.tm)));
         const step = mx <= 8 ? 2 : mx <= 20 ? 5 : 10, top = Math.ceil(mx * 1.1 / step) * step;
         const x = (t) => ml + (t - t0) / Math.max(1, t1 - t0) * pw, y = (v) => mt + ph - v / top * ph;
-        G = { W, ml, pw, t0, t1, x, hist };
+        G = { W, ml, pw, t0, t1, x, hist: all };
         svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
         svg.setAttribute('width', W);
         svg.setAttribute('height', H);
@@ -223,6 +226,16 @@
             for (let i = 1; i < pts.length; i++) p += `H${x(pts[i].t).toFixed(1)}V${y(pts[i][k]).toFixed(1)}`;
             return p;
         };
+        // 채운 구간: 실시간 점까지 포함해 이어 그려(빈칸 없이) 흐린 점선 한 겹을 깔고, 그 위에 실시간 선을 그린다 →
+        // 실시간 구간은 실선이 덮고, 비었던 구간만 점선으로 보인다. 1분 점 사이(샘플러 지연 포함 150초 초과)는 끊는다.
+        if (fill.length) {
+            const fsegs = [];
+            all.forEach((h, i) => { if (i === 0 || h.t - all[i - 1].t > 150000) fsegs.push([h]); else fsegs[fsegs.length - 1].push(h); });
+            fsegs.filter(pts => pts.some(p => p.coarse)).forEach(pts => {
+                s += `<path class="nd-lkline-fill" d="${path(pts, 'tm')}" style="stroke:${TM_COLOR}"/>`;
+                s += `<path class="nd-lkline-fill" d="${path(pts, 'tx')}" style="stroke:${TX_COLOR}"/>`;
+            });
+        }
         segs.forEach(pts => {
             const txd = path(pts, 'tx');
             s += `<path class="nd-lkarea" d="${txd}V${y(0).toFixed(1)}H${x(pts[0].t).toFixed(1)}Z" style="fill:${TX_COLOR}"/>`;
@@ -233,7 +246,7 @@
             const kx = x(k).toFixed(1);
             s += `<line class="nd-killmk" x1="${kx}" x2="${kx}" y1="${mt}" y2="${mt + ph}"/><text class="nd-killlbl" x="${+kx + 4}" y="${mt + 11}">KILL</text>`;
         });
-        const L = hist[hist.length - 1];
+        const L = hist.length ? hist[hist.length - 1] : all[all.length - 1];
         let ytx = y(L.tx), ytm = y(L.tm);
         if (Math.abs(ytx - ytm) < 14) { if (L.tx >= L.tm) { ytx = Math.min(ytx, ytm) - 7; ytm = ytx + 14; } else { ytm = Math.min(ytx, ytm) - 7; ytx = ytm + 14; } }
         s += `<circle cx="${x(L.t).toFixed(1)}" cy="${y(L.tx).toFixed(1)}" r="4" style="fill:${TX_COLOR};stroke:var(--nd-surface);stroke-width:2"/>`;
@@ -261,7 +274,7 @@
         if (!tip) return;
         const h = st.hover !== null && G ? G.hist.find(p => p.t === st.hover) : null;
         if (!h) { tip.hidden = true; return; }
-        tip.innerHTML = `<div class="nd-tip-t"><span>${hms(h.t)}</span><span>${h.incident ? '장애 조건' : '대기 세션'}</span></div>` +
+        tip.innerHTML = `<div class="nd-tip-t"><span>${hms(h.t)}</span><span>${h.coarse ? '1분 샘플(화면 밖 구간)' : h.incident ? '장애 조건' : '대기 세션'}</span></div>` +
             `<div class="nd-tip-r"><span class="nd-sw" style="background:${TX_COLOR}"></span><b>${h.tx}건</b><span>TX Lock</span></div>` +
             `<div class="nd-tip-r"><span class="nd-sw" style="background:${TM_COLOR}"></span><b>${h.tm}건</b><span>TM Lock</span></div>`;
         tip.hidden = false;
