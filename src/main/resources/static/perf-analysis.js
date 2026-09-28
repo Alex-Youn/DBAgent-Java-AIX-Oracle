@@ -207,7 +207,7 @@
             ? (total === 0 ? ' <button type="button" class="perf-link-btn" id="perf-src-toggle" data-src="oracle">원본 DB(ASH/AWR)에서 조회</button>' : '')
             : ' <button type="button" class="perf-link-btn" id="perf-src-toggle" data-src="store">수집 저장소로 돌아가기</button>';
         $('perf-meta').innerHTML = `조회 구간 <b>${esc(human(d.from))} ~ ${esc(human(d.to))}</b> · 데이터 <b>${esc(sourceText(d.source))}</b>` +
-            ` · ${d.step_minutes}분 막대 · CPU 코어 ${d.cpu_cores || '-'}` + empty + switchBtn;
+            ` · ${d.step_minutes}분 막대 · CPU ${d.cpu_cores || '-'}` + empty + switchBtn;
         const tg = $('perf-src-toggle');
         if (tg) tg.addEventListener('click', () => { st.source = tg.dataset.src; search(); });
         const datasets = CATS.map((c, i) => ({
@@ -220,7 +220,7 @@
         }));
         datasets.push({
             type: 'line',
-            label: `CPU 코어 수 (${d.cpu_cores || 0})`,
+            label: `CPU 수 (${d.cpu_cores || 0})`,
             data: series.map(p => ({ x: parseLocal(p.time).getTime(), y: d.cpu_cores || 0 })),
             borderColor: chartLineColor(0.6),
             borderDash: [5, 4],

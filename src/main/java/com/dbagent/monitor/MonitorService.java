@@ -389,8 +389,8 @@ public class MonitorService {
                     }
                 }
             }
-            // 코어 기준선은 60초 샘플러(ash_cpu_cores)와 같은 CpuCores 헬퍼로 읽는다 - NUM_CPU_CORES, 없으면
-            // NUM_CPUS(체크리스트 1-1, 2026-09-25). 화면마다 "코어 수"가 갈리지 않게 한 곳으로 모은다.
+            // CPU 기준선은 60초 샘플러(ash_cpu_cores)와 같은 CpuCores 헬퍼로 읽는다 - NUM_CPUS(2026-09-28 운영
+            // 실측으로 NUM_CPU_CORES에서 변경, CpuCores 주석 참고). 화면마다 CPU 수가 갈리지 않게 한 곳으로 모은다.
             cpuCores = CpuCores.query(conn);
         }
 

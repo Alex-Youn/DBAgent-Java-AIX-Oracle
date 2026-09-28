@@ -2430,7 +2430,7 @@ let layoutHTML = "";
         const cpuCores = data.cpu_cores || 0;
         const cpuLine = {
             type: 'line',
-            label: `CPU 코어 수 (${cpuCores})`,
+            label: `CPU 수 (${cpuCores})`,
             data: data.series.map(pt => ({ x: new Date(pt.time).getTime(), y: cpuCores })),
             borderColor: chartLineColor(0.6),
             borderDash: [5, 4],

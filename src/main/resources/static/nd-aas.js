@@ -294,15 +294,15 @@
         set('nd-kpi-avg', f1(avg));
         set('nd-kpi-avg-sub', esc(RANGE_LABEL[st.rangeKey]));
         set('nd-kpi-max', f1(mx.tot));
-        set('nd-kpi-max-sub', `${hm(mx.t)}${cores ? ' · 코어의 ' + Math.round(mx.tot / cores * 100) + '%' : ''}`);
+        set('nd-kpi-max-sub', `${hm(mx.t)}${cores ? ' · CPU의 ' + Math.round(mx.tot / cores * 100) + '%' : ''}`);
         if (!cores) {
             set('nd-kpi-over', '—');
-            set('nd-kpi-over-sub', '코어 수 확인 전');
+            set('nd-kpi-over-sub', 'CPU 수 확인 전');
             return;
         }
         const over = vals.filter(v => v.tot > cores).length;
         set('nd-kpi-over', `${over}<small>분</small>`);
-        const lvl = over === 0 ? { c: 'good', s: '●', t: '코어 이내 유지' } : over < 10 ? { c: 'serious', s: '◆', t: `코어 ${cores}개를 넘은 시간` } : { c: 'crit', s: '■', t: `코어 ${cores}개를 넘은 시간` };
+        const lvl = over === 0 ? { c: 'good', s: '●', t: 'CPU 이내 유지' } : over < 10 ? { c: 'serious', s: '◆', t: `CPU ${cores}개를 넘은 시간` } : { c: 'crit', s: '■', t: `CPU ${cores}개를 넘은 시간` };
         set('nd-kpi-over-sub', `<span class="nd-lvl nd-lvl-${lvl.c}">${lvl.s} ${esc(lvl.t)}</span>`);
     }
 
@@ -375,8 +375,8 @@
             const cy = y(cores).toFixed(1);
             s += `<line class="nd-corel" x1="${ml}" x2="${ml + pw}" y1="${cy}" y2="${cy}"/>`;
             s += mr > 36
-                ? `<text class="nd-corelbl" x="${ml + pw + 6}" y="${+cy - 2}">CPU 코어</text><text class="nd-corelbl" x="${ml + pw + 6}" y="${+cy + 11}">${cores}</text>`
-                : `<text class="nd-corelbl" x="${ml + pw - 4}" y="${+cy - 5}" text-anchor="end">CPU 코어 ${cores}</text>`;
+                ? `<text class="nd-corelbl" x="${ml + pw + 6}" y="${+cy - 2}">CPU</text><text class="nd-corelbl" x="${ml + pw + 6}" y="${+cy + 11}">${cores}</text>`
+                : `<text class="nd-corelbl" x="${ml + pw - 4}" y="${+cy - 5}" text-anchor="end">CPU ${cores}</text>`;
         }
         if (st.sel) {
             const xa = x(st.sel[0]), xb = x(st.sel[1]);
@@ -405,7 +405,7 @@
             }
             h += '</div>';
             const tv = visTotal(r.v);
-            h += `<div class="nd-tip-tot"><span>합계</span><b>${f1(tv)}${st.cores ? ' · 코어의 ' + Math.round(tv / st.cores * 100) + '%' : ''}</b></div>`;
+            h += `<div class="nd-tip-tot"><span>합계</span><b>${f1(tv)}${st.cores ? ' · CPU의 ' + Math.round(tv / st.cores * 100) + '%' : ''}</b></div>`;
         }
         tip.innerHTML = h;
         tip.hidden = false;
@@ -465,7 +465,7 @@
             const pct = Math.round(sums[top] / sums.reduce((p, q) => p + q, 0) * 100);
             msg = `<span class="nd-sw" style="background:${color(top)}"></span><b>${esc(CLS[top].n)} ${pct}%</b>가 가장 큽니다. ${esc(ACTION[CLS[top].k])}`;
             if (st.cores && avg > st.cores) {
-                msg += ` <b class="nd-crit-t">구간 평균이 CPU 코어 ${st.cores}개를 넘어 세션이 대기열에 쌓이고 있습니다.</b>`;
+                msg += ` <b class="nd-crit-t">구간 평균이 CPU ${st.cores}개를 넘어 세션이 대기열에 쌓이고 있습니다.</b>`;
             }
         }
         box.innerHTML = `<div class="nd-banner-title">${esc(title)}</div><div class="nd-banner-msg">${msg}</div>`;
