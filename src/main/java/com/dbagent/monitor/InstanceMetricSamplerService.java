@@ -86,6 +86,15 @@ public class InstanceMetricSamplerService {
 
     // 앱 기동·신규 DB 등록 시 ASH로 채워 넣는 과거 구간(분) - C3.
     private static final int BACKFILL_MINUTES = 60;
+    // 빈 분 보정(fillGaps) - 10분마다 최근 15분(방금 끝난 2분 제외)을 본다.
+    private static final long GAP_FILL_INTERVAL_MS = 600_000L;
+    private static final int GAP_FILL_MINUTES = 15;
+    private static final int GAP_FILL_LAG_MINUTES = 2;
+    private static final ExecutorService GAP_FILL_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "ash-gap-fill");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final OracleConnectionPoolManager poolManager;
     private final DatabaseConfigService configService;
@@ -109,7 +118,7 @@ public class InstanceMetricSamplerService {
     private int lockQueryTimeoutSeconds;
 
     // ash_* 계열(아래 sampleOne() 참고) 카운트를 AAS로 정규화할 때 쓰는 창 길이 - sampleAll()의
-    // @Scheduled 주기(fixedDelayString)와 반드시 같은 값이어야 한다(그래야 "최근 N초"에 실제로 샘플링
+    // @Scheduled 주기(fixedRateString)와 반드시 같은 값이어야 한다(그래야 "최근 N초"에 실제로 샘플링
     // 공백이 안 생김). 두 곳이 같은 프로퍼티 키를 읽으므로 값이 어긋날 일은 없다.
     @Value("${dbagent.monitor.metric-sample-interval-seconds:60}")
     private int sampleIntervalSeconds;
@@ -122,7 +131,10 @@ public class InstanceMetricSamplerService {
         this.perfStore = perfStore;
     }
 
-    @Scheduled(fixedDelayString = "${dbagent.monitor.metric-sample-interval-seconds:60}000")
+    // fixedRate(2026-09-28): fixedDelay는 "사이클이 끝난 뒤 60초"라 실제 간격이 60초 + 사이클 소요(가장 느린 DB)였다 -
+    // 80초 간격이 흔해 1분 칸이 몇 분마다 비었다(추이 차트 중간 공백). 시작 기준 60초로 고정한다. 한 사이클이 60초를
+    // 넘기면 Spring이 겹쳐 돌리지 않고 끝나자마자 다음을 시작한다. 그래도 빈 분은 fillGaps()가 ASH로 채운다.
+    @Scheduled(fixedRateString = "${dbagent.monitor.metric-sample-interval-seconds:60}000")
     void sampleAll() {
         long sampledAt = System.currentTimeMillis();
         List<CompletableFuture<SampleResult>> futures = configService.listAllInstances().stream()
@@ -180,7 +192,28 @@ public class InstanceMetricSamplerService {
     }
 
     void backfillAsync(TargetDbConfig target) {
-        CompletableFuture.runAsync(() -> backfill(target), SAMPLER_EXECUTOR);
+        CompletableFuture.runAsync(() -> backfill(target, BACKFILL_MINUTES, 0), SAMPLER_EXECUTOR);
+    }
+
+    /**
+     * 빈 분 보정(2026-09-28): 정기 샘플이 늦거나 실패해 비어 버린 분을 GAP_FILL_MINUTES분 구간 ASH로 채운다. 이미 샘플이
+     * 있는 분은 건너뛰므로 평소엔 쓰는 행이 없다. 방금 끝난 GAP_FILL_LAG_MINUTES분은 정기 샘플이 아직 기록 전일 수
+     * 있어 제외한다(같은 칸에 두 점이 생기지 않게). 샘플링과 풀을 나눠 쓰도록 전용 단일 스레드에서 DB를 차례로 돈다.
+     */
+    @Scheduled(fixedDelay = GAP_FILL_INTERVAL_MS, initialDelay = GAP_FILL_INTERVAL_MS)
+    void fillGaps() {
+        List<TargetDbConfig> targets;
+        try {
+            targets = configService.listAllInstances();
+        } catch (RuntimeException e) {
+            log.warn("ASH gap fill skipped - could not load DB instances: {}", e.toString());
+            return;
+        }
+        for (TargetDbConfig target : targets) {
+            if ("oracle".equalsIgnoreCase(target.dbType())) {
+                GAP_FILL_EXECUTOR.execute(() -> backfill(target, GAP_FILL_MINUTES, GAP_FILL_LAG_MINUTES));
+            }
+        }
     }
 
     /** C4: 화면 구간을 DB 시각으로 바꿀 때 쓰는 "DB SYSDATE - 앱 시각"(ms), 아직 모르면 null. */
@@ -538,7 +571,7 @@ public class InstanceMetricSamplerService {
      * 분은 건너뜀). 각 분의 값은 그 분이 끝나는 시각(앱 시각으로 변환)에 기록한다. ASH가 그만큼 거슬러 올라가지
      * 못하면(인메모리 보관 범위 밖) ASH에 남아 있는 가장 오래된 온전한 분부터만 채운다 - 모르는 분을 0으로 채우지 않는다.
      */
-    private void backfill(TargetDbConfig target) {
+    private void backfill(TargetDbConfig target, int minutes, int lagMinutes) {
         try (Connection conn = poolManager.getConnection(target)) {
             long offset = refreshClockOffset(conn, target.id());
             String dbNowMinute;
@@ -552,8 +585,9 @@ public class InstanceMetricSamplerService {
                 dbNowMinute = rs.getString(1);
                 oldestMinute = rs.getString(2); // 가장 오래된 샘플이 속한 분의 다음 분 - 그 분부터 온전하다
             }
-            LocalDateTime end = LocalDateTime.parse(dbNowMinute, BUCKET_FORMAT); // 이 분은 아직 진행 중이라 제외
-            LocalDateTime start = end.minusMinutes(BACKFILL_MINUTES);
+            // 이 분은 아직 진행 중이라 제외, lagMinutes만큼 최근 분도 제외(fillGaps - 정기 샘플 기록 전일 수 있음)
+            LocalDateTime end = LocalDateTime.parse(dbNowMinute, BUCKET_FORMAT).minusMinutes(lagMinutes);
+            LocalDateTime start = end.minusMinutes(minutes);
             if (oldestMinute != null) {
                 LocalDateTime oldest = LocalDateTime.parse(oldestMinute, BUCKET_FORMAT);
                 if (oldest.isAfter(start)) start = oldest;
@@ -628,7 +662,8 @@ public class InstanceMetricSamplerService {
                             ps.setString(2, e0.format(BUCKET_FORMAT));
                         }, have);
                 savePerf(target.id(), perf);
-                log.info("perf backfill for db_id={}: {} row(s)", target.id(), perf.rows.size());
+                // 10분마다 도는 fillGaps는 평소 0행이라 로그를 남기지 않는다
+                if (!perf.rows.isEmpty()) log.info("perf backfill for db_id={}: {} row(s)", target.id(), perf.rows.size());
             } catch (Exception perfFailed) {
                 log.warn("perf backfill skipped for db_id={}: {}", target.id(), perfFailed.toString());
             }
