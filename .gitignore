@@ -10,7 +10,8 @@ __pycache__/
 /maven39/bin/
 /maven39/boot/*.jar
 /maven39/lib/*.jar
-/target/*.jar
+# 빌드 산출물 - 빌드할 때마다 바뀌어 status를 어지럽혀 통째로 추적 해제(2026-09-30 오케스트레이터 결정)
+/target/
 /dist/*.jar
 .gradle/
 build/
