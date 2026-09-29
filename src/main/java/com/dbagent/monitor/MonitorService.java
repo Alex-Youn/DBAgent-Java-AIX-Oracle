@@ -56,6 +56,13 @@ public class MonitorService {
 
     private final Map<String, Instant> busySince = new ConcurrentHashMap<>();
 
+    /**
+     * 지금 접속한 인스턴스 번호(SQL 식). "누가 이 세션에 막혀 있나"를 v$session.blocking_session으로 셀 때
+     * blocking_instance = 이 값을 같이 건다 - blocking_session은 SID 번호일 뿐이라, 다른 RAC 노드 세션에 막힌 대기를
+     * 같은 번호의 이 노드 세션이 막은 것으로 잘못 세지 않게(2026-09-29 점검). 노드 간 통신 없는 로컬 값이다(gv$ 아님).
+     */
+    static final String LOCAL_INSTANCE = "TO_NUMBER(SYS_CONTEXT('USERENV', 'INSTANCE'))";
+
     // ASH 시간대별 집계(getAshActivity)는 v$lock류보다 스캔 범위가 넓어(최근 N분 전체 샘플) lock-query-
     // timeout-seconds(3초, 락 조회 전용값)보다 여유를 둔다 - 별도 프로퍼티로 분리.
     @Value("${dbagent.monitor.ash-activity-query-timeout-seconds:10}")
@@ -109,96 +116,252 @@ public class MonitorService {
     }
 
     // ---------------------------------------------------------------- tmlock
+    // Lock Holder/Waiter Tree 화면용 object_id → OWNER.NAME 캐시(DB별). 매 호출 dba_objects 조인 대신 모르는 id만 한 번 조회
+    // (LockRealtimeService.objectNames와 같은 방식 - 그쪽이 MonitorService를 주입받아 서로 참조할 수 없어 따로 둔다).
+    private final Map<String, Map<Long, String>> lockObjectNames = new ConcurrentHashMap<>();
+
+    /**
+     * Holder마다 그 세션을 기다리는 waiters를 붙인 목록(응답 형식은 예전과 같음 - app.js가 트리로 편다).
+     *
+     * 관계는 v$session.blocking_session으로 만든다(2026-09-29 오케스트레이터 결정). 예전엔 v$lock을 자기 자신과
+     * id1/id2로 조인했는데, 앱 계정(dbagent_user, DBA 롤)으로 보면 v$lock에서 대기 세션의 요청 행이 일부 빠져
+     * Waiter가 사라졌다(로컬 XE 실측: TM 대기 3개 중 1~2개 누락 - SYS로는 보임, 새 대시보드 tmWait는 3개로 정확).
+     * v$session의 blocking_session·대기 이벤트·p1/p2·row_wait_obj#는 두 계정 모두 정확했다. 예전 조인엔 Lock 종류
+     * (type) 비교도 없었고, 매 호출 dba_objects 조인도 했다.
+     *
+     * - Waiter: 'enq:%' 대기 중이고 blocking_session이 있는 세션. Lock 종류·요청 모드는 p1('name|mode'),
+     *   대상 객체는 TM이면 p2(object_id), 그 밖엔 row_wait_obj#, 시간은 현재 대기 시간(초)
+     * - Holder: Waiter의 blocking_session으로 지목된 세션. 보유 Lock 종류·모드·시간은 v$lock의 block>0 행
+     *   (Holder 행은 앱 계정에서도 보였다). 그 조회가 실패·타임아웃이면 Waiter가 요청한 종류로 채우고 모드·시간은 비운다
+     * - enq 이외 대기(log file sync 등)는 넣지 않는다 - 예전 v$lock 기준 화면과 같은 범위
+     */
     public List<Map<String, Object>> getTmLocks(TargetDbConfig target) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
-            // inst_id 는 더 이상 내려보내지 않는다(2026-09-06 사용자 지시). RAC 환경이라도 gv$ 를
-            // 쓰지 않기로 확정했기 때문이다 - 실제 RAC 에서 gv$ 기반 Lock/세션 조회는 인스턴스 간
-            // 조정 비용 때문에 성능 저하가 발생한다. 이 쿼리는 원래도 v$ 만 쓰고 inst_id 는 별도
-            // 조회(getInstId)로 채워 넣던 값이라, 빼도 조회 방식은 달라지지 않는다.
-            // 대신 화면 맨 끝에 OS User(v$session.osuser)를 넣는다 - 어느 OS 계정이 건 세션인지가
-            // 실제 조치할 때 훨씬 쓸모 있다.
-            String query = "SELECT " +
-                    "hl.sid AS holder_sid, hs.serial# AS holder_serial, " +
-                    "hp.spid AS holder_spid, NVL(hs.username, 'UNKNOWN') AS holder_username, hl.type AS holder_lock_type, " +
-                    "DECODE(hl.lmode, 0, 'None', 1, 'Null', 2, 'Row-S', 3, 'Row-X', 4, 'Share', 5, 'S/Row-X', 6, 'Exclusive', TO_CHAR(hl.lmode)) AS holder_mode, " +
-                    "o.object_name AS holder_object_waiting, TO_CHAR(hl.ctime) AS holder_time, " +
-                    "TO_CHAR(hs.logon_time, 'YYYY-MM-DD HH24:MI:SS') AS holder_login, hs.status AS holder_status, " +
-                    "hs.program AS holder_program, hs.machine AS holder_machine, hs.osuser AS holder_osuser, " +
-                    "wl.sid AS waiter_sid, ws.serial# AS waiter_serial, " +
-                    "wp.spid AS waiter_spid, NVL(ws.username, 'UNKNOWN') AS waiter_username, wl.type AS waiter_lock_type, " +
-                    "DECODE(wl.request, 0, 'None', 1, 'Null', 2, 'Row-S', 3, 'Row-X', 4, 'Share', 5, 'S/Row-X', 6, 'Exclusive', TO_CHAR(wl.request)) AS waiter_mode, " +
-                    "o.object_name AS waiter_object_waiting, TO_CHAR(wl.ctime) AS waiter_time, " +
-                    "TO_CHAR(ws.logon_time, 'YYYY-MM-DD HH24:MI:SS') AS waiter_login, ws.status AS waiter_status, " +
-                    "ws.program AS waiter_program, ws.machine AS waiter_machine, ws.osuser AS waiter_osuser " +
-                    "FROM v$lock hl " +
-                    "JOIN v$session hs ON hl.sid = hs.sid " +
-                    "LEFT JOIN v$process hp ON hs.paddr = hp.addr " +
-                    "LEFT JOIN v$lock wl ON hl.id1 = wl.id1 AND hl.id2 = wl.id2 AND wl.request > 0 " +
-                    "LEFT JOIN v$session ws ON wl.sid = ws.sid " +
-                    "LEFT JOIN v$process wp ON ws.paddr = wp.addr " +
-                    "LEFT JOIN dba_objects o ON hl.id1 = o.object_id AND hl.type = 'TM' " +
-                    "WHERE hl.block = 1";
+            // RAC: blocking_session은 SID 번호일 뿐이라 막는 세션이 다른 인스턴스(blocking_instance)면 같은 번호의 이 인스턴스
+            // 세션은 전혀 다른 세션이다 - 그걸 Holder로 보여 주면 KILL 대상이 엉뚱해진다(2026-09-29 점검). 이 인스턴스의
+            // Holder만 v$session·v$lock에서 찾고, 다른 인스턴스 Holder는 "다른 인스턴스"로만 표시한다(SERIAL# 없음 = KILL 불가).
+            // 두 번의 단순 조회로 나눈다(2026-09-29 실운영 실측): 예전엔 "대기 조건 OR sid IN (v$session 서브쿼리)" 한 문장이었는데
+            // 실운영에서 7.1초(앱 타임아웃 3초 → 메뉴가 매번 조회 실패) - OR+서브쿼리라 v$session 행마다 v$session을 다시 훑었다.
+            // ① 대기 세션: v$session을 한 번만 훑는다(같은 형태의 대시보드 대기 건수 쿼리 실운영 0.00초)
+            // ② Holder 세션: ①에서 나온 이 인스턴스 Holder SID 목록으로 직접 찾는다(대기가 없으면 안 함)
+            Map<Integer, Map<String, Object>> rows = new LinkedHashMap<>();
+            List<Map<String, Object>> waiterRows = new ArrayList<>();
+            readLockSessions(conn, "s.blocking_session IS NOT NULL AND s.event LIKE 'enq:%'", null, rows, waiterRows);
+            if (waiterRows.isEmpty()) {
+                return new ArrayList<>();
+            }
+            java.util.Set<Integer> needHolders = new java.util.TreeSet<>();
+            for (Map<String, Object> w : waiterRows) {
+                Integer sid = (Integer) w.get("blocker");
+                if (w.get("blockerInst") == null && !rows.containsKey(sid)) needHolders.add(sid);
+            }
+            // IN 목록 한도(ORA-01795) - 넘치면 Holder 세션 정보 없이(UNKNOWN) 트리만 보여 준다
+            if (!needHolders.isEmpty() && needHolders.size() <= 900) {
+                readLockSessions(conn, "s.sid IN (" + String.join(",", Collections.nCopies(needHolders.size(), "?")) + ")",
+                        needHolders, rows, null);
+            }
 
-            Map<Integer, Map<String, Object>> holdersMap = new LinkedHashMap<>();
-            // 사용자 실측: 이 환경 일부 인스턴스에서 v$lock 스캔 자체가 49초까지 걸릴 수 있음(enqueue
-            // 해시체인이 김) - 이 쿼리는 그 위에 자기 자신과의 self-join까지 더해져 더 무겁다. Lock
-            // Holder/Waiter Tree 화면이 열려있는 동안 반복 호출되므로(2026-09-14), 짧은 타임아웃으로
-            // 캡을 걸어 느리면 빨리 실패시킨다 - 이 메서드는 throws SQLException 이라 타임아웃도 평소
-            // DB 오류처럼 MonitorController가 그대로 dbError()로 응답한다(별도 폴백 불필요).
-            try (Statement st = conn.createStatement()) {
-                st.setQueryTimeout(lockQueryTimeoutSeconds);
-                try (ResultSet rs = st.executeQuery(query)) {
-                while (rs.next()) {
-                    int hSid = rs.getInt("holder_sid");
-                    Map<String, Object> holder = holdersMap.computeIfAbsent(hSid, k -> {
-                        Map<String, Object> h = new LinkedHashMap<>();
-                        try {
-                            h.put("sid", hSid);
-                            h.put("serial", rs.getObject("holder_serial"));
-                            h.put("spid", rs.getString("holder_spid"));
-                            h.put("username", rs.getString("holder_username"));
-                            h.put("lock_type", rs.getString("holder_lock_type"));
-                            h.put("mode", rs.getString("holder_mode"));
-                            h.put("object_waiting", rs.getString("holder_object_waiting"));
-                            h.put("time", rs.getString("holder_time"));
-                            h.put("login", rs.getString("holder_login"));
-                            h.put("status", rs.getString("holder_status"));
-                            h.put("program", rs.getString("holder_program"));
-                            h.put("machine", rs.getString("holder_machine"));
-                            h.put("osuser", rs.getString("holder_osuser"));
-                            h.put("is_holder", true);
-                            h.put("waiters", new ArrayList<Map<String, Object>>());
-                        } catch (SQLException e) {
-                            throw new RuntimeException(e);
+            // Holder 목록: 이 인스턴스 SID 오름차순, 다른 인스턴스는 그 뒤에 {인스턴스, SID}.
+            java.util.Set<Integer> localHolders = new java.util.TreeSet<>();
+            Map<String, int[]> remoteHolders = new java.util.TreeMap<>();
+            for (Map<String, Object> w : waiterRows) {
+                Integer inst = (Integer) w.get("blockerInst");
+                int sid = (Integer) w.get("blocker");
+                if (inst == null) localHolders.add(sid);
+                else remoteHolders.put(String.format("%05d:%08d", inst, sid), new int[]{inst, sid});
+            }
+            // 이 인스턴스 Holder의 보유 Lock(종류·모드·시간·TM 객체) - Holder 수만큼만 v$lock에서 찾는다.
+            // IN 목록은 1000개가 한도(ORA-01795)라 넘치면 건너뛴다(트리는 그대로, 보유 모드·시간만 빈칸).
+            Map<Integer, List<Object[]>> heldLocks = new LinkedHashMap<>(); // sid → [{type, lmode, ctime, id1}]
+            if (!localHolders.isEmpty() && localHolders.size() <= 900) {
+                String in = String.join(",", Collections.nCopies(localHolders.size(), "?"));
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT sid, type, lmode, ctime, id1 FROM v$lock WHERE block > 0 AND sid IN (" + in + ")")) {
+                    ps.setQueryTimeout(lockQueryTimeoutSeconds);
+                    int i = 1;
+                    for (Integer sid : localHolders) ps.setInt(i++, sid);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            heldLocks.computeIfAbsent(rs.getInt(1), k -> new ArrayList<>())
+                                    .add(new Object[]{rs.getString(2), rs.getInt(3), rs.getLong(4), rs.getLong(5)});
                         }
-                        return h;
-                    });
-
-                    Object waiterSid = rs.getObject("waiter_sid");
-                    if (waiterSid != null) {
-                        Map<String, Object> waiter = new LinkedHashMap<>();
-                        waiter.put("sid", waiterSid);
-                        waiter.put("serial", rs.getObject("waiter_serial"));
-                        waiter.put("spid", rs.getString("waiter_spid"));
-                        waiter.put("username", rs.getString("waiter_username"));
-                        waiter.put("lock_type", rs.getString("waiter_lock_type"));
-                        waiter.put("mode", rs.getString("waiter_mode"));
-                        waiter.put("object_waiting", rs.getString("waiter_object_waiting"));
-                        waiter.put("time", rs.getString("waiter_time"));
-                        waiter.put("login", rs.getString("waiter_login"));
-                        waiter.put("status", rs.getString("waiter_status"));
-                        waiter.put("program", rs.getString("waiter_program"));
-                        waiter.put("machine", rs.getString("waiter_machine"));
-                        waiter.put("osuser", rs.getString("waiter_osuser"));
-                        waiter.put("is_holder", false);
-                        @SuppressWarnings("unchecked")
-                        List<Map<String, Object>> waiters = (List<Map<String, Object>>) holder.get("waiters");
-                        waiters.add(waiter);
                     }
-                }
+                } catch (SQLException e) {
+                    // 트리(누가 누구를 막는가)는 v$session만으로 이미 정확하므로 보유 모드·시간만 비우고 계속한다.
+                    log.warn("tmlock holder v$lock lookup failed for db_id={}: {}", target.id(), e.toString());
                 }
             }
-            return new ArrayList<>(holdersMap.values());
+
+            List<int[]> holderKeys = new ArrayList<>(); // {인스턴스(이 인스턴스면 -1), SID}
+            for (Integer sid : localHolders) holderKeys.add(new int[]{-1, sid});
+            holderKeys.addAll(remoteHolders.values());
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (int[] key : holderKeys) {
+                Integer hInst = key[0] < 0 ? null : key[0];
+                Integer hSid = key[1];
+                List<Map<String, Object>> myWaiters = new ArrayList<>();
+                java.util.Set<String> waitedTypes = new java.util.HashSet<>();
+                for (Map<String, Object> w : waiterRows) {
+                    if (hSid.equals(w.get("blocker")) && java.util.Objects.equals(hInst, w.get("blockerInst"))) {
+                        myWaiters.add(w);
+                        waitedTypes.add((String) w.get("lock_type"));
+                    }
+                }
+                Map<String, Object> base = hInst == null ? rows.get(hSid) : null;
+                Map<String, Object> h = new LinkedHashMap<>();
+                h.put("sid", hSid);
+                h.put("serial", base != null ? base.get("serial") : "");
+                h.put("spid", base != null ? base.get("spid") : null);
+                // 다른 RAC 인스턴스의 세션이거나 그사이 끝난 세션이면 여기 없다 - 대기자는 그래도 보여 준다.
+                h.put("username", base != null ? base.get("username")
+                        : (hInst != null ? "(다른 인스턴스 " + hInst + ")" : "UNKNOWN"));
+                if (hInst != null) h.put("inst", hInst); // 화면 트리가 같은 SID의 이 인스턴스 세션과 섞지 않게
+                // 대기자가 요청한 종류와 같은 보유 Lock을 고른다(한 세션이 TM·TX를 함께 막고 있을 수 있음).
+                Object[] held = null;
+                for (Object[] l : heldLocks.getOrDefault(hSid, Collections.<Object[]>emptyList())) {
+                    if (held == null || (waitedTypes.contains(l[0]) && !waitedTypes.contains(held[0]))) held = l;
+                }
+                String type = held != null ? (String) held[0] : (String) myWaiters.get(0).get("lock_type");
+                h.put("lock_type", type);
+                h.put("mode", held != null ? lockModeName((Integer) held[1]) : null);
+                // TM이면 잠근 테이블, 그 밖(TX 등)은 대기자가 기다리는 객체를 보여 준다.
+                h.put("objId", held != null && "TM".equals(held[0]) ? held[3] : myWaiters.get(0).get("objId"));
+                h.put("time", held != null ? held[2] : null);
+                h.put("login", base != null ? base.get("login") : null);
+                h.put("status", base != null ? base.get("status") : null);
+                h.put("program", base != null ? base.get("program") : null);
+                h.put("machine", base != null ? base.get("machine") : null);
+                h.put("osuser", base != null ? base.get("osuser") : null);
+                h.put("is_holder", true);
+                List<Map<String, Object>> ws = new ArrayList<>();
+                for (Map<String, Object> w : myWaiters) {
+                    Map<String, Object> out = new LinkedHashMap<>(w);
+                    out.remove("blocker");
+                    out.remove("blockerInst");
+                    out.put("is_holder", false);
+                    ws.add(out);
+                }
+                h.put("waiters", ws);
+                result.add(h);
+            }
+            resolveLockObjectNames(conn, target.id(), result);
+            return result;
+        }
+    }
+
+    /**
+     * getTmLocks용 v$session 조회 - where 조건(바인드는 sids)으로 읽어 rows(sid → 세션 정보)에 넣고, waiterRows가 있으면
+     * 'enq:' 대기 중이고 막힌 세션을 Waiter로도 모은다. RAC: blocking_session은 SID 번호일 뿐이라 막는 세션이 다른
+     * 인스턴스(blocking_instance)면 같은 번호의 이 인스턴스 세션은 전혀 다른 세션이다 - 그걸 Holder로 보여 주면 KILL 대상이
+     * 엉뚱해진다. 다른 인스턴스 Holder는 blockerInst로 표시만 한다(SERIAL# 없음 = KILL 불가).
+     */
+    private void readLockSessions(Connection conn, String where, java.util.Collection<Integer> sids,
+                                  Map<Integer, Map<String, Object>> rows, List<Map<String, Object>> waiterRows) throws SQLException {
+        String sql = "SELECT s.sid, s.serial# AS serial, p.spid, NVL(s.username, 'UNKNOWN') AS username, " +
+                "s.blocking_session, s.blocking_instance AS blocking_inst, " +
+                LOCAL_INSTANCE + " AS my_inst, " +
+                "s.event, s.p1, s.p2, s.row_wait_obj# AS row_obj, " +
+                "CASE WHEN s.state = 'WAITING' THEN ROUND(s.wait_time_micro / 1e6) END AS wait_sec, " +
+                "TO_CHAR(s.logon_time, 'YYYY-MM-DD HH24:MI:SS') AS login, s.status, s.program, s.machine, s.osuser " +
+                "FROM v$session s LEFT JOIN v$process p ON s.paddr = p.addr WHERE " + where;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setQueryTimeout(lockQueryTimeoutSeconds);
+            if (sids != null) {
+                int i = 1;
+                for (Integer sid : sids) ps.setInt(i++, sid);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> r = new LinkedHashMap<>();
+                    r.put("sid", rs.getInt("sid"));
+                    r.put("serial", rs.getObject("serial"));
+                    r.put("spid", rs.getString("spid"));
+                    r.put("username", rs.getString("username"));
+                    r.put("login", rs.getString("login"));
+                    r.put("status", rs.getString("status"));
+                    r.put("program", rs.getString("program"));
+                    r.put("machine", rs.getString("machine"));
+                    r.put("osuser", rs.getString("osuser"));
+                    rows.put(rs.getInt("sid"), r);
+                    if (waiterRows == null) continue;
+                    long blocker = rs.getLong("blocking_session");
+                    boolean blocked = !rs.wasNull(); // wasNull은 바로 앞 컬럼 기준이라 event보다 먼저 확인
+                    long bInst = rs.getLong("blocking_inst");
+                    boolean bInstKnown = !rs.wasNull();
+                    int myInst = rs.getInt("my_inst");
+                    String event = rs.getString("event");
+                    if (blocked && event != null && event.startsWith("enq:")) {
+                        long p1 = rs.getLong("p1");
+                        String type = enqueueType(p1);
+                        long objId = "TM".equals(type) ? rs.getLong("p2") : rs.getLong("row_obj");
+                        Map<String, Object> w = new LinkedHashMap<>(r);
+                        w.put("blocker", (int) blocker);
+                        // 다른 인스턴스 Holder면 그 인스턴스 번호, 이 인스턴스면 null
+                        w.put("blockerInst", bInstKnown && bInst != myInst ? (Integer) (int) bInst : null);
+                        w.put("lock_type", type);
+                        w.put("mode", lockModeName((int) (p1 & 0xFFFF)));
+                        w.put("objId", objId > 0 ? objId : null);
+                        Object waitSec = rs.getObject("wait_sec");
+                        w.put("time", waitSec == null ? null : ((Number) waitSec).longValue());
+                        waiterRows.add(w);
+                    }
+                }
+            }
+        }
+    }
+
+    /** 대기 이벤트 p1('name|mode')의 상위 2바이트 = Lock 종류 두 글자(예: 0x544D0003 → TM, 모드 3). */
+    private static String enqueueType(long p1) {
+        char a = (char) ((p1 >> 24) & 0xFF), b = (char) ((p1 >> 16) & 0xFF);
+        return Character.isLetterOrDigit(a) && Character.isLetterOrDigit(b) ? "" + a + b : "?";
+    }
+
+    private static String lockModeName(int mode) {
+        switch (mode) {
+            case 0: return "None";
+            case 1: return "Null";
+            case 2: return "Row-S";
+            case 3: return "Row-X";
+            case 4: return "Share";
+            case 5: return "S/Row-X";
+            case 6: return "Exclusive";
+            default: return String.valueOf(mode);
+        }
+    }
+
+    /** objId를 object_waiting(OWNER.NAME)으로 바꾼다. 모르는 id만 한 번 조회해 캐시, 실패하면 OBJ#id. */
+    private void resolveLockObjectNames(Connection conn, String dbId, List<Map<String, Object>> holders) {
+        Map<Long, String> names = lockObjectNames.computeIfAbsent(dbId, k -> new ConcurrentHashMap<>());
+        List<Map<String, Object>> all = new ArrayList<>();
+        for (Map<String, Object> h : holders) {
+            all.add(h);
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> ws = (List<Map<String, Object>>) h.get("waiters");
+            all.addAll(ws);
+        }
+        java.util.Set<Long> unknown = new java.util.HashSet<>();
+        for (Map<String, Object> m : all) {
+            Long id = (Long) m.get("objId");
+            if (id != null && !names.containsKey(id)) unknown.add(id);
+        }
+        if (!unknown.isEmpty() && unknown.size() <= 500) {
+            String in = String.join(",", Collections.nCopies(unknown.size(), "?"));
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT object_id, owner || '.' || object_name FROM dba_objects WHERE object_id IN (" + in + ")")) {
+                ps.setQueryTimeout(lockQueryTimeoutSeconds);
+                int i = 1;
+                for (Long id : unknown) ps.setLong(i++, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) names.put(rs.getLong(1), rs.getString(2));
+                }
+            } catch (SQLException e) {
+                log.debug("tmlock object name lookup skipped: {}", e.toString());
+            }
+            if (names.size() > 5000) names.clear(); // 캐시 상한 - 객체가 계속 바뀌는 환경 대비
+        }
+        for (Map<String, Object> m : all) {
+            Long id = (Long) m.remove("objId");
+            m.put("object_waiting", id == null ? null : names.getOrDefault(id, "OBJ#" + id));
         }
     }
 
@@ -1050,8 +1213,11 @@ public class MonitorService {
         List<Object> tmSids = new ArrayList<>();
         try (Statement st = conn.createStatement()) {
             st.setQueryTimeout(lockQueryTimeoutSeconds);
+            // v$lock request>0 대신 v$session 대기 이벤트로 찾는다(2026-09-29): 앱 계정(dbagent_user, DBA 롤)으로 보면 v$lock에서
+            // 대기 요청 행이 일부 빠져 TM 대기 세션이 누락됐다(로컬 XE 실측 3개 중 2개 누락, SYS로는 보임). 세션당 1행이라 DISTINCT 불필요.
             try (ResultSet rs = st.executeQuery(
-                    "SELECT DISTINCT sid, type FROM v$lock WHERE request > 0 AND type IN ('TX', 'TM')")) {
+                    "SELECT sid, CASE WHEN event LIKE 'enq: TM%' THEN 'TM' ELSE 'TX' END AS type FROM v$session " +
+                            "WHERE state = 'WAITING' AND (event LIKE 'enq: TX%' OR event LIKE 'enq: TM%')")) {
                 while (rs.next()) {
                     Object sid = rs.getObject("sid");
                     String type = rs.getString("type");
@@ -1373,7 +1539,8 @@ public class MonitorService {
                         "SELECT DISTINCT s.sid FROM v$session s " +
                                 "JOIN v$lock l ON s.sid = l.sid " +
                                 "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= " + tmHolderLastCallEtSeconds + " " +
-                                "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid) AND ROWNUM <= 3")) {
+                                "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid " +
+                                "AND w.blocking_instance = " + LOCAL_INSTANCE + ") AND ROWNUM <= 3")) {
                     while (rs.next()) {
                         String sid = String.valueOf(rs.getInt("sid"));
                         alerts.add(alertItem("warning", "Blocking Session 감지(SID " + sid + ")", sid));
@@ -1816,7 +1983,7 @@ public class MonitorService {
         String query = "SELECT /*+ rule */ count(distinct s.sid) FROM v$session s " +
                 "JOIN v$lock l ON s.sid = l.sid " +
                 "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= " + tmHolderLastCallEtSeconds + " " +
-                "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid)";
+                "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid AND w.blocking_instance = " + LOCAL_INSTANCE + ")";
 
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
             // getActiveAlerts()의 v$lock 조인과 같은 이유로 타임아웃을 건다(사용자 실측: 이 환경 일부
@@ -1955,6 +2122,7 @@ public class MonitorService {
     // 순수 삭제만 된 경우에도 엔트리가 영원히 누적된다.
     public void clearBusyState(String targetId) {
         busySince.remove(targetId);
+        lockObjectNames.remove(targetId);
     }
 
     /**

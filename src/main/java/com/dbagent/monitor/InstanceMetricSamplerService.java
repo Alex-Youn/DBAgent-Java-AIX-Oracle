@@ -117,6 +117,10 @@ public class InstanceMetricSamplerService {
     @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
     private int lockQueryTimeoutSeconds;
 
+    // TX 대기 기준을 대시보드 Lock 실시간(LockRealtimeService)과 맞춘다 - 이 값이 차트 빈 구간(fill)을 채우므로 두 선이 같은 정의여야 한다.
+    @Value("${dbagent.monitor.lock-tx-row-lock-only:false}")
+    private boolean txRowLockOnly;
+
     // ash_* 계열(아래 sampleOne() 참고) 카운트를 AAS로 정규화할 때 쓰는 창 길이 - sampleAll()의
     // @Scheduled 주기(fixedRateString)와 반드시 같은 값이어야 한다(그래야 "최근 N초"에 실제로 샘플링
     // 공백이 안 생김). 두 곳이 같은 프로퍼티 키를 읽으므로 값이 어긋날 일은 없다.
@@ -292,11 +296,17 @@ public class InstanceMetricSamplerService {
             int tmLockWaiting = 0;
             int txLockWaiting = 0;
             st.setQueryTimeout(lockQueryTimeoutSeconds);
+            // v$lock request>0 대신 v$session 대기 이벤트로 센다(2026-09-29): 앱 계정(dbagent_user, DBA 롤)으로 보면 v$lock에서
+            // 대기 요청 행이 일부 빠져 TM 대기 3개가 1개로 기록됐다(로컬 XE 실측, SYS로는 3개). 대시보드 Lock 실시간과 같은 정의라
+            // 차트 점선 구간(fill)과 실시간 선이 어긋나지 않고, 느린 v$lock 스캔(폐쇄망 49초 전례)도 이 경로에서 빠진다.
+            String txCond = txRowLockOnly ? "event = 'enq: TX - row lock contention'" : "event LIKE 'enq: TX%'";
             try (ResultSet rs = st.executeQuery(
-                    "SELECT type, COUNT(DISTINCT sid) as cnt FROM v$lock WHERE request > 0 AND type IN ('TX', 'TM') GROUP BY type")) {
-                while (rs.next()) {
-                    if ("TM".equals(rs.getString("type"))) tmLockWaiting = rs.getInt("cnt");
-                    else if ("TX".equals(rs.getString("type"))) txLockWaiting = rs.getInt("cnt");
+                    "SELECT COUNT(CASE WHEN " + txCond + " THEN 1 END) AS tx_cnt, " +
+                            "COUNT(CASE WHEN event LIKE 'enq: TM%' THEN 1 END) AS tm_cnt " +
+                            "FROM v$session WHERE state = 'WAITING' AND (event LIKE 'enq: TX%' OR event LIKE 'enq: TM%')")) {
+                if (rs.next()) {
+                    txLockWaiting = rs.getInt("tx_cnt");
+                    tmLockWaiting = rs.getInt("tm_cnt");
                 }
             } catch (SQLException lockScanFailed) {
                 // 타임아웃(ORA-01013) 등으로 락 스캔만 실패해도 CPU/DBTime 샘플은 이미 확보했으니 버리지 않는다.

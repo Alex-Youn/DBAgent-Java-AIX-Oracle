@@ -338,7 +338,10 @@ public class LockRealtimeService {
                             "MAX(s.program) AS program, MAX(s.machine) AS machine, MAX(s.status) AS status, " +
                             "MAX(s.last_call_et) AS last_call_et, MAX(s.blocking_session) AS blocking_session, " +
                             "MIN(l.id1) AS obj_id, COUNT(DISTINCT l.id1) AS obj_cnt, MAX(l.block) AS block, " +
-                            "(SELECT COUNT(*) FROM v$session w WHERE w.blocking_session = s.sid) AS waiters " +
+                            // blocking_instance 조건: 다른 RAC 노드 세션에 막힌 대기를 같은 SID의 이 노드 세션이 막은 것으로 세지 않게
+                            // (MonitorService.LOCAL_INSTANCE 주석 참고, 2026-09-29) - 장애 판정 수·KILL 패널이 부풀지 않도록.
+                            "(SELECT COUNT(*) FROM v$session w WHERE w.blocking_session = s.sid " +
+                            "AND w.blocking_instance = " + MonitorService.LOCAL_INSTANCE + ") AS waiters " +
                             "FROM v$lock l JOIN v$session s ON s.sid = l.sid " +
                             "WHERE l.type = 'TM' AND l.lmode > 0 " +
                             "GROUP BY s.sid, s.serial#")) {

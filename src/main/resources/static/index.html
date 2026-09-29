@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=65">
+    <link rel="stylesheet" href="style.css?v=67">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=13"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -942,6 +942,11 @@
                     <div class="panel">
                         <div class="panel-header">
                             <h2>Lock Holder/Waiter Tree 실시간 모니터링</h2>
+                            <!-- 접기/펴기(2026-09-29) - 대기 많은 Lock(BPM 등)이 표를 채울 때 Holder만 한 줄씩 보려고. app.js tmlockFoldAll -->
+                            <div class="lock-fold-all" style="margin: 0 auto 0 16px;">
+                                <button type="button" id="tmlock-collapse-all-btn" class="secondary-btn" title="Holder만 남기고 대기 세션을 모두 접습니다(새로 생긴 Holder도 접힌 채로 표시)">모두 접기</button>
+                                <button type="button" id="tmlock-expand-all-btn" class="secondary-btn" title="모든 대기 세션을 펼칩니다">모두 펼치기</button>
+                            </div>
                             <div style="display: flex; gap: 20px;">
                                 <span class="kill-selected-count admin-only" id="tmlock-selected-count"></span>
                                 <button id="tmlock-kill-btn" class="danger-btn admin-only" style="padding: 6px 12px; border-radius: 4px; font-size: 0.9rem;" disabled>선택 세션 Kill</button>
@@ -1366,10 +1371,10 @@
     </div>
 
 
-    <script src="app.js?v=177"></script>
-    <script src="nd-dashboard.js?v=13"></script>
+    <script src="app.js?v=180"></script>
+    <script src="nd-dashboard.js?v=14"></script>
     <script src="nd-aas.js?v=8"></script>
-    <script src="nd-lock.js?v=9"></script>
+    <script src="nd-lock.js?v=10"></script>
     <script src="nd-top.js?v=2"></script>
     <script src="nd-checks.js?v=4"></script>
     <script src="perf-analysis.js?v=5"></script>

@@ -201,14 +201,16 @@
         if (all.length < 1) { svg.innerHTML = ''; G = null; return; }
         const W = Math.max(220, plot.clientWidth), H = Math.max(60, plot.clientHeight);
         const t1 = all[all.length - 1].t, t0 = Math.min(all[0].t, t1 - 10 * 60000);
-        const mx = Math.max(TX_WARN + 1, ...all.map(h => Math.max(h.tx, h.tm)));
+        // 값 하나라도 숫자가 아니면 Math.max가 NaN이 되어 아래 눈금 루프가 끝나지 않는다(탭 멈춤) - 그때는 기본 범위로 그린다.
+        const mxRaw = Math.max(TX_WARN + 1, ...all.map(h => Math.max(h.tx, h.tm)));
+        const mx = Number.isFinite(mxRaw) ? mxRaw : TX_WARN + 1;
         // Y 눈금은 차트 높이에 맞춰 18px에 1개 이하로 - 예전엔 간격이 최대 10 고정이라 대기 100건이면 눈금 12개가
         // 작은 차트(1920×1080에서 약 60px)에 몰려 숫자가 겹쳤다(2026-09-29 폐쇄망). 간격은 1·2·2.5·5 × 10^n.
         // 왼쪽 여백은 최댓값 자릿수에 맞춘다(세 자리 이상이 잘리지 않게).
         const mt = 8, mb = 20, ph = Math.max(20, H - mt - mb);
         const maxTicks = Math.max(1, Math.floor(ph / 18));
         let step = 1;
-        for (let e = 1; ; e *= 10) {
+        for (let e = 1; e <= 1e9; e *= 10) {
             const c = [1, 2, 2.5, 5].map(k => k * e).filter(v => Number.isInteger(v)).find(v => Math.ceil(mx * 1.1 / v) <= maxTicks);
             if (c) { step = c; break; }
         }

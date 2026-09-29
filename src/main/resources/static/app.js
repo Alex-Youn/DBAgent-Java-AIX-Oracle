@@ -1420,9 +1420,232 @@ let layoutHTML = "";
     let tmlockTimer = null;
     let isAutoRefreshing = false;
 
+    // 목록 영역을 창 아래 끝까지 채운다(2026-09-29 오케스트레이터 요청) - 예전엔 max-height 500px 고정이라 10행만 보이고
+    // 아래가 비었다(1920×1080 약 5행, 2560×1440 약 14행 분). 최소 500px 유지. .app-container 배율(zoom)은 하드코딩하지 않고
+    // 실제로 재서 보정한다. TMLOCK_BOTTOM_GAP은 패널 아래 여백(패널 안쪽 여백 24 + 테두리·페이지 여백) - 바깥 스크롤이 생기지 않게.
+    const TMLOCK_MIN_HEIGHT = 500, TMLOCK_BOTTOM_GAP = 48;
+    function fitTmlockTable() {
+        const box = tmlockTbody && tmlockTbody.closest('.table-container');
+        if (!box || !dbagentSectionVisible('tmlock')) return;
+        const rect = box.getBoundingClientRect();
+        const scale = box.offsetHeight > 0 ? rect.height / box.offsetHeight : 1;
+        const avail = Math.floor((window.innerHeight - rect.top) / (scale || 1)) - TMLOCK_BOTTOM_GAP;
+        let h = Math.max(TMLOCK_MIN_HEIGHT, avail);
+        box.style.maxHeight = h + 'px';
+        // 여백 어림이 모자라 바깥(.main-content)이 넘치면 넘친 만큼 바로 줄인다(같은 프레임이라 깜박임 없음) -
+        // 1920×1080 실측에서 고정 여백만으로는 46px 바깥 스크롤이 생겼다(2026-09-29).
+        const sc = box.closest('.main-content');
+        const over = sc ? sc.scrollHeight - sc.clientHeight : 0;
+        if (over > 0 && h > TMLOCK_MIN_HEIGHT) {
+            h = Math.max(TMLOCK_MIN_HEIGHT, h - over);
+            box.style.maxHeight = h + 'px';
+        }
+    }
+    window.addEventListener('resize', fitTmlockTable);
+
+    // ---- Lock Holder/Waiter Tree 접기/펴기 (2026-09-29 오케스트레이터 요청) ----
+    // 운영에서 BPM 등이 잡은 대기 많은 Lock이 표를 채우면 정작 중요한 Lock을 놓칠 수 있어 Holder 아래 대기자를 접는다.
+    // 세션 고유키(SID+SERIAL#, 다른 인스턴스면 인스턴스 포함)로 기억해 자동 갱신 때도 유지한다. "모두 접기" 뒤에 새로 생긴
+    // Holder도 접힌 채로 나오게, 모두 접기 모드에서는 "펼친 것"만 기억한다. 접혀서 안 그려진 행은 체크박스도 없으므로
+    // 선택 세션 KILL 대상에서도 빠진다(보이지 않는 세션을 KILL하지 않게). 토글은 다시 조회하지 않고 마지막 결과로 다시 그린다.
+    let tmlockLastData = null;
+    let tmlockCollapseAllMode = false;
+    const tmlockCollapsed = new Set();   // 보통 모드: 접은 것
+    const tmlockExpanded = new Set();    // 모두 접기 모드: 펼친 것
+    const tmlockFoldKey = (d) => (d.inst != null ? 'i' + d.inst + ':' : '') + d.sid + '#' + (d.serial == null ? '' : d.serial);
+    const tmlockIsCollapsed = (k) => tmlockCollapseAllMode ? !tmlockExpanded.has(k) : tmlockCollapsed.has(k);
+    const escHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    function tmlockToggleFold(k) {
+        const set = tmlockCollapseAllMode ? tmlockExpanded : tmlockCollapsed;
+        if (set.has(k)) set.delete(k); else set.add(k);
+        if (tmlockLastData) { renderTmLockTree(tmlockLastData); fitTmlockTable(); }
+    }
+    function tmlockFoldAll(collapse) {
+        tmlockCollapseAllMode = collapse;
+        tmlockCollapsed.clear();
+        tmlockExpanded.clear();
+        if (tmlockLastData) { renderTmLockTree(tmlockLastData); fitTmlockTable(); }
+    }
+    const tmlockCollapseAllBtn = document.getElementById('tmlock-collapse-all-btn');
+    const tmlockExpandAllBtn = document.getElementById('tmlock-expand-all-btn');
+    if (tmlockCollapseAllBtn) tmlockCollapseAllBtn.addEventListener('click', () => tmlockFoldAll(true));
+    if (tmlockExpandAllBtn) tmlockExpandAllBtn.addEventListener('click', () => tmlockFoldAll(false));
+
+    function renderTmLockTree(data) {
+        const formatDuration = (seconds) => {
+            if (seconds === null || seconds === undefined) return 'N/A';
+            if (seconds < 60) return `${seconds}초`;
+            const m = Math.floor(seconds / 60);
+            const s = seconds % 60;
+            if (m < 60) return `${m}분 ${s}초`;
+            const h = Math.floor(m / 60);
+            const rm = m % 60;
+            return `${h}시간 ${rm}분 ${s}초`;
+        };
+
+        // ---- Holder/Waiter 트리 만들기 (RDB 대시보드의 buildLockTree 와 같은 방식) ----
+        //
+        // /api/tmlock 은 "막고 있는 세션(block=1)" 마다 그 세션을 기다리는 waiters 를 붙여 주는
+        // <b>2단 구조</b>다. A가 B를, B가 C를 막는 체인이면 A(waiters=[B]) 와 B(waiters=[C]) 가
+        // 각각 최상위로 나와, 예전 화면에서는 B가 두 번(홀더로 한 번, A의 대기자로 한 번) 보이고
+        // 체인이라는 사실이 드러나지 않았다. waiter -> holder 간선을 이어 실제 트리로 세우면
+        // A └─ B └─ C 로 이어지고, 중간의 B는 역할이 둘 다이므로 BOTH 로 표시된다.
+        const nodes = {};
+        // 다른 RAC 인스턴스의 Holder는 서버가 inst를 붙여 준다 - 같은 SID 번호의 이 인스턴스 세션과 한 노드로 섞이지 않게
+        // 노드 키에 넣는다(2026-09-29 점검).
+        const nodeKey = (row) => (row.inst != null ? 'i' + row.inst + ':' : '') + row.sid;
+        function ensureNode(row, isHolder) {
+            const key = nodeKey(row);
+            if (!nodes[key]) nodes[key] = { data: row, isHolder: false, isWaiter: false, children: [] };
+            const n = nodes[key];
+            // 홀더 행에는 보유 모드가, 대기 행에는 요청 모드/대기 시간이 담긴다. 대기 쪽 정보가
+            // "무엇을 얼마나 기다리는가" 를 말해 주므로 그쪽을 우선해 남긴다.
+            if (!isHolder || !n.isWaiter) n.data = row;
+            if (isHolder) n.isHolder = true; else n.isWaiter = true;
+            return n;
+        }
+        data.forEach(holder => {
+            const h = ensureNode(holder, true);
+            (holder.waiters || []).forEach(waiter => {
+                const w = ensureNode(waiter, false);
+                if (h.children.indexOf(w) < 0) h.children.push(w);
+            });
+        });
+        const allNodes = Object.keys(nodes).map(k => nodes[k]);
+        const hasParent = {};
+        allNodes.forEach(n => n.children.forEach(c => { hasParent[nodeKey(c.data)] = true; }));
+        let roots = allNodes.filter(n => !hasParent[nodeKey(n.data)]);
+        // 루트가 하나도 없으면 서로가 서로를 기다리는 순환(교착)이다. 그대로 두면 아무것도
+        // 안 그려지므로 아무 노드나 하나를 시작점으로 세운다(RDB 쪽과 같은 처리).
+        let cyclic = false;
+        if (!roots.length && allNodes.length) { cyclic = true; roots = [allNodes[0]]; }
+
+        // 하위 대기 세션 수(손자까지, 순환은 한 번만) - Holder 옆과 접힌 행 옆에 보여 준다.
+        function descendantCount(node, path) {
+            let c = 0;
+            node.children.forEach(ch => {
+                const k = nodeKey(ch.data);
+                if (path.indexOf(k) >= 0) return;
+                c += 1 + descendantCount(ch, path.concat([k]));
+            });
+            return c;
+        }
+
+        // 트리를 화면 순서대로 펴면서 가지 문자열(prefix)을 만든다. 접힌 노드는 자식을 펴지 않는다.
+        const flat = [];
+        (function flatten(list, depth, prefix, path) {
+            list.forEach((node, i) => {
+                const sid = nodeKey(node.data);
+                const repeated = path.indexOf(sid) >= 0;
+                const isLast = i === list.length - 1;
+                const hasKids = !repeated && node.children.length > 0;
+                const ckey = tmlockFoldKey(node.data);
+                const collapsed = hasKids && tmlockIsCollapsed(ckey);
+                flat.push({ node: node, depth: depth, isLast: isLast, prefix: prefix, repeated: repeated,
+                            hasKids: hasKids, ckey: ckey, collapsed: collapsed,
+                            below: hasKids ? descendantCount(node, path.concat([sid])) : 0 });
+                if (repeated || collapsed) return;   // 순환이면 끊고(무한 재귀 방지), 접혔으면 자식을 그리지 않는다
+                flatten(node.children, depth + 1,
+                        depth === 0 ? '' : prefix + (isLast ? '   ' : '│  '),
+                        path.concat([sid]));
+            });
+        })(roots, 0, '', []);
+
+        let tableHtml = '';
+        flat.forEach(item => {
+            const n = item.node;
+            const d = n.data;
+            const role = (n.isHolder && n.isWaiter) ? 'both' : (n.isHolder ? 'holder' : 'waiter');
+            const roleLabel = role === 'both' ? 'BOTH' : (role === 'holder' ? 'HOLDER' : 'WAITER');
+            const roleTitle = role === 'both'
+                ? '다른 세션을 막고 있으면서 자신도 다른 세션을 기다리는 중입니다(체인 중간).'
+                : (role === 'holder' ? '락을 쥐고 있는 세션입니다.' : '락을 기다리는 세션입니다.');
+            const branch = item.depth > 0
+                ? `<span class="lock-branch">${item.prefix}${item.isLast ? '└─ ' : '├─ '}</span>`
+                : '';
+            const cycle = item.repeated ? '<span class="lock-cycle">↻ 순환</span>' : '';
+            // 접기/펴기 - 하위 대기자가 있는 행만 버튼, 없으면 같은 폭의 빈칸(SID 줄 맞춤)
+            const fold = item.hasKids
+                ? `<button type="button" class="lock-fold" data-ckey="${escHtml(item.ckey)}" aria-expanded="${item.collapsed ? 'false' : 'true'}" title="${item.collapsed ? '펼치기' : '접기'}">${item.collapsed ? '▸' : '▾'}</button>`
+                : '<span class="lock-fold-space"></span>';
+            const below = item.hasKids
+                ? `<span class="lock-below${item.collapsed ? ' collapsed' : ''}" title="이 세션 아래에서 기다리는 세션 수(체인 포함)">대기 ${item.below}</span>`
+                : '';
+            tableHtml += `
+                <tr class="tmlock-row clickable-session-row" data-sid="${d.sid}" data-serial="${d.serial || ''}">
+                    <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${d.sid}" data-serial="${d.serial}" onclick="event.stopPropagation();"></td>
+                    <td>${branch}${fold}<span class="lock-badge ${role}" title="${roleTitle}">${roleLabel}</span><span class="lock-sid">${d.sid}</span>${below}${cycle}</td>
+                    <td>${d.serial}</td>
+                    <td>${d.spid || ''}</td>
+                    <td>${d.username}</td>
+                    <td>${d.lock_type}</td>
+                    <td>${d.mode}</td>
+                    <td>${d.object_waiting || ''}</td>
+                    <td>${formatDuration(d.time)}</td>
+                    <td>${d.login || ''}</td>
+                    <td>${d.status || ''}</td>
+                    <td>${d.program || ''}</td>
+                    <td>${d.machine || ''}</td>
+                    <td>${d.osuser || ''}</td>
+                </tr>
+            `;
+        });
+        if (cyclic) {
+            tableHtml += `
+                <tr><td colspan="14" style="padding: 10px 12px; color: var(--warning); font-size: 0.9rem;">
+                    ⚠ 서로가 서로를 기다리는 순환 구조입니다(교착 가능성). 시작점을 특정할 수 없어 한 세션을 맨 위에 두었습니다.
+                </td></tr>
+            `;
+        }
+
+        // Oracle SID는 재사용되므로 SID만으로는 세션을 특정할 수 없다 - SID+SERIAL# 복합키로 대조.
+        const checkedTmlockKeys = new Set(Array.from(document.querySelectorAll('.tmlock-checkbox:checked'))
+            .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
+        tmlockTbody.innerHTML = tableHtml;
+        document.querySelectorAll('.tmlock-checkbox').forEach(cb => {
+            if (checkedTmlockKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
+                cb.checked = true;
+            }
+        });
+        // 표를 다시 그리면 체크 상태가 복원되므로 버튼 상태도 다시 맞춘다(위임 리스너는
+        // 사용자의 change 만 받기 때문에 여기서 한 번 더 호출해야 한다).
+        if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
+
+        // Re-attach select all event listener if it exists
+        const selectAllCb = document.getElementById('tmlock-select-all');
+        if (selectAllCb) {
+            // Remove old event listeners by replacing the element to prevent multiple bindings
+            const newSelectAllCb = selectAllCb.cloneNode(true);
+            selectAllCb.parentNode.replaceChild(newSelectAllCb, selectAllCb);
+            
+            newSelectAllCb.addEventListener('change', (e) => {
+                const cbs = document.querySelectorAll('.tmlock-checkbox');
+                cbs.forEach(cb => cb.checked = e.target.checked);
+            });
+        }
+
+        // Row clicks are handled by the global `.clickable-session-row` delegate (opens
+        // session-detail.html as a separate, draggable OS window) - see the document-level
+        // click listener near showSelectedSessionsPopup. No per-row listener needed here.
+
+        // 접기/펴기 버튼 - 행 클릭은 세션 상세 창을 여는 전역 위임이라 전파를 막는다
+        tmlockTbody.querySelectorAll('.lock-fold').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                tmlockToggleFold(btn.getAttribute('data-ckey'));
+            });
+        });
+
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+        
+    }
+
     async function fetchTMLocks() {
         if (!tmlockTbody) return;
         if (!dbagentSectionVisible('tmlock')) return; // 자동 갱신 루프는 돌되, 화면이 안 보이면 조회하지 않음
+        fitTmlockTable();
         if (!window.currentDbId) {
             tmlockTbody.innerHTML = '<tr><td colspan="14" style="text-align:center; padding: 30px;">DB를 먼저 선택해주세요.</td></tr>';
             return;
@@ -1437,6 +1660,7 @@ let layoutHTML = "";
             const data = await response.json();
             
             if (!data || data.length === 0) {
+                tmlockLastData = null;
                 tmlockTbody.innerHTML = `
                     <tr>
                         <td colspan="14" style="text-align: center; padding: 40px; color: var(--text-secondary);">
@@ -1449,140 +1673,10 @@ let layoutHTML = "";
                 return;
             }
             
-            const formatDuration = (seconds) => {
-                if (seconds === null || seconds === undefined) return 'N/A';
-                if (seconds < 60) return `${seconds}초`;
-                const m = Math.floor(seconds / 60);
-                const s = seconds % 60;
-                if (m < 60) return `${m}분 ${s}초`;
-                const h = Math.floor(m / 60);
-                const rm = m % 60;
-                return `${h}시간 ${rm}분 ${s}초`;
-            };
+            tmlockLastData = data;
+            renderTmLockTree(data);
+            fitTmlockTable(); // 행 수가 바뀐 뒤 다시 맞춘다(바깥 넘침 보정은 표가 찬 뒤에야 잴 수 있음)
 
-            // ---- Holder/Waiter 트리 만들기 (RDB 대시보드의 buildLockTree 와 같은 방식) ----
-            //
-            // /api/tmlock 은 "막고 있는 세션(block=1)" 마다 그 세션을 기다리는 waiters 를 붙여 주는
-            // <b>2단 구조</b>다. A가 B를, B가 C를 막는 체인이면 A(waiters=[B]) 와 B(waiters=[C]) 가
-            // 각각 최상위로 나와, 예전 화면에서는 B가 두 번(홀더로 한 번, A의 대기자로 한 번) 보이고
-            // 체인이라는 사실이 드러나지 않았다. waiter -> holder 간선을 이어 실제 트리로 세우면
-            // A └─ B └─ C 로 이어지고, 중간의 B는 역할이 둘 다이므로 BOTH 로 표시된다.
-            const nodes = {};
-            function ensureNode(row, isHolder) {
-                const key = String(row.sid);
-                if (!nodes[key]) nodes[key] = { data: row, isHolder: false, isWaiter: false, children: [] };
-                const n = nodes[key];
-                // 홀더 행에는 보유 모드가, 대기 행에는 요청 모드/대기 시간이 담긴다. 대기 쪽 정보가
-                // "무엇을 얼마나 기다리는가" 를 말해 주므로 그쪽을 우선해 남긴다.
-                if (!isHolder || !n.isWaiter) n.data = row;
-                if (isHolder) n.isHolder = true; else n.isWaiter = true;
-                return n;
-            }
-            data.forEach(holder => {
-                const h = ensureNode(holder, true);
-                (holder.waiters || []).forEach(waiter => {
-                    const w = ensureNode(waiter, false);
-                    if (h.children.indexOf(w) < 0) h.children.push(w);
-                });
-            });
-            const allNodes = Object.keys(nodes).map(k => nodes[k]);
-            const hasParent = {};
-            allNodes.forEach(n => n.children.forEach(c => { hasParent[String(c.data.sid)] = true; }));
-            let roots = allNodes.filter(n => !hasParent[String(n.data.sid)]);
-            // 루트가 하나도 없으면 서로가 서로를 기다리는 순환(교착)이다. 그대로 두면 아무것도
-            // 안 그려지므로 아무 노드나 하나를 시작점으로 세운다(RDB 쪽과 같은 처리).
-            let cyclic = false;
-            if (!roots.length && allNodes.length) { cyclic = true; roots = [allNodes[0]]; }
-
-            // 트리를 화면 순서대로 펴면서 가지 문자열(prefix)을 만든다.
-            const flat = [];
-            (function flatten(list, depth, prefix, path) {
-                list.forEach((node, i) => {
-                    const sid = String(node.data.sid);
-                    const repeated = path.indexOf(sid) >= 0;
-                    const isLast = i === list.length - 1;
-                    flat.push({ node: node, depth: depth, isLast: isLast, prefix: prefix, repeated: repeated });
-                    if (repeated) return;   // 순환 - 여기서 끊지 않으면 무한 재귀다
-                    flatten(node.children, depth + 1,
-                            depth === 0 ? '' : prefix + (isLast ? '   ' : '│  '),
-                            path.concat([sid]));
-                });
-            })(roots, 0, '', []);
-
-            let tableHtml = '';
-            flat.forEach(item => {
-                const n = item.node;
-                const d = n.data;
-                const role = (n.isHolder && n.isWaiter) ? 'both' : (n.isHolder ? 'holder' : 'waiter');
-                const roleLabel = role === 'both' ? 'BOTH' : (role === 'holder' ? 'HOLDER' : 'WAITER');
-                const roleTitle = role === 'both'
-                    ? '다른 세션을 막고 있으면서 자신도 다른 세션을 기다리는 중입니다(체인 중간).'
-                    : (role === 'holder' ? '락을 쥐고 있는 세션입니다.' : '락을 기다리는 세션입니다.');
-                const branch = item.depth > 0
-                    ? `<span class="lock-branch">${item.prefix}${item.isLast ? '└─ ' : '├─ '}</span>`
-                    : '';
-                const cycle = item.repeated ? '<span class="lock-cycle">↻ 순환</span>' : '';
-                tableHtml += `
-                    <tr class="tmlock-row clickable-session-row" data-sid="${d.sid}" data-serial="${d.serial || ''}">
-                        <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${d.sid}" data-serial="${d.serial}" onclick="event.stopPropagation();"></td>
-                        <td>${branch}<span class="lock-badge ${role}" title="${roleTitle}">${roleLabel}</span><span class="lock-sid">${d.sid}</span>${cycle}</td>
-                        <td>${d.serial}</td>
-                        <td>${d.spid || ''}</td>
-                        <td>${d.username}</td>
-                        <td>${d.lock_type}</td>
-                        <td>${d.mode}</td>
-                        <td>${d.object_waiting || ''}</td>
-                        <td>${formatDuration(d.time)}</td>
-                        <td>${d.login || ''}</td>
-                        <td>${d.status || ''}</td>
-                        <td>${d.program || ''}</td>
-                        <td>${d.machine || ''}</td>
-                        <td>${d.osuser || ''}</td>
-                    </tr>
-                `;
-            });
-            if (cyclic) {
-                tableHtml += `
-                    <tr><td colspan="14" style="padding: 10px 12px; color: var(--warning); font-size: 0.9rem;">
-                        ⚠ 서로가 서로를 기다리는 순환 구조입니다(교착 가능성). 시작점을 특정할 수 없어 한 세션을 맨 위에 두었습니다.
-                    </td></tr>
-                `;
-            }
-
-            // Oracle SID는 재사용되므로 SID만으로는 세션을 특정할 수 없다 - SID+SERIAL# 복합키로 대조.
-            const checkedTmlockKeys = new Set(Array.from(document.querySelectorAll('.tmlock-checkbox:checked'))
-                .map(cb => cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial')));
-            tmlockTbody.innerHTML = tableHtml;
-            document.querySelectorAll('.tmlock-checkbox').forEach(cb => {
-                if (checkedTmlockKeys.has(cb.getAttribute('data-sid') + ':' + cb.getAttribute('data-serial'))) {
-                    cb.checked = true;
-                }
-            });
-            // 표를 다시 그리면 체크 상태가 복원되므로 버튼 상태도 다시 맞춘다(위임 리스너는
-            // 사용자의 change 만 받기 때문에 여기서 한 번 더 호출해야 한다).
-            if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
-
-            // Re-attach select all event listener if it exists
-            const selectAllCb = document.getElementById('tmlock-select-all');
-            if (selectAllCb) {
-                // Remove old event listeners by replacing the element to prevent multiple bindings
-                const newSelectAllCb = selectAllCb.cloneNode(true);
-                selectAllCb.parentNode.replaceChild(newSelectAllCb, selectAllCb);
-                
-                newSelectAllCb.addEventListener('change', (e) => {
-                    const cbs = document.querySelectorAll('.tmlock-checkbox');
-                    cbs.forEach(cb => cb.checked = e.target.checked);
-                });
-            }
-
-            // Row clicks are handled by the global `.clickable-session-row` delegate (opens
-            // session-detail.html as a separate, draggable OS window) - see the document-level
-            // click listener near showSelectedSessionsPopup. No per-row listener needed here.
-
-            if (typeof lucide !== 'undefined') {
-                lucide.createIcons();
-            }
-            
             if (icon) icon.classList.remove('spinning');
         } catch (error) {
             tmlockTbody.innerHTML = `<tr><td colspan="14" style="color:var(--danger); padding:20px; text-align:center;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;

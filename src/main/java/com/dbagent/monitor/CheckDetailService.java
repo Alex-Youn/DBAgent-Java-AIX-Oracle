@@ -120,10 +120,18 @@ public class CheckDetailService {
         Object d = r.get("detail");
         Map<?, ?> det = d instanceof Map ? (Map<?, ?>) d : Collections.emptyMap();
         String type = String.valueOf(r.get("checkType"));
-        if ("ERROR".equals(fp)) return fp + "|" + det.get("error");
-        if ("JOB_FAIL".equals(type)) return fp + "|" + det.get("lastFail");
+        if ("ERROR".equals(fp)) return fitFingerprint(fp + "|" + det.get("error"));
+        if ("JOB_FAIL".equals(type)) return fitFingerprint(fp + "|" + det.get("lastFail"));
         if ("INVALID_OBJ".equals(type)) return fp + "|" + r.get("value");
         return fp;
+    }
+
+    /**
+     * 저장 칸(mon_check_ack.fingerprint VARCHAR(200))에 맞춘다. 예전엔 저장할 때만 200자로 잘라, 오류 문구(최대 500자)가 긴
+     * ERROR 항목은 비교 값과 저장 값이 달라 숨김을 눌러도 절대 숨겨지지 않았다(2026-09-29 점검). 길면 앞부분 + 전체 해시.
+     */
+    private static String fitFingerprint(String s) {
+        return s.length() <= 200 ? s : s.substring(0, 180) + "#" + Integer.toHexString(s.hashCode());
     }
 
     /** ⑧ 숨김 - 현재 목록에 떠 있는 항목만(OK·이미 해소된 항목은 false). */

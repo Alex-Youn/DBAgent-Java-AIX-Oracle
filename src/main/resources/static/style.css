@@ -372,6 +372,17 @@ body.app-shell { overflow-y: hidden; }
 .lock-badge.both   { background: rgba(208, 59, 59, .18);  color: var(--danger); }
 .lock-sid { font-variant-numeric: tabular-nums; font-weight: 600; }
 .lock-cycle { color: var(--danger); font-size: 12px; margin-left: 6px; }
+/* Lock Holder/Waiter Tree 접기/펴기(2026-09-29) - app.js renderTmLockTree */
+.lock-fold, .lock-fold-space { display: inline-block; width: 18px; margin-right: 4px; vertical-align: middle; }
+.lock-fold {
+    padding: 0; border: 1px solid var(--border-color); border-radius: 3px; background: none;
+    color: var(--text-secondary); font-size: 14px; font-weight: 700; line-height: 16px; text-align: center; cursor: pointer;
+}
+.lock-fold:hover, .lock-fold:focus-visible { color: var(--text-primary); border-color: var(--text-secondary); outline: none; }
+.lock-below { margin-left: 8px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.lock-below.collapsed { color: var(--warning); font-weight: 600; }
+.lock-fold-all { display: flex; gap: 6px; }
+.lock-fold-all .secondary-btn { padding: 4px 10px; font-size: 0.82rem; }
 /* SID 칸에는 "트리 가지 + 역할 배지 + SID" 셋이 함께 들어간다. .data-table 은 table-layout:fixed 라
    14개 칸이 균등하게 나뉘는데, 그 폭으로는 체인이 깊어질수록 가지만 남고 배지와 SID 가 말줄임(…)으로
    잘린다(2026-09-06 실측: 3단째 행이 "└─ …" 로만 보였다). 이 표에서만 칸을 넓히고 왼쪽 정렬한다 -

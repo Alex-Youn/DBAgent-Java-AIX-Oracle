@@ -32,6 +32,7 @@
     let lockWasOk = null;
     let lastQuickStatusAt = 0;
     let quickStatusBusy = false;
+    let quickStatusRecheck = null; // 진행 중에 복구 신호가 오면 끝난 뒤 다시 확인할 ctx
     const resetHooks = [];
     // 패널끼리 데이터를 나눠 쓰는 작은 이벤트 전달 - 예: 'lock'(③ Lock 카드 + ① 활성 세션·메모리 칸이 같은 응답 1개를 씀),
     // 'selection'(② 차트의 선택 구간 → ④ 배너·⑤⑥⑦ Top).
@@ -168,6 +169,7 @@
         });
         resetStatusBar();
         lockWasOk = null;
+        quickStatusRecheck = null;
         if (isVisible()) refreshNow();
     }
 
@@ -363,13 +365,26 @@
         const recovered = ok && lockWasOk === false;
         lockWasOk = ok;
         if (ok && !recovered) return;
-        if (quickStatusBusy) return;
+        if (quickStatusBusy) {
+            // 죽어 있을 때 보낸 헬스체크(접속 제한 시간만큼 걸림)가 아직 안 끝났는데 DB가 살아났다 - 그 응답은 Not Alive로
+            // 끝나므로, 끝난 뒤 한 번 더 확인한다(예전엔 이 복구 신호가 버려져 최대 60초 Not Alive로 남았다, 2026-09-29 점검).
+            if (recovered) quickStatusRecheck = ctx;
+            return;
+        }
         if (!recovered && Date.now() - lastQuickStatusAt < QUICK_STATUS_MIN_MS) return;
+        runQuickStatus(ctx);
+    }
+    function runQuickStatus(ctx) {
         quickStatusBusy = true;
         lastQuickStatusAt = Date.now();
         // 빠른 주기를 붙잡지 않게 기다리지 않는다(헬스체크는 죽은 DB에서 접속 제한 시간만큼 걸린다).
         loadStatus(ctx).catch(e => console.error('[DBAgent] 새 대시보드 상태 즉시 확인 실패:', e))
-            .finally(() => { quickStatusBusy = false; });
+            .finally(() => {
+                quickStatusBusy = false;
+                const again = quickStatusRecheck;
+                quickStatusRecheck = null;
+                if (again && !again.isStale()) runQuickStatus(again);
+            });
     }
 
     // ------------------------------------------------------------------ 컨트롤
