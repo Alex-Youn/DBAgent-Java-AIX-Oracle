@@ -5264,6 +5264,13 @@ setInterval(() => {
             tunnerCurrentAnswerHistory = []; // 새로 분석을 돌리면 이전 후속질문 맥락은 폐기
             analysisEl.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary); margin-top: 16px;"><i data-lucide="loader-2" class="spinning"></i> AI가 실측치를 분석 중입니다...</div>';
             if (typeof lucide !== 'undefined') lucide.createIcons({root: analysisEl});
+            // 사용자 지적(2026-09-14): 실행계획(#tunner-current-plan)이 길면 로딩 표시가 화면 밖으로
+            // 밀려나 버튼을 눌러도 아무 반응이 없는 것처럼 보인다 - 클릭 즉시 1차점검 결과 끝(스피너)까지
+            // 내린다. scrollIntoView(smooth)는 중첩 스크롤 박스 + .app-container zoom 환경에서 안 내려가는
+            // 경우가 있어(오케스트레이터 재지적, 2026-09-29) 타이핑 효과와 같은 방식으로 실제 스크롤 박스를
+            // 찾아 바닥으로 직접 내린다.
+            const analysisScroller = findScrollParent(analysisEl);
+            analysisScroller.scrollTop = analysisScroller.scrollHeight;
 
             fetch('/api/aidba/current_sql/analyze', {
                 method: 'POST',
