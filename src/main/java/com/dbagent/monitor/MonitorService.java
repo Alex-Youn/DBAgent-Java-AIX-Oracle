@@ -1901,8 +1901,8 @@ public class MonitorService {
         } catch (SQLException e) {
             errorMessage = e.getMessage();
             if (isSelfInflicted(e)) {
-                // Pool contention (too many concurrent callers) or our own post-failure cooldown -
-                // neither means the DB itself is unreachable, so don't report it as an outage.
+                // Pool contention (too many concurrent callers) - doesn't mean the DB itself is
+                // unreachable, so don't report it as an outage. 접속 실패 뒤 쿨다운은 여기 들지 않는다(isSelfInflicted 참고).
                 instanceStatus = "Busy";
                 listenerStatus = "Busy";
             } else {
@@ -1957,10 +1957,15 @@ public class MonitorService {
         busySince.remove(targetId);
     }
 
-    /** True for OracleConnectionPoolManager's own pool-exhaustion/cooldown errors, never a real Oracle response. */
+    /**
+     * True only for OracleConnectionPoolManager's pool-exhaustion (waiting>0) error, never a real Oracle response.
+     * 쿨다운("Waiting for cooldown")은 넣지 않는다 - 쿨다운은 실제 접속 실패 뒤에만 걸리므로(풀 경합에는 안 걸림)
+     * "직전에 접속 실패"라는 뜻이다. 예전엔 이것도 Busy로 봐서 죽은 DB가 Not Alive ↔ Busy로 번갈아 나왔고,
+     * Not Alive가 나올 때마다 busySince가 지워져 30초 확정(health-busy-max-seconds)에도 못 갔다
+     * (2026-09-29 오케스트레이터 지적: "Not Alive 판정이 너무 오래 걸린다"). Fleet 카드 문구도 "응답 지연" 대신 연결 실패로 나간다.
+     */
     private boolean isSelfInflicted(SQLException e) {
-        return OracleConnectionPoolManager.isPoolExhausted(e)
-                || (e.getMessage() != null && e.getMessage().contains("Waiting for cooldown"));
+        return OracleConnectionPoolManager.isPoolExhausted(e);
     }
 
     /** Walks the exception's cause chain for the first message containing an Oracle ORA- error code. */

@@ -27,6 +27,11 @@
         slowTimer: null
     };
     const tasks = { fast: [], slow: [] };
+    // Lock 실패 시 상태바 즉시 확인(checkStatusOnLock) - 10초에 1번까지. lockWasOk는 DB 전환(reset) 때 null로 되돌린다.
+    const QUICK_STATUS_MIN_MS = 10000;
+    let lockWasOk = null;
+    let lastQuickStatusAt = 0;
+    let quickStatusBusy = false;
     const resetHooks = [];
     // 패널끼리 데이터를 나눠 쓰는 작은 이벤트 전달 - 예: 'lock'(③ Lock 카드 + ① 활성 세션·메모리 칸이 같은 응답 1개를 씀),
     // 'selection'(② 차트의 선택 구간 → ④ 배너·⑤⑥⑦ Top).
@@ -162,6 +167,7 @@
             try { fn(); } catch (e) { console.error('[DBAgent] 새 대시보드 reset 훅 실패:', e); }
         });
         resetStatusBar();
+        lockWasOk = null;
         if (isVisible()) refreshNow();
     }
 
@@ -196,27 +202,75 @@
     // 단, Lock 장애 알림 바가 떠 있을 때만 최소 270px - 1920×1080에서 180px이면 Lock 카드 본문이 116px로
     // 통계+알림 바+범례+차트가 안 들어가 차트 축이 카드 밖으로 넘친다. 평소엔 180 유지(스크롤 증가는 장애 때만)
     // (2026-09-28 오케스트레이터 결정, 1920×1080 실측).
-    const CHART_MIN = 180, CHART_MIN_INCIDENT = 270, CHART_MAX = Infinity;
+    //
+    // B안 세로 압축(2026-09-29 오케스트레이터 결정): 보통 크기로는 차트가 최소 높이보다 작아지는 창(1920×1080 등)에서만
+    // .nd-compact를 붙여 Top 목록 3행 + 점검 알림 한 줄로 줄인다. 판단은 매번 "압축하지 않았을 때" 높이로 한다 - 클래스를
+    // 잠깐 떼고 재서 같은 프레임 안에 다시 붙이므로 화면에 깜박임은 없다. 경계에서 켜졌다 꺼졌다 하지 않게 풀 때는 여유 8px.
+    //
+    // 그래프 영역 최소 150px(2026-09-29 오케스트레이터 결정): 위 180/270은 카드 높이라 카드 안 제목·범례·Lock 통계를 빼면
+    // 실제 그래프는 훨씬 작다 - 브라우저 125% 확대에서 Lock 그래프 90px·AAS 127px로 납작해졌다(CSS px, 배율 90% 전 값).
+    // 카드 안 "그래프 말고 나머지" 높이를 매번 재서(고정 숫자 아님 - 장애 알림 바·통계 줄바꿈 반영) 두 그래프 모두
+    // 150px 이상이 되게 최소 높이를 올린다. 1920×1080 100%(압축 상태 Lock 그래프 약 156px)에는 영향 없고, 확대했을 때만 스크롤.
+    const CHART_MIN = 180, CHART_MIN_INCIDENT = 270, CHART_MAX = Infinity, COMPACT_HYST = 8, PLOT_MIN = 150;
+    const PLOT_IDS = ['nd-aas-plot', 'nd-lk-plot'];
+    function plotOverhead() {
+        let over = 0;
+        for (const id of PLOT_IDS) {
+            const plot = $(id);
+            const card = plot && plot.closest('.nd-card');
+            if (!card || plot.offsetParent === null) continue; // 아직 안 그려졌거나 표 보기로 숨김
+            // 카드가 좁아 내용이 넘치면 scrollHeight가 실제 내용 높이다. 테두리(offset - client)도 더한다.
+            over = Math.max(over, card.scrollHeight + (card.offsetHeight - card.clientHeight) - plot.offsetHeight);
+        }
+        return over;
+    }
     function fitChart() {
         const el = $('dashboard-nd-view');
         const row = el && el.querySelector('.nd-chart-row');
         if (!row || el.style.display === 'none') return;
+        observeChartCards(row);
         const incBar = $('nd-inc-bar');
-        const min = incBar && !incBar.hidden ? CHART_MIN_INCIDENT : CHART_MIN;
+        const base = incBar && !incBar.hidden ? CHART_MIN_INCIDENT : CHART_MIN;
+        const over = plotOverhead();
+        const min = over > 0 ? Math.max(base, Math.ceil(over + PLOT_MIN)) : base;
         const gap = parseFloat(getComputedStyle(el).rowGap) || 0;
-        let others = 0, count = 0;
-        for (const c of el.children) {
-            if (c === row || c.offsetParent === null) continue;
-            others += c.offsetHeight; count++;
-        }
-        const h = Math.max(min, Math.min(CHART_MAX, Math.floor(el.clientHeight - others - gap * count)));
+        const free = () => {
+            let others = 0, count = 0;
+            for (const c of el.children) {
+                if (c === row || c.offsetParent === null) continue;
+                others += c.offsetHeight; count++;
+            }
+            return Math.floor(el.clientHeight - others - gap * count);
+        };
+        const wasCompact = el.classList.contains('nd-compact');
+        el.classList.remove('nd-compact');
+        const normal = free();
+        const compact = normal < min + (wasCompact ? COMPACT_HYST : 0);
+        el.classList.toggle('nd-compact', compact);
+        const h = Math.max(min, Math.min(CHART_MAX, compact ? free() : normal));
         if (row.style.height !== h + 'px') { row.style.height = h + 'px'; row.style.flexBasis = h + 'px'; }
+        // 행은 flex 항목(flex-shrink 1)이라 공간이 모자라면 CSS min-height(180px)까지 줄어든다 - 계산한 최소값도 min-height로
+        // 걸어야 그래프 150px·장애 270px이 지켜진다(2026-09-29 실측: 287px을 줘도 125%에서 219px로 줄어듦).
+        if (row.style.minHeight !== min + 'px') row.style.minHeight = min + 'px';
     }
     // 다른 블록 높이가 바뀌면(⑧ 카드 줄 수, 상태바 줄바꿈 등) 다시 맞춘다.
-    if (typeof ResizeObserver === 'function') {
-        const ro = new ResizeObserver(() => { if (state.active) fitChart(); });
+    const fitRo = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { if (state.active) fitChart(); }) : null;
+    if (fitRo) {
         const view = $('dashboard-nd-view');
-        if (view) for (const c of view.children) if (!c.classList.contains('nd-chart-row')) ro.observe(c);
+        if (view) for (const c of view.children) if (!c.classList.contains('nd-chart-row')) fitRo.observe(c);
+    }
+    // 차트 카드 안의 그래프 말고 나머지(제목·범례·Lock 통계·장애 알림 바)도 지켜본다 - 이 높이가 그래프 최소 150px 계산에
+    // 들어간다. 카드 내용은 각 패널 스크립트가 나중에 만들므로 fitChart 때마다 새로 생긴 요소만 추가한다. 그래프(.nd-plot)와
+    // 그것을 담은 .nd-chart-body, AAS 표 보기(.nd-aas-table)는 행 높이를 따라 바뀌므로 뺀다(넣으면 높이 맞춤이 자기 자신을 다시 부른다).
+    const fitObserved = new WeakSet();
+    const FIT_SKIP = ['nd-chart-body', 'nd-plot', 'nd-aas-table'];
+    function observeChartCards(row) {
+        if (!fitRo) return;
+        row.querySelectorAll('.nd-card > *, .nd-chart-body > *').forEach(n => {
+            if (fitObserved.has(n) || FIT_SKIP.some(c => n.classList.contains(c))) return;
+            fitObserved.add(n);
+            fitRo.observe(n);
+        });
     }
 
     // ------------------------------------------------------------------ 상태바 (느린 주기)
@@ -254,10 +308,15 @@
         try {
             h = await ctx.fetchJson('/api/health', { db_id: ctx.dbId });
         } catch (e) {
-            if (!ctx.isStale()) markStatusDown();
+            if (!ctx.isStale()) {
+                markStatusDown();
+                if (window.dbagentSetSidebarHealth) window.dbagentSetSidebarHealth(ctx.dbId, 'Not Alive');
+            }
             return;
         }
         if (!h || ctx.isStale()) return;
+        // 좌측 트리의 선택된 DB 색도 같은 결과로 맞춘다(app.js dbagentSetSidebarHealth).
+        if (window.dbagentSetSidebarHealth) window.dbagentSetSidebarHealth(ctx.dbId, h.instance_status);
         setText('nd-st-instance', h.instance_status);
         setText('nd-st-listener', h.listener_status);
         const id = $('nd-st-instance-dot'); if (id) id.style.background = statusColor(h.instance_status);
@@ -282,12 +341,36 @@
         try {
             d = await ctx.fetchJson('/api/dashboard/' + encodeURIComponent(ctx.dbId) + '/lock/realtime');
         } catch (e) {
-            if (!ctx.isStale()) emit('lock', { ok: false, error: e.message });
+            if (!ctx.isStale()) {
+                emit('lock', { ok: false, error: e.message });
+                checkStatusOnLock(ctx, false);
+            }
             return;
         }
-        if (d && !ctx.isStale()) emit('lock', d);
+        if (d && !ctx.isStale()) {
+            emit('lock', d);
+            checkStatusOnLock(ctx, d.ok !== false);
+        }
     }
     tasks.fast.push({ name: 'lock', fn: loadLock });
+
+    // 상태바(헬스체크)는 느린 주기(60초)라 DB가 죽어도 Not Alive까지 최대 1분 넘게 걸렸다(2026-09-29 오케스트레이터
+    // 지적: "Not Alive 판정이 너무 오래 걸린다"). 빠른 주기 Lock 조회가 실패하면 그때 헬스체크를 앞당기고(10초에 1번까지),
+    // 실패하던 Lock이 다시 성공하면 한 번 더 불러 Alive로 빨리 되돌린다. 평소(Lock 정상)에는 추가 조회가 없다.
+    // Lock 쿼리 타임아웃(3초)처럼 DB가 살아 있는데 실패한 경우도 헬스체크 한 번이면 Alive로 확인된다.
+    // (상태 변수 lockWasOk·lastQuickStatusAt·quickStatusBusy는 reset()이 쓰므로 파일 위쪽 state 옆에 둔다.)
+    function checkStatusOnLock(ctx, ok) {
+        const recovered = ok && lockWasOk === false;
+        lockWasOk = ok;
+        if (ok && !recovered) return;
+        if (quickStatusBusy) return;
+        if (!recovered && Date.now() - lastQuickStatusAt < QUICK_STATUS_MIN_MS) return;
+        quickStatusBusy = true;
+        lastQuickStatusAt = Date.now();
+        // 빠른 주기를 붙잡지 않게 기다리지 않는다(헬스체크는 죽은 DB에서 접속 제한 시간만큼 걸린다).
+        loadStatus(ctx).catch(e => console.error('[DBAgent] 새 대시보드 상태 즉시 확인 실패:', e))
+            .finally(() => { quickStatusBusy = false; });
+    }
 
     // ------------------------------------------------------------------ 컨트롤
 

@@ -34,6 +34,7 @@ public class DashboardController {
 
     /** 한 번에 KILL 요청할 수 있는 최대 세션 수 - 잘못된 요청이 대량 KILL로 번지지 않게. */
     private static final int MAX_KILL_TARGETS = 200;
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(DashboardController.class);
 
     private final AuthService authService;
     private final DatabaseConfigService configService;
@@ -64,6 +65,53 @@ public class DashboardController {
             return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
         }
         return ResponseEntity.ok(checkService.list(target));
+    }
+
+    public static class CheckAckRequest {
+        public String token;
+        public String checkType;
+        public String targetName;
+    }
+
+    /** ⑧ 점검 알림 숨김(운영자 확인 처리) - 이 DB를 볼 수 있는 사용자면 누구나, 누가 언제 숨겼는지 남긴다. */
+    @PostMapping("/{dbId}/checks/ack")
+    public ResponseEntity<Object> ackCheck(@PathVariable String dbId, @RequestBody CheckAckRequest req) {
+        return changeAck(dbId, req, true);
+    }
+
+    /** ⑧ 숨김 되돌리기. */
+    @PostMapping("/{dbId}/checks/unack")
+    public ResponseEntity<Object> unackCheck(@PathVariable String dbId, @RequestBody CheckAckRequest req) {
+        return changeAck(dbId, req, false);
+    }
+
+    private ResponseEntity<Object> changeAck(String dbId, CheckAckRequest req, boolean hide) {
+        if (req == null) {
+            return error(HttpStatus.BAD_REQUEST, "요청 본문이 없습니다.");
+        }
+        if (!authService.canAccessDb(req.token, dbId)) {
+            return error(HttpStatus.FORBIDDEN, "해당 DB에 대한 접근 권한이 없습니다.");
+        }
+        if (req.checkType == null || !CheckDetailService.LABEL.containsKey(req.checkType)) {
+            return error(HttpStatus.BAD_REQUEST, "알 수 없는 점검 항목입니다.");
+        }
+        if (req.targetName == null || req.targetName.isEmpty() || req.targetName.length() > 261) {
+            return error(HttpStatus.BAD_REQUEST, "대상 이름이 올바르지 않습니다.");
+        }
+        TargetDbConfig t = configService.resolve(dbId);
+        if (t == null || !"oracle".equalsIgnoreCase(t.dbType())) {
+            return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
+        }
+        String user = authService.sessionForToken(req.token).map(AuthService.AuthSession::username).orElse("?");
+        boolean ok = hide ? checkService.ack(t, req.checkType, req.targetName, user)
+                : checkService.unack(t, req.checkType, req.targetName);
+        if (!ok) {
+            return error(HttpStatus.NOT_FOUND, hide ? "현재 떠 있는 알림이 아닙니다(이미 해소되었거나 다시 점검됨)." : "숨긴 항목이 아닙니다.");
+        }
+        log.info("점검 알림 {}: db_id={}, {} / {}, by {}", hide ? "숨김" : "숨김 해제", dbId, req.checkType, req.targetName, user);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ok", true);
+        return ResponseEntity.ok(body);
     }
 
     /** 6.4 점검 알림 상세 - 대상 이름은 OWNER.NAME 형태라 경로 대신 파라미터로 받는다. */

@@ -5,6 +5,8 @@
 // - 헤더: 심각도별 건수 + 마지막 점검 + 필터(전체/위험/주의/확인). 카드는 위험→주의→확인, 점검 실패는 회색, 가로 한 줄
 //   (넘치면 프레임 안에서만 가로 스크롤). OK 행은 카드로 그리지 않고 항목별 마지막 점검 시각에만 쓴다.
 // - 카드 클릭 → 6.4 상세 드로어(7일 추이·관련 객체·조치 권장·조회 쿼리).
+// - 숨김(2026-09-29): 카드의 "숨김" → 서버에 누가·언제·당시 상태를 저장하고 목록·건수에서 뺀다. 상태가 바뀌면(잡이 다시
+//   실패, 주의→위험) 서버가 숨김으로 보지 않아 다시 뜬다. "숨긴 항목 n" 버튼으로 숨긴 카드만 보고 되돌린다.
 (function () {
     'use strict';
     const ND = window.ndDashboard;
@@ -17,7 +19,7 @@
         ERROR: { t: '점검 실패', sym: '×', cls: 'err', order: 3 }
     };
     const PCT_TYPES = ['TABLESPACE', 'FRA', 'TEMP'];
-    const st = { data: null, filter: 'all', gen: 0 };
+    const st = { data: null, filter: 'all', gen: 0, showHidden: false };
 
     const $ = (id) => document.getElementById(id);
     const esc = (s) => String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -44,7 +46,8 @@
             case 'TEMP': return `${num(d.usedGb, 1)} / ${num(d.maxGb, 1)} GB (자동 확장 최대 기준)`;
             case 'FRA': return `${num(d.usedGb, 1)} / ${num(d.limitGb, 1)} GB · 회수 가능 ${num(d.reclaimableGb, 1)} GB`;
             case 'TABLE_SIZE': return `임계치 ${num(it.threshold, 0)} GB`;
-            case 'JOB_FAIL': return `최근 24시간 실패 ${num(it.value, 0)}회${d.consecutive ? ' · 2회 연속 실패' : ''} · 마지막 ${d.lastFail || '-'}`;
+            case 'JOB_FAIL': return `최근 24시간 실패 ${num(it.value, 0)}회${d.consecutive ? ' · 2회 연속 실패' : ''} · 마지막 ${d.lastFail || '-'}` +
+                (d.downgraded ? ' · 등급 낮춤 설정 대상(확인 등급)' : '');
             case 'INVALID_OBJ': {
                 const items = d.items || [];
                 const first = items[0] ? [items[0].owner, items[0].object_name].filter(Boolean).join('.') : '';
@@ -91,27 +94,63 @@
         title.innerHTML = '점검 알림 <span class="nd-chk-meta" id="nd-checks-meta"></span>' +
             '<span class="nd-seg nd-chk-filter" id="nd-checks-filter" role="group" aria-label="점검 알림 필터">' +
             '<button type="button" data-f="all" class="active">전체</button><button type="button" data-f="CRIT">위험</button>' +
-            '<button type="button" data-f="WARN">주의</button><button type="button" data-f="INFO">확인</button></span>';
+            '<button type="button" data-f="WARN">주의</button><button type="button" data-f="INFO">확인</button></span>' +
+            '<button type="button" class="nd-link-btn nd-chk-hidden-btn" id="nd-checks-hidden-btn" aria-pressed="false" hidden></button>';
         card.querySelector('.nd-checks-body').id = 'nd-checks-body';
         $('nd-checks-filter').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
             st.filter = b.dataset.f;
             $('nd-checks-filter').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
             render();
         }));
+        $('nd-checks-hidden-btn').addEventListener('click', () => { st.showHidden = !st.showHidden; render(); });
+    }
+
+    // 숨김·되돌리기 - 성공하면 목록만 다시 읽는다(다른 패널은 그대로).
+    async function setHidden(it, hide, btn) {
+        const dbId = window.currentDbId;
+        if (btn) btn.disabled = true;
+        let res, body;
+        try {
+            res = await fetch(`/api/dashboard/${encodeURIComponent(dbId)}/checks/${hide ? 'ack' : 'unack'}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: getToken(), checkType: it.checkType, targetName: it.targetName })
+            });
+            body = await res.json().catch(() => null);
+        } catch (e) {
+            body = { error: e.message };
+        }
+        if (dbId !== window.currentDbId) return;
+        if (!res || !res.ok || !body || body.error) {
+            if (btn) { btn.disabled = false; btn.title = (body && body.error) || '처리 실패'; btn.textContent = '실패'; }
+            return;
+        }
+        const q = new URLSearchParams({ token: getToken() });
+        const d = await fetch(`/api/dashboard/${encodeURIComponent(dbId)}/checks?${q}`).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (!d || dbId !== window.currentDbId) return;
+        st.data = d;
+        render();
     }
 
     function render() {
         const d = st.data;
         if (!d) return;
-        const items = (d.items || []).filter(it => it.severity !== 'OK');
+        const all = (d.items || []).filter(it => it.severity !== 'OK');
+        const items = all.filter(it => !it.hidden);
+        const hiddenItems = all.filter(it => it.hidden);
+        if (!hiddenItems.length) st.showHidden = false;
+        const hb = $('nd-checks-hidden-btn');
+        hb.hidden = !hiddenItems.length;
+        hb.textContent = st.showHidden ? '‹ 알림 목록으로' : `숨긴 항목 ${hiddenItems.length}`;
+        hb.setAttribute('aria-pressed', st.showHidden ? 'true' : 'false');
         const count = (s) => items.filter(it => it.severity === s).length;
         const fail = count('ERROR');
         $('nd-checks-meta').innerHTML =
             `<span class="nd-chk-cnt nd-sev-crit">■ 위험 ${count('CRIT')}</span> · <span class="nd-chk-cnt nd-sev-warn">▲ 주의 ${count('WARN')}</span> · ` +
             `<span class="nd-chk-cnt nd-sev-info">○ 확인 ${count('INFO')}</span>` + (fail ? ` · <span class="nd-chk-cnt nd-sev-err">실패 ${fail}</span>` : '') +
             `<span class="nd-muted"> · 마지막 점검 ${d.lastLight ? hm(d.lastLight) : '—'} · ${d.intervalMinutes}분 주기</span>`;
-        const shown = items
-            .filter(it => st.filter === 'all' || it.severity === st.filter || (st.filter === 'all' && it.severity === 'ERROR'))
+        const shown = (st.showHidden ? hiddenItems : items)
+            .filter(it => st.showHidden || st.filter === 'all' || it.severity === st.filter)
             .sort((a, b) => SEV[a.severity].order - SEV[b.severity].order || (b.value || 0) - (a.value || 0));
         const body = $('nd-checks-body');
         if (!d.lastLight && !d.lastDaily) {
@@ -127,8 +166,24 @@
             const it = shown[+c.dataset.i];
             const open = () => ND.drawer && ND.drawer.open(() => viewDetail(it), c);
             c.addEventListener('click', open);
-            c.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+            c.addEventListener('keydown', (e) => { if (e.target !== c) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+            const act = c.querySelector('.nd-chk-act');
+            if (act) act.addEventListener('click', (e) => { e.stopPropagation(); setHidden(it, !it.hidden, act); });
         });
+    }
+
+    // 카드 오른쪽 위 버튼 - 목록에서는 "숨김", 숨긴 항목 보기에서는 "되돌리기"
+    function actBtn(it) {
+        return it.hidden
+            ? `<button type="button" class="nd-chk-act" title="다시 알림 목록에 표시">되돌리기</button>`
+            : `<button type="button" class="nd-chk-act" title="이 알림 숨기기 - 상태가 바뀌면(다시 실패·등급 상승) 다시 표시됩니다">숨김</button>`;
+    }
+
+    function hiddenText(it) {
+        const h = it.hidden;
+        if (!h) return '';
+        const dt = new Date(h.ts);
+        return `숨김: ${h.by || '?'} · ${pad(dt.getMonth() + 1)}/${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
     }
 
     function cardHtml(it, i) {
@@ -136,8 +191,8 @@
         if (it.severity === 'ERROR') {
             const msg = (it.detail && it.detail.error) || '';
             return `<div class="nd-chk-card nd-sev-err-card" tabindex="0" role="button" data-i="${i}" aria-label="점검 실패 ${esc(it.label)}">` +
-                `<div class="nd-chk-r1"><span class="nd-pill nd-pill-muted">점검 실패</span><b>${esc(it.label)}</b><span class="nd-chk-when">${esc(periodText(it.checkType))}</span></div>` +
-                `<div class="nd-chk-sub nd-chk-errmsg" title="${esc(msg)}">${esc(msg || '오류 메시지 없음')}</div></div>`;
+                `<div class="nd-chk-r1"><span class="nd-pill nd-pill-muted">점검 실패</span><b>${esc(it.label)}</b><span class="nd-chk-when">${esc(periodText(it.checkType))}</span>${actBtn(it)}</div>` +
+                `<div class="nd-chk-sub nd-chk-errmsg" title="${esc(msg)}">${esc(it.hidden ? hiddenText(it) : (msg || '오류 메시지 없음'))}</div></div>`;
         }
         let gauge = '';
         if (PCT_TYPES.indexOf(it.checkType) >= 0 && it.value !== null) {
@@ -147,9 +202,9 @@
         }
         return `<div class="nd-chk-card nd-sev-${sev.cls}-card" tabindex="0" role="button" data-i="${i}" aria-label="${esc(sev.t)} ${esc(it.label)} ${esc(it.targetName)}">` +
             `<div class="nd-chk-r1"><span class="nd-pill nd-pill-${sev.cls === 'info' ? 'muted' : sev.cls}">${sev.sym} ${esc(sev.t)}</span><b>${esc(it.label)}</b>` +
-            `<span class="nd-chk-when">${esc(periodText(it.checkType))}</span></div>` +
+            `<span class="nd-chk-when">${esc(periodText(it.checkType))}</span>${actBtn(it)}</div>` +
             `<div class="nd-chk-r2"><span class="nd-chk-target" title="${esc(it.targetName)}">${esc(it.targetName)}</span><span class="nd-chk-val">${esc(valueText(it))}</span></div>` +
-            gauge + `<div class="nd-chk-sub" title="${esc(subText(it))}">${esc(subText(it))}</div></div>`;
+            gauge + `<div class="nd-chk-sub" title="${esc(subText(it))}">${esc(it.hidden ? hiddenText(it) : subText(it))}</div></div>`;
     }
 
     // ================================================================== 6.4 상세

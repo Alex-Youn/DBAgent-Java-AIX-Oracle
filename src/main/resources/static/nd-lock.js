@@ -200,10 +200,20 @@
         const all = hist.concat(fill).sort((a, b) => a.t - b.t);
         if (all.length < 1) { svg.innerHTML = ''; G = null; return; }
         const W = Math.max(220, plot.clientWidth), H = Math.max(60, plot.clientHeight);
-        const ml = 30, mr = W < 420 ? 44 : 56, mt = 8, mb = 20, pw = W - ml - mr, ph = H - mt - mb;
         const t1 = all[all.length - 1].t, t0 = Math.min(all[0].t, t1 - 10 * 60000);
         const mx = Math.max(TX_WARN + 1, ...all.map(h => Math.max(h.tx, h.tm)));
-        const step = mx <= 8 ? 2 : mx <= 20 ? 5 : 10, top = Math.ceil(mx * 1.1 / step) * step;
+        // Y 눈금은 차트 높이에 맞춰 18px에 1개 이하로 - 예전엔 간격이 최대 10 고정이라 대기 100건이면 눈금 12개가
+        // 작은 차트(1920×1080에서 약 60px)에 몰려 숫자가 겹쳤다(2026-09-29 폐쇄망). 간격은 1·2·2.5·5 × 10^n.
+        // 왼쪽 여백은 최댓값 자릿수에 맞춘다(세 자리 이상이 잘리지 않게).
+        const mt = 8, mb = 20, ph = Math.max(20, H - mt - mb);
+        const maxTicks = Math.max(1, Math.floor(ph / 18));
+        let step = 1;
+        for (let e = 1; ; e *= 10) {
+            const c = [1, 2, 2.5, 5].map(k => k * e).filter(v => Number.isInteger(v)).find(v => Math.ceil(mx * 1.1 / v) <= maxTicks);
+            if (c) { step = c; break; }
+        }
+        const top = Math.ceil(mx * 1.1 / step) * step;
+        const ml = 14 + String(top).length * 8, mr = W < 420 ? 44 : 56, pw = W - ml - mr;
         const x = (t) => ml + (t - t0) / Math.max(1, t1 - t0) * pw, y = (v) => mt + ph - v / top * ph;
         G = { W, ml, pw, t0, t1, x, hist: all };
         svg.setAttribute('viewBox', `0 0 ${W} ${H}`);

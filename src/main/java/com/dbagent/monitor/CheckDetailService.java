@@ -80,11 +80,21 @@ public class CheckDetailService {
     /** ⑧ 목록 - 항목별 최신 결과(OK 행은 마지막 점검 시각용). */
     public Map<String, Object> list(TargetDbConfig target) {
         List<Map<String, Object>> rows = storeService.latestChecks(target.id());
+        Map<String, Map<String, Object>> acks = new HashMap<>();
+        for (Map<String, Object> a : storeService.checkAcks(target.id())) acks.put(a.get("checkType") + "|" + a.get("targetName"), a);
         long lastLight = 0, lastDaily = 0;
         Map<String, Long> lastByType = new LinkedHashMap<>();
         for (Map<String, Object> r : rows) {
             r.put("detail", parse((String) r.get("detail")));
             r.put("label", LABEL.getOrDefault(r.get("checkType"), (String) r.get("checkType")));
+            // 숨긴 당시와 상태가 같을 때만 숨김 - 다시 실패하거나 등급이 오르면 지문이 달라져 다시 보인다
+            Map<String, Object> ack = acks.get(r.get("checkType") + "|" + r.get("targetName"));
+            if (ack != null && !"OK".equals(r.get("severity")) && fingerprint(r).equals(ack.get("fingerprint"))) {
+                Map<String, Object> h = new LinkedHashMap<>();
+                h.put("by", ack.get("ackBy"));
+                h.put("ts", ack.get("ackTs"));
+                r.put("hidden", h);
+            }
             long ts = (Long) r.get("checkTs");
             String type = (String) r.get("checkType");
             lastByType.merge(type, ts, Math::max);
@@ -99,6 +109,37 @@ public class CheckDetailService {
         out.put("intervalMinutes", intervalMinutes);
         out.put("dailyHour", dailyHour);
         return out;
+    }
+
+    /**
+     * 숨김 판정용 상태 지문 - 잡 실패는 마지막 실패 시각(같은 잡이 또 실패하면 바뀜), 무효 객체는 개수, 그 밖은 심각도만
+     * (사용률 값은 10분마다 조금씩 바뀌므로 넣지 않는다 - 주의→위험으로 오를 때만 다시 보인다).
+     */
+    static String fingerprint(Map<String, Object> r) {
+        String fp = String.valueOf(r.get("severity"));
+        Object d = r.get("detail");
+        Map<?, ?> det = d instanceof Map ? (Map<?, ?>) d : Collections.emptyMap();
+        String type = String.valueOf(r.get("checkType"));
+        if ("ERROR".equals(fp)) return fp + "|" + det.get("error");
+        if ("JOB_FAIL".equals(type)) return fp + "|" + det.get("lastFail");
+        if ("INVALID_OBJ".equals(type)) return fp + "|" + r.get("value");
+        return fp;
+    }
+
+    /** ⑧ 숨김 - 현재 목록에 떠 있는 항목만(OK·이미 해소된 항목은 false). */
+    public boolean ack(TargetDbConfig target, String checkType, String targetName, String user) {
+        for (Map<String, Object> r : storeService.latestChecks(target.id())) {
+            if (!checkType.equals(r.get("checkType")) || !targetName.equals(r.get("targetName")) || "OK".equals(r.get("severity"))) continue;
+            r.put("detail", parse((String) r.get("detail")));
+            storeService.saveCheckAck(target.id(), checkType, targetName, fingerprint(r), user, System.currentTimeMillis());
+            return true;
+        }
+        return false;
+    }
+
+    /** ⑧ 숨김 되돌리기. */
+    public boolean unack(TargetDbConfig target, String checkType, String targetName) {
+        return storeService.deleteCheckAck(target.id(), checkType, targetName) > 0;
     }
 
     /** 6.4 상세. */

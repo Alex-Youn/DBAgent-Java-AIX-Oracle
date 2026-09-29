@@ -88,6 +88,14 @@ public class CheckCollector {
     private double tempCrit;
     @Value("${dbagent.monitor.check-exclude-owners:SYS,SYSTEM,AUDSYS,XDB,MDSYS,CTXSYS}")
     private String excludeOwners;
+    // 잡 실패 점검 이름 패턴(쉼표 구분, LIKE처럼 % = 아무 글자, 대소문자 무시, JOB_NAME 또는 OWNER.JOB_NAME과 비교, 2026-09-29).
+    // downgrade: '주의/위험' 대신 '확인'으로 표시. 기본 ORA$AT_% = Oracle 자동 유지보수 작업(Segment Advisor·통계 수집 등) -
+    // 실행마다 이름 뒤 번호가 바뀌어 숨김으로는 계속 새로 뜨고, 대개 급하지 않다(통계 수집 실패는 보이게 남겨 둔다).
+    // exclude: 점검에서 아예 뺀다(기본 없음).
+    @Value("${dbagent.monitor.job-fail-downgrade:ORA$AT_%}")
+    private String jobFailDowngrade;
+    @Value("${dbagent.monitor.job-fail-exclude:}")
+    private String jobFailExclude;
 
     public CheckCollector(DatabaseConfigService configService, OracleConnectionPoolManager poolManager,
                           MonitorStoreService storeService) {
@@ -291,20 +299,51 @@ public class CheckCollector {
                             "ROW_NUMBER() OVER (PARTITION BY owner, job_name ORDER BY log_date DESC) AS rn " +
                             "FROM dba_scheduler_job_run_details WHERE log_date > SYSDATE - 1" +
                             ") WHERE rn = 1 AND fail_cnt > 0 ORDER BY fail_cnt DESC")) {
+                List<java.util.regex.Pattern> exclude = likePatterns(jobFailExclude);
+                List<java.util.regex.Pattern> downgrade = likePatterns(jobFailDowngrade);
                 while (rs.next()) {
+                    String owner = rs.getString("owner"), job = rs.getString("job_name");
+                    if (matchesJob(exclude, owner, job)) continue;
                     boolean twoInRow = !"SUCCEEDED".equals(rs.getString("last1")) && rs.getString("last2") != null
                             && !"SUCCEEDED".equals(rs.getString("last2"));
+                    boolean low = matchesJob(downgrade, owner, job);
                     Map<String, Object> d = new LinkedHashMap<>();
                     d.put("lastStatus", rs.getString("last1"));
                     d.put("lastError", rs.getObject("last_err"));
                     d.put("lastInfo", rs.getString("last_info"));
                     d.put("lastFail", rs.getString("last_fail"));
                     d.put("consecutive", twoInRow);
-                    rows.add(row(target, ts, "JOB_FAIL", rs.getString("owner") + "." + rs.getString("job_name"),
-                            twoInRow ? "CRIT" : "WARN", rs.getDouble("fail_cnt"), twoInRow ? 2.0 : 1.0, d));
+                    if (low) d.put("downgraded", true);
+                    rows.add(row(target, ts, "JOB_FAIL", owner + "." + job,
+                            low ? "INFO" : (twoInRow ? "CRIT" : "WARN"), rs.getDouble("fail_cnt"), twoInRow ? 2.0 : 1.0, d));
                 }
             }
         }
+    }
+
+    /** "ORA$AT_%, SYS.FOO" → 정규식(% = .*, 나머지는 글자 그대로 - LIKE의 _ 한 글자 규칙은 잡 이름에 _가 흔해 쓰지 않는다). */
+    static List<java.util.regex.Pattern> likePatterns(String csv) {
+        List<java.util.regex.Pattern> out = new ArrayList<>();
+        if (csv == null) return out;
+        for (String p : csv.split(",")) {
+            p = p.trim();
+            if (p.isEmpty()) continue;
+            StringBuilder re = new StringBuilder();
+            String[] parts = p.split("%", -1);
+            for (int i = 0; i < parts.length; i++) {
+                if (i > 0) re.append(".*");
+                if (!parts[i].isEmpty()) re.append(java.util.regex.Pattern.quote(parts[i]));
+            }
+            out.add(java.util.regex.Pattern.compile(re.toString(), java.util.regex.Pattern.CASE_INSENSITIVE));
+        }
+        return out;
+    }
+
+    static boolean matchesJob(List<java.util.regex.Pattern> patterns, String owner, String job) {
+        for (java.util.regex.Pattern p : patterns) {
+            if (p.matcher(job).matches() || p.matcher(owner + "." + job).matches()) return true;
+        }
+        return false;
     }
 
     // ================================================================== 무거운 항목 (1일)

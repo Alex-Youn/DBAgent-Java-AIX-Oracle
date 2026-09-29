@@ -84,6 +84,13 @@ public class MonitorStoreService {
         // '통계 오래됨' 점검 제거(2026-09-26) - 남은 결과가 종류별 최신 행으로 계속 카드에 뜨지 않게 지운다
         jdbc.update("DELETE FROM mon_check_result WHERE check_type = 'STALE_STATS'");
 
+        // ⑧ 점검 알림 숨김(운영자 확인 처리, 2026-09-29) - 대상별 1행. fingerprint는 숨긴 당시 상태(잡 실패는 마지막 실패 시각,
+        // 그 밖은 심각도)라 상태가 바뀌면(다시 실패·등급 상승) 숨김이 풀린 것으로 본다. 되돌리기는 행 삭제.
+        jdbc.execute("CREATE TABLE IF NOT EXISTS mon_check_ack (" +
+                "db_id VARCHAR(64) NOT NULL, check_type VARCHAR(30) NOT NULL, target_name VARCHAR(261) NOT NULL, " +
+                "fingerprint VARCHAR(200) NOT NULL, ack_by VARCHAR(64) NOT NULL, ack_ts BIGINT NOT NULL, " +
+                "PRIMARY KEY (db_id, check_type, target_name))");
+
         jdbc.execute("CREATE TABLE IF NOT EXISTS mon_segment_size (" +
                 "db_id VARCHAR(64) NOT NULL, snap_date BIGINT NOT NULL, owner VARCHAR(128) NOT NULL, " +
                 "segment_name VARCHAR(128) NOT NULL, size_bytes BIGINT NOT NULL, " +
@@ -184,6 +191,33 @@ public class MonitorStoreService {
                 (rs, n) -> checkRow(rs), dbId, dbId);
     }
 
+    /** ⑧ 숨김 저장(같은 대상이면 덮어씀). */
+    public void saveCheckAck(String dbId, String checkType, String targetName, String fingerprint, String ackBy, long ackTs) {
+        jdbc.update(upsert("mon_check_ack", "db_id, check_type, target_name, fingerprint, ack_by, ack_ts",
+                        "db_id, check_type, target_name", 6),
+                dbId, checkType, targetName, truncate(fingerprint, 200), truncate(ackBy, 64), ackTs);
+    }
+
+    /** ⑧ 숨김 되돌리기 - 지운 행 수. */
+    public int deleteCheckAck(String dbId, String checkType, String targetName) {
+        return jdbc.update("DELETE FROM mon_check_ack WHERE db_id = ? AND check_type = ? AND target_name = ?",
+                dbId, checkType, targetName);
+    }
+
+    /** ⑧ DB의 숨김 목록 {checkType, targetName, fingerprint, ackBy, ackTs}. */
+    public List<java.util.Map<String, Object>> checkAcks(String dbId) {
+        return jdbc.query("SELECT check_type, target_name, fingerprint, ack_by, ack_ts FROM mon_check_ack WHERE db_id = ?",
+                (rs, n) -> {
+                    java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("checkType", rs.getString(1));
+                    m.put("targetName", rs.getString(2));
+                    m.put("fingerprint", rs.getString(3));
+                    m.put("ackBy", rs.getString(4));
+                    m.put("ackTs", rs.getLong(5));
+                    return m;
+                }, dbId);
+    }
+
     /** 6.4 상세: 해당 대상의 최근 결과 행(없으면 null). */
     public java.util.Map<String, Object> latestCheck(String dbId, String checkType, String targetName) {
         List<java.util.Map<String, Object>> rows = jdbc.query(
@@ -248,6 +282,8 @@ public class MonitorStoreService {
         purge("mon_lock_sample", "collect_ts", cutoff);
         purge("mon_check_result", "check_ts", cutoff);
         purge("mon_segment_size", "snap_date", cutoff);
+        // 숨김도 보관 기간이 지나면 지운다 - 같은 상태로 한 달 넘게 남은 알림은 한 번 다시 보여 주는 편이 안전하다
+        purge("mon_check_ack", "ack_ts", cutoff);
         purge("mon_kill_audit", "kill_ts", now - TimeUnit.DAYS.toMillis(killAuditRetentionDays));
     }
 

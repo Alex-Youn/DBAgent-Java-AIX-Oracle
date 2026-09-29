@@ -186,6 +186,22 @@ body.app-shell { overflow-y: hidden; }
     }
 }
 
+/* 선택된 DB의 헬스체크 결과(2026-09-29) - 초록+펄스는 선택 표시일 뿐이라 DB가 죽어도 살아 보였다.
+   Not Alive는 빨강·펄스 멈춤, Busy(풀 경합·응답 지연)는 노랑. 링크 색은 app.js가 인라인으로 넣고 펄스
+   keyframes도 color를 덮어쓰므로 !important + animation: none이 필요하다. 클래스는 app.js dbagentSetSidebarHealth. */
+.instance-item.active-monitoring.health-down,
+.instance-item.active-monitoring.health-down .instance-icon-live {
+    color: var(--danger) !important;
+}
+.instance-item.active-monitoring.health-busy,
+.instance-item.active-monitoring.health-busy .instance-icon-live {
+    color: var(--warning) !important;
+}
+.instance-item.active-monitoring.health-down .instance-icon-live,
+.instance-item.active-monitoring.health-busy .instance-icon-live {
+    animation: none;
+}
+
 .sidebar-header h2 {
     /* 2026-09-04 사용자 요청으로 한 단계 확대(1.2 -> 1.35rem). RDB 대시보드의 .pmm-brand도 같은
        1.35rem이다 - 2026-09-25부터 두 화면 모두 zoom 80%라 같은 CSS 값이면 같은 크기로 보인다
@@ -2088,7 +2104,7 @@ body.app-shell { overflow-y: hidden; }
 .nd-sev-err { color: var(--nd-muted); }
 .nd-chk-cards { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
 .nd-chk-card {
-    flex: 0 0 280px; min-width: 0; border: 1px solid var(--border-color); border-left: 4px solid var(--nd-muted);
+    flex: 0 0 310px; min-width: 0; border: 1px solid var(--border-color); border-left: 4px solid var(--nd-muted);
     border-radius: 6px; padding: 6px 9px; background: var(--nd-surface-2); cursor: pointer; display: flex; flex-direction: column; gap: 3px;
 }
 .nd-chk-card:hover, .nd-chk-card:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--primary); }
@@ -2115,6 +2131,25 @@ body.app-shell { overflow-y: hidden; }
 .nd-chk-rel .nd-table { font-family: inherit; }
 .nd-chk-rel .nd-table td, .nd-chk-rel .nd-table th { text-align: left; }
 .nd-chk-trend { display: block; max-width: 100%; }
+/* ⑧ 숨김·되돌리기 (2026-09-29) */
+.nd-chk-act {
+    flex: none; background: none; border: 1px solid var(--border-color); border-radius: 4px; color: var(--nd-muted);
+    font-size: 0.68rem; font-weight: 600; padding: 0 6px; line-height: 1.5; cursor: pointer;
+}
+.nd-chk-act:hover, .nd-chk-act:focus-visible { color: var(--nd-ink); border-color: var(--nd-ink-2); outline: none; }
+.nd-chk-act:disabled { opacity: 0.5; cursor: default; }
+.nd-chk-hidden-btn { font-size: 0.74rem; white-space: nowrap; margin-left: 10px; }
+
+/* B안 세로 압축 (2026-09-29 오케스트레이터 결정) - 창 세로가 모자라 ②③ 차트가 최소 높이보다 작아질 때만
+   nd-dashboard.js fitChart()가 #dashboard-nd-view에 .nd-compact를 붙인다. Top 목록은 3행, 점검 알림 카드는 한 줄
+   (심각도·항목·대상·값만, 나머지는 카드를 눌러 상세에서 본다). */
+.nd-compact .nd-top-list li:nth-child(n+4) { display: none; }
+.nd-compact .nd-chk-card { flex-direction: row; align-items: center; gap: 8px; flex-basis: 440px; padding: 4px 9px; font-size: 0.76rem; }
+.nd-compact .nd-chk-r1, .nd-compact .nd-chk-r2 { display: contents; }
+.nd-compact .nd-chk-r1 b { flex: 0 1 auto; }
+.nd-compact .nd-chk-target { flex: 1 1 auto; }
+.nd-compact .nd-chk-act { order: 9; }
+.nd-compact .nd-chk-when, .nd-compact .nd-chk-gauge, .nd-compact .nd-chk-sub { display: none; }
 
 
 /* ===== G3 성능 분석(2026-09-26) - #history 섹션, 동작은 perf-analysis.js ===== */

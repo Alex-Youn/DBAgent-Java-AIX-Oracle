@@ -688,6 +688,9 @@ function dbagentSectionVisible(id) {
                             document.querySelectorAll('.instance-item').forEach(el => {
                                 el.style.color = 'var(--primary)';
                                 el.classList.remove('active-monitoring');
+                                // 헬스 표시도 지운다 - 선택 해제된 DB는 더 폴링하지 않아 옛 상태가 남기 때문.
+                                el.classList.remove('health-down', 'health-busy');
+                                el.title = '';
                                 // querySelector('svg') 대신 명시적으로 static 아이콘을 지정 - 두 아이콘(static/live)이
                                 // 함께 렌더링되기 시작한 뒤로 'svg'는 DOM 순서상 항상 static을 먼저 찾기 때문에,
                                 // 여기선 우연히 맞지만 아래 active 쪽에서는 틀린 아이콘을 잡던 문제를 함께 바로잡음.
@@ -3035,6 +3038,19 @@ let layoutHTML = "";
         clearSegmentedDoughnutChart(dashFailChart);
     };
 
+    // 좌측 트리의 선택된 DB에 헬스체크 결과를 표시한다. 초록+펄스는 원래 "지금 보고 있는 DB"라는 선택 표시일 뿐이라
+    // DB가 Not Alive여도 살아 있는 것처럼 보였다(오케스트레이터 지적, 2026-09-29). 기존 대시보드(fetchHealth)와
+    // 새 대시보드(nd-dashboard.js loadStatus)가 이미 받는 /api/health 결과만 쓴다 - 추가 조회 없음.
+    // status: 'Alive' | 'Busy' | 그 밖(=Not Alive) | null(모름 - 표시 해제). 폴링은 선택된 DB만 하므로 다른 DB는 표시하지 않는다.
+    window.dbagentSetSidebarHealth = (dbId, status) => {
+        const el = document.querySelector(`.instance-item[data-db-id="${CSS.escape(String(dbId || ''))}"]`);
+        if (!el) return;
+        const down = status != null && status !== 'Alive' && status !== 'Busy';
+        el.classList.toggle('health-down', down);
+        el.classList.toggle('health-busy', status === 'Busy');
+        el.title = down ? 'DB 상태: Not Alive' : (status === 'Busy' ? 'DB 상태: Busy(응답 지연)' : '');
+    };
+
     const resetHealth = () => {
         const elInst = document.getElementById('mini-status-instance');
         const elInstCirc = document.getElementById('mini-status-instance-circle');
@@ -3327,13 +3343,18 @@ let layoutHTML = "";
                     setStat('mini-status-max-process', hData.max_processes);
                     setStat('mini-status-dedicated-session', hData.dedicated_sessions);
                     setStat('mini-status-shared-session', hData.shared_sessions);
+                    window.dbagentSetSidebarHealth(dbId, hData.instance_status);
                     return hData.instance_status === 'Alive';
                 } else {
                     markHealthDown();
+                    window.dbagentSetSidebarHealth(dbId, 'Not Alive');
                     return false;
                 }
             } catch(e) {
-                if (dbId === window.currentDbId) markHealthDown();
+                if (dbId === window.currentDbId) {
+                    markHealthDown();
+                    window.dbagentSetSidebarHealth(dbId, 'Not Alive');
+                }
                 return false;
             } finally {
                 if (fetchingHealthForDbId === dbId) fetchingHealthForDbId = null;

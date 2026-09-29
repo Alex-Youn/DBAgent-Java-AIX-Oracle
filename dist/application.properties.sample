@@ -136,6 +136,11 @@
 #dbagent.monitor.check-temp-warn-pct=75
 #dbagent.monitor.check-temp-crit-pct=90
 #dbagent.monitor.check-exclude-owners=SYS,SYSTEM,AUDSYS,XDB,MDSYS,CTXSYS
+# 스케줄러 잡 실패 점검 이름 패턴(쉼표 구분, % = 아무 글자, 대소문자 무시, JOB_NAME 또는 OWNER.JOB_NAME과 비교)
+#  job-fail-downgrade: 주의/위험 대신 '확인' 등급으로 표시(기본 ORA$AT_% = Oracle 자동 유지보수 작업, 실행마다 이름 번호가 바뀜)
+#  job-fail-exclude  : 점검에서 아예 제외(기본 없음)
+#dbagent.monitor.job-fail-downgrade=ORA$AT_%
+#dbagent.monitor.job-fail-exclude=
 # 점검 쿼리 타임아웃(초). 1일 항목은 dbagent.oracle.read-timeout-ms보다 5초 짧게 자동 제한되므로, 더 길게 필요하면 두 값을 같이 올린다
 #dbagent.monitor.check-query-timeout-seconds=30
 #dbagent.monitor.check-daily-query-timeout-seconds=120

@@ -121,6 +121,7 @@ public class OracleConnectionPoolManager {
     }
 
     private static final Pattern WAITING_PATTERN = Pattern.compile("waiting=(\\d+)");
+    private static final Pattern ACTIVE_PATTERN = Pattern.compile("active=(\\d+)");
 
     // HikariCP wraps BOTH cases in the exact same "Connection is not available" message: (a) every
     // existing connection was busy and this caller queued up for one (self-inflicted contention - the
@@ -128,13 +129,21 @@ public class OracleConnectionPoolManager {
     // attempt itself failed (a real outage). The "waiting=N" count in the message is what actually
     // tells them apart: N > 0 means another caller really was queued for an in-use connection; N == 0
     // means nobody was competing, so the timeout can only be a genuine connect failure.
+    // active=0도 실제 장애로 본다: 죽은 DB에 여러 요청이 동시에 오면 연결 하나 없이(total=0, active=0)
+    // waiting만 2 이상이 되는데, 쥐고 있는 연결이 없으니 경합일 수 없다. 예전엔 이것도 경합(Busy)으로 봐서
+    // 헬스체크가 Not Alive ↔ Busy로 섞여 나왔다(2026-09-29 로컬 실측: DB 정지 중 12번 중 3번 Busy).
+    // active 값을 못 읽으면(메시지 형식 변경) 예전처럼 waiting만 본다.
     public static boolean isPoolExhausted(SQLException e) {
         String msg = e.getMessage();
         if (msg == null || !msg.contains("Connection is not available")) {
             return false;
         }
         Matcher m = WAITING_PATTERN.matcher(msg);
-        return m.find() && Integer.parseInt(m.group(1)) > 0;
+        if (!m.find() || Integer.parseInt(m.group(1)) <= 0) {
+            return false;
+        }
+        Matcher a = ACTIVE_PATTERN.matcher(msg);
+        return !a.find() || Integer.parseInt(a.group(1)) > 0;
     }
 
     private void checkCooldown(String poolKey) throws SQLException {
