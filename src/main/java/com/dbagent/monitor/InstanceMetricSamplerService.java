@@ -21,8 +21,6 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -54,21 +52,10 @@ public class InstanceMetricSamplerService {
     // 순차로 늘어지지 않고 가장 느린 인스턴스 하나만큼만 걸리게 한다.
     private static final ExecutorService SAMPLER_EXECUTOR = Executors.newFixedThreadPool(4);
 
-    // 일반(TEMP 아닌) 테이블스페이스 사용률 알림 임계치 - MonitorService.getActiveAlerts()가 쓰던
-    // 값을 여기로 옮겼다(오케스트레이터 폐쇄망 실측, 2026-09-18: dba_data_files/dba_free_space 조인을
-    // active_alerts 요청마다(v2 10초 폴링 + 인스턴스 전환마다 즉시 1회) 실시간으로 돌렸더니, 실제
-    // 운영 규모(테이블스페이스/데이터파일 수가 이 테스트 환경보다 훨씬 많음)에서는 딕셔너리 뷰 조인이
-    // 가볍지 않아 커넥션을 오래 붙잡았다 - v$lock 스캔과 같은 풀(인스턴스당 최대
-    // dbagent.oracle.pool.max-size개)을 같이 쓰다 보니 전환 지연/풀 고갈로 번져, 기존 대시보드로
-    // 돌아가거나 다른 인스턴스로 전환할 때도 연쇄적으로 느려지거나 접속 실패가 났다. v$lock/CPU/AAS
-    // 처럼 이미 주기 샘플링하는 값들과 같은 사이클(metric-sample-interval-seconds)에 태워, 실시간
-    // 조회 대신 마지막 샘플링 결과를 캐시에서 읽게 한다.
-    private static final double TABLESPACE_CRITICAL_PCT = 97.0;
-
-    // db_id -> 마지막 샘플링에서 임계치를 넘은 테이블스페이스 알림 목록. MonitorService.getActiveAlerts()가
-    // 읽기 전용으로 참조한다. 값 자체가 매 사이클 통째로 교체되는 스냅샷이라 ConcurrentHashMap이면
-    // 충분하고, 읽는 쪽과 쓰는 쪽(SAMPLER_EXECUTOR의 여러 스레드) 사이에 추가 동기화가 필요 없다.
-    private final ConcurrentHashMap<String, List<Map<String, Object>>> tablespaceAlertsCache = new ConcurrentHashMap<>();
+    // (2026-09-30) 예전엔 두 번째 대시보드(v2)의 active_alerts용으로 매 주기 테이블스페이스 사용률(dba_data_files/
+    // dba_free_space 조인, 97% 이상)도 여기서 샘플링해 캐시했다. v2 삭제(오케스트레이터 결정)로 이 조회를 없앴다 -
+    // 모든 오라클 DB에 1분마다 나가던 딕셔너리 뷰 조인이 빠진다. 테이블스페이스 알림은 새 대시보드 ⑧ 점검 알림
+    // (CheckCollector TABLESPACE, 10분 주기)이 맡는다.
 
     // C1(2026-09-25, 체크리스트 1-10 보완): 인스턴스별로 마지막에 집계한 ASH sample_id. 예전엔 매 사이클
     // "SYSDATE - 60초" 창을 셌는데 fixedDelay라 실제 주기가 60초를 넘으면(조회 시간만큼 밀림) 그 사이 몇 초가
@@ -195,8 +182,11 @@ public class InstanceMetricSamplerService {
         }
     }
 
+    // 기동·DB 추가 때의 보충도 빈 분 보정과 같은 전용 단일 스레드에서 DB를 차례로 돈다(2026-09-30). 예전엔 샘플러 풀(4개)에서
+    // 여러 DB 보충이 동시에 내부 저장소에 많은 행을 쓰다가 서로 busy_timeout(5초)을 넘겨 SQLITE_BUSY로 실패했다
+    // (원본 DBAgent-Java 로컬 실측, AIX는 H2라 같은 오류는 아니어도 동시 쓰기 잠금 대기를 줄인다). 정기 샘플링과 스레드도 나눈다.
     void backfillAsync(TargetDbConfig target) {
-        CompletableFuture.runAsync(() -> backfill(target, BACKFILL_MINUTES, 0), SAMPLER_EXECUTOR);
+        GAP_FILL_EXECUTOR.execute(() -> backfill(target, BACKFILL_MINUTES, 0));
     }
 
     /**
@@ -245,6 +235,7 @@ public class InstanceMetricSamplerService {
             historyService.record(r.instanceId, "tx_lock_waiting", r.sampledAt, r.txLockWaiting);
         }
         historyService.record(r.instanceId, "ash_cpu_cores", r.sampledAt, r.cpuCores);
+        if (r.cpuCoresPhys > 0) historyService.record(r.instanceId, "ash_cpu_cores_phys", r.sampledAt, r.cpuCoresPhys);
         // ASH 조회가 실패한 사이클은 분류 값을 아예 남기지 않는다 - 예전엔 0으로 저장돼 차트에 "부하 없음"처럼
         // 보였다(값이 없는 분은 차트에서 끊겨 보이는 게 맞다).
         if (r.ashCategoryAas != null) {
@@ -257,16 +248,22 @@ public class InstanceMetricSamplerService {
                 historyService.record(r.instanceId, ASH_WC_METRIC_NAMES[i], r.sampledAt, r.ashWaitClassAas[i]);
             }
         }
-        savePerf(r.instanceId, r.perf);
+        savePerf(r.instanceId, r.perf, r.sampledAt);
     }
 
     /** 성능 분석 저장소 기록 - 실패해도 다른 수집값에는 영향 없게 삼킨다. */
-    private void savePerf(String dbId, PerfSample perf) {
+    private void savePerf(String dbId, PerfSample perf, long sampledAt) {
         if (perf == null) return;
         try {
             perfStore.saveRows(dbId, perf.rows);
             for (String[] t : perf.sqlTexts) {
                 perfStore.saveSqlText(dbId, t[0], t[1], perf.capturedKey);
+            }
+            // 이번 샘플 시점(DB 시각)이 속한 분 앞까지 수집 완료 - 그 분은 아직 덜 찼다(2026-09-30 QA, 성능 분석 최근 구간 0 표시 방지)
+            Long off = dbClockOffsetMs.get(dbId);
+            if (sampledAt > 0 && off != null) {
+                LocalDateTime dbAt = LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(sampledAt + off), ZoneId.systemDefault());
+                perfStore.markCollected(dbId, PerfStoreService.minuteKey(dbAt));
             }
         } catch (Exception e) {
             log.warn("perf store write failed for db_id={}: {}", dbId, e.toString());
@@ -287,6 +284,12 @@ public class InstanceMetricSamplerService {
             // 차트의 CPU 기준선(ash_cpu_cores)도 CPU%의 분모와 같은 NUM_CPUS - 2026-09-28 NUM_CPU_CORES에서 변경,
             // 이유는 CpuCores 주석 참고.
             double cpuCores = CpuCores.query(conn);
+            // 물리 코어 보조선(2026-09-30) - 판정엔 안 쓴다. 못 읽으면 0(저장 안 함, 차트에서 선을 그리지 않음)
+            double cpuCoresPhys = 0;
+            try {
+                cpuCoresPhys = CpuCores.queryPhysical(conn);
+            } catch (SQLException ignored) {
+            }
 
             double dbTimeAas = 0;
             try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'Average Active Sessions'")) {
@@ -334,37 +337,8 @@ public class InstanceMetricSamplerService {
                 log.debug("ASH category sampling skipped for db_id={}: {}", target.id(), ashScanFailed.toString());
             }
 
-            try (Statement tsSt = conn.createStatement()) {
-                tsSt.setQueryTimeout(lockQueryTimeoutSeconds);
-                List<Map<String, Object>> tsAlerts = new ArrayList<>();
-                try (ResultSet rs = tsSt.executeQuery(
-                        "SELECT df.tablespace_name, " +
-                                "ROUND(((df.total_mb - NVL(fs.free_mb, 0)) / df.total_mb) * 100, 1) as pct " +
-                                "FROM (SELECT tablespace_name, ROUND(SUM(bytes) / 1048576) as total_mb " +
-                                "      FROM dba_data_files GROUP BY tablespace_name) df " +
-                                "LEFT JOIN (SELECT tablespace_name, ROUND(SUM(bytes) / 1048576) as free_mb " +
-                                "           FROM dba_free_space GROUP BY tablespace_name) fs " +
-                                "ON df.tablespace_name = fs.tablespace_name")) {
-                    while (rs.next()) {
-                        double pct = rs.getDouble("pct");
-                        if (pct >= TABLESPACE_CRITICAL_PCT) {
-                            Map<String, Object> item = new LinkedHashMap<>();
-                            item.put("severity", "critical");
-                            item.put("message", rs.getString("tablespace_name") + " 테이블스페이스 " + pct + "%");
-                            item.put("occurredAt", sampledAt);
-                            item.put("relatedSid", null);
-                            tsAlerts.add(item);
-                        }
-                    }
-                }
-                tablespaceAlertsCache.put(target.id(), tsAlerts);
-            } catch (SQLException tablespaceScanFailed) {
-                // 이 샘플링 사이클만 건너뛰고 캐시는 직전 값을 유지한다(락 스캔 실패 처리와 같은 이유).
-                log.debug("Tablespace usage sampling skipped for db_id={}: {}", target.id(), tablespaceScanFailed.toString());
-            }
-
             return new SampleResult(target.id(), sampledAt, cpuPct, dbTimeAas, tmLockWaiting, txLockWaiting,
-                    cpuCores, ashCategoryAas, ashWaitClassAas, perf);
+                    cpuCores, cpuCoresPhys, ashCategoryAas, ashWaitClassAas, perf);
         } catch (Exception e) {
             log.warn("Instance metric sampling failed for db_id={}: {}", target.id(), e.toString());
             return null;
@@ -677,7 +651,7 @@ public class InstanceMetricSamplerService {
                             ps.setString(1, s0.format(BUCKET_FORMAT));
                             ps.setString(2, e0.format(BUCKET_FORMAT));
                         }, have);
-                savePerf(target.id(), perf);
+                savePerf(target.id(), perf, -1L); // 과거 구간 보충이라 수집 완료 기준은 올리지 않는다
                 // 10분마다 도는 fillGaps는 평소 0행이라 로그를 남기지 않는다
                 if (!perf.rows.isEmpty()) log.info("perf backfill for db_id={}: {} row(s)", target.id(), perf.rows.size());
             } catch (Exception perfFailed) {
@@ -694,11 +668,6 @@ public class InstanceMetricSamplerService {
             if (Math.abs(t - at) <= 45_000L) return true;
         }
         return false;
-    }
-
-    /** MonitorService.getActiveAlerts()가 실시간 조회 대신 읽는 마지막 샘플링 결과. */
-    List<Map<String, Object>> getCachedTablespaceAlerts(String dbId) {
-        return tablespaceAlertsCache.getOrDefault(dbId, Collections.emptyList());
     }
 
     // MonitorService.monitoringAccountLiteral()과 동일 - 클래스가 달라 공유 못 하므로 그대로 복사.
@@ -742,12 +711,13 @@ public class InstanceMetricSamplerService {
         final int tmLockWaiting;
         final int txLockWaiting;
         final double cpuCores;
+        final double cpuCoresPhys; // NUM_CPU_CORES, 차트 보조선 전용(없으면 0)
         final double[] ashCategoryAas; // 7분류(AshCategories.KEYS7 순서), ASH 조회 실패 시 null
         final double[] ashWaitClassAas; // 8분류(AshCategories.KEYS8 순서), ASH 조회 실패 시 null (2026-09-25)
         final PerfSample perf; // 성능 분석 수집, 실패 시 null (2026-09-26)
 
         SampleResult(String instanceId, long sampledAt, double cpuPct, double dbTimeAas,
-                     int tmLockWaiting, int txLockWaiting, double cpuCores, double[] ashCategoryAas,
+                     int tmLockWaiting, int txLockWaiting, double cpuCores, double cpuCoresPhys, double[] ashCategoryAas,
                      double[] ashWaitClassAas, PerfSample perf) {
             this.instanceId = instanceId;
             this.sampledAt = sampledAt;
@@ -756,6 +726,7 @@ public class InstanceMetricSamplerService {
             this.tmLockWaiting = tmLockWaiting;
             this.txLockWaiting = txLockWaiting;
             this.cpuCores = cpuCores;
+            this.cpuCoresPhys = cpuCoresPhys;
             this.ashCategoryAas = ashCategoryAas;
             this.ashWaitClassAas = ashWaitClassAas;
             this.perf = perf;

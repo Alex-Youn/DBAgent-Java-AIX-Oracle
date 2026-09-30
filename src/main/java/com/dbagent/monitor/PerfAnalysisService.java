@@ -126,6 +126,9 @@ public class PerfAnalysisService {
         long toKey = PerfStoreService.minuteKey(to) + (to.getSecond() > 0 ? 1 : 0);
         Map<Long, double[]> buckets = new java.util.TreeMap<>();
         for (long k = fromKey; k < toKey; k += step) buckets.put(k, new double[AshCategories.KEYS7.length]);
+        // 아직 수집이 끝나지 않은 막대(수집 완료 기준 이후를 걸치는 막대)는 0이 아니라 null - 값 없음을 0으로 그리지 않는다
+        // (2026-09-30 QA: 최근 1~2분이 부하가 꺼진 것처럼 낮게 보였다). 기준을 아직 모르면(기동 직후) 예전처럼 그린다.
+        Long complete = store.collectedBefore(target.id());
         for (Map<String, Object> row : store.minuteCategory(target.id(), fromKey, toKey, filter)) {
             long k = num(row, "minute_key").longValue();
             long b = fromKey + ((k - fromKey) / step) * step;
@@ -136,7 +139,8 @@ public class PerfAnalysisService {
         List<Map<String, Object>> series = new ArrayList<>();
         for (Map.Entry<Long, double[]> e : buckets.entrySet()) {
             List<Double> values = new ArrayList<>();
-            for (double sec : e.getValue()) values.add(Math.round(sec / (step * 60.0) * 100) / 100.0);
+            boolean pending = complete != null && e.getKey() + step > complete;
+            for (double sec : e.getValue()) values.add(pending ? null : Math.round(sec / (step * 60.0) * 100) / 100.0);
             Map<String, Object> pt = new LinkedHashMap<>();
             pt.put("time", PerfStoreService.fromMinuteKey(e.getKey()).format(ISO));
             pt.put("values", values);
@@ -144,6 +148,7 @@ public class PerfAnalysisService {
         }
         Map<String, Object> r = storeHeader(target, from, to, now);
         r.put("step_minutes", step);
+        r.put("collectedTo", complete == null ? null : PerfStoreService.fromMinuteKey(complete).format(ISO));
         r.put("categories", java.util.Arrays.asList("CPU", "Latch", "User I/O", "TX Lock", "Sys I/O", "TM Lock", "Other"));
         r.put("series", series);
         r.put("cpu_cores", latestCpuCores(target.id()));
@@ -163,7 +168,10 @@ public class PerfAnalysisService {
         to = clampTo(to, now);
         long fromKey = PerfStoreService.minuteKey(from);
         long toKey = PerfStoreService.minuteKey(to) + (to.getSecond() > 0 ? 1 : 0);
-        double rangeSec = Math.max(60, (toKey - fromKey) * 60.0);
+        // 평균(AAS) 분모에서 아직 수집 안 된 분을 뺀다 - 안 빼면 최근 구간을 고를수록 평균이 낮게 나온다(2026-09-30 QA)
+        Long complete = store.collectedBefore(target.id());
+        long effTo = complete != null && complete > fromKey ? Math.min(toKey, complete) : toKey;
+        double rangeSec = Math.max(60, (effTo - fromKey) * 60.0);
         List<Map<String, Object>> events = new ArrayList<>();
         double total = 0;
         for (Map<String, Object> row : store.eventTotals(target.id(), fromKey, toKey, filter)) {

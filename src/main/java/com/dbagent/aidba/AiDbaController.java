@@ -136,6 +136,11 @@ public class AiDbaController {
         if (followUpQuestion != null && !Strings.isBlank(followUpQuestion)) {
             sb.append("\n\n[DBA 추가 요청]\n").append(followUpQuestion);
         }
+        // 폐쇄망에서 영어 답변 발생(오케스트레이터 지적, 2026-09-30): 입력이 SQL·실행계획이라 거의 전부 영어이고,
+        // current-sql.md의 한국어 규칙은 시스템 프롬프트 중간 한 줄뿐이라 로컬 LLM이 영어로 넘어간다. GPU 서버
+        // prompts/에 current-sql.md가 없으면 기본 페르소나로 폴백해 한국어 지시 자체가 없다. 채팅(ask/askGeneral)과
+        // 같이 사용자 메시지 맨 끝에 한국어 지시를 붙여 서버 프롬프트 파일 유무와 관계없이 한국어로 답하게 한다.
+        sb.append("\n\n반드시 한국어로 답하세요.");
         return sb.toString();
     }
 

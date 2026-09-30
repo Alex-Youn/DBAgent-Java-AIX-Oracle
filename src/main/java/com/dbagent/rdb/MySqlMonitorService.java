@@ -1,5 +1,7 @@
 package com.dbagent.rdb;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.dbagent.oracle.TargetDbConfig;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +23,8 @@ import java.util.Map;
  */
 @Service
 public class MySqlMonitorService implements EngineMonitorService {
+
+    private static final Logger log = LoggerFactory.getLogger(MySqlMonitorService.class);
 
     private final RdbConnectionPoolManager poolManager;
 
@@ -119,6 +123,8 @@ public class MySqlMonitorService implements EngineMonitorService {
             result.put("txnPerMin", 0);
             result.put("uptimePct", uptimePct);
         } catch (SQLException e) {
+            // 원인을 남긴다 - 예전엔 삼켜서 Fleet에서만 down인 이유를 알 수 없었다(2026-09-30 원본 DBAgent-Java docker_mssql 실측). 화면 문구는 그대로.
+            log.warn("fleet_status failed for db_id={}: {}", target.id(), e.toString());
             result.put("status", "down");
             result.put("errorMessage", "DB에 연결할 수 없습니다.");
         }

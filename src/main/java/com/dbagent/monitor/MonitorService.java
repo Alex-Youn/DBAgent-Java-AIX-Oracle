@@ -37,7 +37,6 @@ public class MonitorService {
 
     private final OracleConnectionPoolManager poolManager;
     private final OracleQueryHelper queryHelper;
-    private final InstanceMetricSamplerService metricSamplerService;
     private final MonitorStoreService storeService;
 
     // 코드 리뷰 지적(2026-09-14): 이 값은 SqlQueryService.timeoutSeconds/ExecutionPlanService.timeoutSeconds
@@ -79,7 +78,7 @@ public class MonitorService {
     private int ashAwrQueryTimeoutSeconds;
 
     // TM Lock 장애 판정 기준(초) - 이 시간 이상 last_call_et가 흐른 블로킹 TM Holder만 센다. getFailureProb()
-    // (장애 판정·장애조치 버튼)와 getActiveAlerts()("Blocking Session 감지" 알림)가 같은 값을 써야 화면마다
+    // (장애 판정·장애조치 버튼)와 예전 getActiveAlerts()("Blocking Session 감지" 알림, 2026-09-30 v2와 함께 삭제)가 같은 값을 써야 화면마다
     // 판정이 갈리지 않는다(2026-09-25 오케스트레이터 결정으로 하드코딩 60초를 프로퍼티화). application.properties는
     // skip-worktree라 pull로 새 키가 들어가지 않으므로 키가 없으면 기존과 같은 60초로 동작해야 하고, 폐쇄망에서
     // 오타로 잘못 넣어도 앱 기동 자체가 실패하지 않도록 문자열로 받아 직접 검증한다.
@@ -108,10 +107,9 @@ public class MonitorService {
     }
 
     public MonitorService(OracleConnectionPoolManager poolManager, OracleQueryHelper queryHelper,
-                           InstanceMetricSamplerService metricSamplerService, MonitorStoreService storeService) {
+                           MonitorStoreService storeService) {
         this.poolManager = poolManager;
         this.queryHelper = queryHelper;
-        this.metricSamplerService = metricSamplerService;
         this.storeService = storeService;
     }
 
@@ -1262,16 +1260,21 @@ public class MonitorService {
 
     // ------------------------------------------------------------ tablespace
     public List<Map<String, Object>> getTablespaces(TargetDbConfig target) throws SQLException {
-        String query = "SELECT df.tablespace_name, df.status, df.total_mb, " +
+        // 자동확장 최대 크기 기준 사용률(max_used_pct)도 함께 준다(2026-09-30 QA) - 할당 기준(used_pct)만 보여 주면 자동확장
+        // 여유가 충분한 SYSTEM이 99.7%로 빨갛게 보였고, 대시보드 점검(dba_tablespace_usage_metrics, 최대 크기 기준)은 정상이라
+        // 두 화면 신호가 어긋났다. 화면은 주의·위험 색을 최대 기준에만 입힌다. 자동확장이 아니면 최대 = 할당이라 결과가 같다.
+        String query = "SELECT df.tablespace_name, df.status, df.total_mb, df.max_mb, " +
                 "df.total_mb - NVL(fs.free_mb, 0) as used_mb, NVL(fs.free_mb, 0) as free_mb, " +
-                "ROUND(((df.total_mb - NVL(fs.free_mb, 0)) / df.total_mb) * 100, 2) as used_pct " +
-                "FROM (SELECT t.tablespace_name, t.status, ROUND(SUM(d.bytes) / 1048576) as total_mb " +
+                "ROUND(((df.total_mb - NVL(fs.free_mb, 0)) / df.total_mb) * 100, 2) as used_pct, " +
+                "ROUND(((df.total_mb - NVL(fs.free_mb, 0)) / NULLIF(df.max_mb, 0)) * 100, 2) as max_used_pct " +
+                "FROM (SELECT t.tablespace_name, t.status, ROUND(SUM(d.bytes) / 1048576) as total_mb, " +
+                "             ROUND(SUM(CASE WHEN d.autoextensible = 'YES' THEN GREATEST(d.maxbytes, d.bytes) ELSE d.bytes END) / 1048576) as max_mb " +
                 "      FROM dba_tablespaces t JOIN dba_data_files d ON t.tablespace_name = d.tablespace_name " +
                 "      GROUP BY t.tablespace_name, t.status) df " +
                 "LEFT JOIN (SELECT tablespace_name, ROUND(SUM(bytes) / 1048576) as free_mb " +
                 "           FROM dba_free_space GROUP BY tablespace_name) fs " +
                 "ON df.tablespace_name = fs.tablespace_name " +
-                "ORDER BY ROUND(((df.total_mb - NVL(fs.free_mb, 0)) / df.total_mb) * 100, 2) DESC, df.tablespace_name";
+                "ORDER BY max_used_pct DESC NULLS LAST, df.tablespace_name";
 
         List<Map<String, Object>> tablespaces = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
@@ -1285,6 +1288,9 @@ public class MonitorService {
                 row.put("used_mb", orZero(rs.getObject("used_mb")));
                 row.put("free_mb", orZero(rs.getObject("free_mb")));
                 row.put("used_pct", orZero(rs.getObject("used_pct")));
+                row.put("max_mb", orZero(rs.getObject("max_mb")));
+                Object maxPct = rs.getObject("max_used_pct");
+                row.put("max_used_pct", maxPct == null ? null : orZero(maxPct));
                 tablespaces.add(row);
             }
         }
@@ -1369,206 +1375,6 @@ public class MonitorService {
             result.put("active_sessions", activeSessions);
             return result;
         }
-    }
-
-    // ----------------------------------------------------- instance_overview (dashboard v2)
-    // oracle-instance-dashboard-spec.md의 PageHeader/KpiTileRow용 - 기존 getDashboardStats()와 별도
-    // 엔드포인트로 둔 이유는, 기존 대시보드(레거시)를 건드리지 않고 신규 대시보드를 추가하기로 한
-    // 결정(2026-09-15 설계 검토) 때문 - 응답 shape을 공유하면 레거시 프론트가 깨질 위험이 있다.
-    public Map<String, Object> getInstanceOverview(TargetDbConfig target) throws SQLException {
-        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
-            Map<String, Object> result = new LinkedHashMap<>();
-
-            String status = "MOUNTED";
-            double uptimeDays = 0;
-            String version = null;
-            String instanceName = null;
-            try (ResultSet rs = st.executeQuery(
-                    "SELECT status, (SYSDATE - startup_time) AS uptime_days, version, instance_name FROM v$instance")) {
-                if (rs.next()) {
-                    status = rs.getString("status");
-                    uptimeDays = rs.getDouble("uptime_days");
-                    version = rs.getString("version");
-                    instanceName = rs.getString("instance_name");
-                }
-            }
-
-            String versionCodename = null;
-            try (ResultSet rs = st.executeQuery("SELECT banner FROM v$version WHERE banner LIKE 'Oracle Database%'")) {
-                if (rs.next()) {
-                    Matcher m = VERSION_CODENAME_PATTERN.matcher(rs.getString("banner"));
-                    if (m.find()) versionCodename = m.group(1);
-                }
-            } catch (Exception e) {
-                log.warn("v$version lookup failed for db_id={}: {}", target.id(), e.toString());
-            }
-
-            // RAC 여부는 gv$instance 행 수로 판단 - Single Instance(XE 등)에서는 이 뷰 자체가 1행만
-            // 주거나 권한이 없을 수 있어 조회 실패는 조용히 Single Instance로 취급한다.
-            String topology = "Single Instance";
-            try (ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM gv$instance")) {
-                if (rs.next() && rs.getInt(1) > 1) {
-                    topology = "RAC (" + rs.getInt(1) + " nodes)";
-                }
-            } catch (SQLException ignored) {
-            }
-
-            double numCpus = 1;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
-                if (rs.next()) numCpus = rs.getDouble(1);
-            }
-            double cpuUsage = 0;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'CPU Usage Per Sec'")) {
-                if (rs.next()) cpuUsage = rs.getDouble(1);
-            }
-            double cpuPct = numCpus > 0 ? Math.round((cpuUsage / numCpus) * 100.0) / 100.0 : 0;
-
-            double sgaBytes = 0;
-            try (ResultSet rs = st.executeQuery("SELECT sum(bytes) FROM v$sgastat")) {
-                if (rs.next()) sgaBytes = rs.getDouble(1);
-            }
-            double pgaBytes = 0;
-            try (ResultSet rs = st.executeQuery("SELECT sum(value) FROM v$pgastat WHERE name = 'total PGA allocated'")) {
-                if (rs.next()) pgaBytes = rs.getDouble(1);
-            }
-            double totalMem = 1;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'PHYSICAL_MEMORY_BYTES'")) {
-                if (rs.next()) totalMem = rs.getDouble(1);
-            }
-            double memPct = totalMem > 0 ? Math.round(((sgaBytes + pgaBytes) / totalMem) * 10000.0) / 100.0 : 0;
-
-            int activeSessions = 0;
-            try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
-                    "AND username IS NOT NULL AND username != " + monitoringAccountLiteral(target))) {
-                if (rs.next()) activeSessions = rs.getInt(1);
-            }
-            Integer maxSessions = null;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$parameter WHERE name = 'sessions'")) {
-                if (rs.next()) maxSessions = rs.getInt(1);
-            } catch (SQLException ignored) {
-            }
-
-            double dbTimeAas = 0;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'Average Active Sessions'")) {
-                if (rs.next()) dbTimeAas = rs.getDouble(1);
-            }
-            double tps = 0;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'User Transaction Per Sec'")) {
-                if (rs.next()) tps = rs.getDouble(1);
-            }
-            double bufferCacheHitRatio = 0;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'Buffer Cache Hit Ratio'")) {
-                if (rs.next()) bufferCacheHitRatio = rs.getDouble(1);
-            }
-
-            result.put("instanceName", instanceName);
-            result.put("status", "OPEN".equals(status) ? "정상 운영" : "장애");
-            result.put("dbVersion", version);
-            result.put("versionCodename", versionCodename);
-            result.put("topology", topology);
-            result.put("uptimeDays", Math.round(uptimeDays * 100.0) / 100.0);
-            result.put("sgaBytes", sgaBytes);
-            result.put("pgaBytes", pgaBytes);
-            result.put("cpuPct", cpuPct);
-            result.put("memPct", memPct);
-            result.put("activeSessions", activeSessions);
-            result.put("maxSessions", maxSessions);
-            result.put("dbTimeAas", Math.round(dbTimeAas * 100.0) / 100.0);
-            result.put("tps", Math.round(tps * 100.0) / 100.0);
-            result.put("bufferCacheHitRatio", Math.round(bufferCacheHitRatio * 100.0) / 100.0);
-            return result;
-        }
-    }
-
-    // ----------------------------------------------------- active_alerts (dashboard v2)
-    // TEMP 사용률/Blocking Session/장시간 쿼리 3종만 다룬다 - 문서 예시에 있던 "일일 백업 정상 완료"는
-    // RMAN 카탈로그 의존이라 이 테스트 환경에서 검증할 수 없어 제외(2026-09-16). 필요해지면
-    // v$rman_backup_job_details로 추가 가능.
-    private static final double TEMP_TABLESPACE_CRITICAL_PCT = 90.0;
-    private static final int LONG_RUNNING_QUERY_SECONDS = 300;
-
-    public List<Map<String, Object>> getActiveAlerts(TargetDbConfig target) throws SQLException {
-        List<Map<String, Object>> alerts = new ArrayList<>();
-        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
-            // v$lock 스캔 전용 lockSt에만 타임아웃이 걸려 있고 이 st(temp tablespace 스캔, 장시간 쿼리
-            // 카운트)엔 없었다 - 오케스트레이터 실측(2026-09-22, patent_integ_1/2): 다른 API는 전부
-            // 정상인데 active_alerts만 계속 pending으로 남아 v2 in-flight 가드(iv2FetchInFlightDbIds)가
-            // 영원히 안 풀리고 그 DB 전체 화면이 먹통이 됨 - 네트워크 read timeout(60초)만으로는 부족해서
-            // 같은 짧은 타임아웃을 여기도 건다. 타임아웃 나면 SQLException으로 dbError() 응답이 나가
-            // 프런트 finally가 가드를 정상적으로 풀어준다(영구 hang보다 "그 알림만 잠깐 비어보임"이 낫다).
-            st.setQueryTimeout(lockQueryTimeoutSeconds);
-            // v$temp_space_header 대신 dba_temp_free_space 사용(오케스트레이터 지적, 2026-09-22): 전자는
-            // 파일 헤더의 익스텐트 하이워터마크 기준이라 TEMP 세그먼트가 반납된 뒤에도 안 줄어드는 등
-            // 실제 사용량과 어긋날 수 있다. 후자(allocated_space - free_space)가 실사용량 기준.
-            try (ResultSet rs = st.executeQuery(
-                    "SELECT tablespace_name, " +
-                            "ROUND((GREATEST(allocated_space - free_space, 0) / NULLIF(allocated_space, 0)) * 100, 1) as pct " +
-                            "FROM dba_temp_free_space")) {
-                while (rs.next()) {
-                    double pct = rs.getDouble("pct");
-                    if (pct >= TEMP_TABLESPACE_CRITICAL_PCT) {
-                        alerts.add(alertItem("critical",
-                                rs.getString("tablespace_name") + " 테이블스페이스 " + pct + "%", null));
-                    }
-                }
-            } catch (SQLException ignored) {
-            }
-
-            // 일반(TEMP 아닌) 테이블스페이스 97% 알림(오케스트레이터 요청, 2026-09-18) - 처음엔 여기서
-            // dba_data_files/dba_free_space를 실시간 조회했는데, 폐쇄망 실운영 규모(테이블스페이스/
-            // 데이터파일 수가 이 테스트 환경보다 훨씬 많음)에서 그 딕셔너리 뷰 조인이 무겁게 나와
-            // active_alerts 호출(v2 10초 폴링 + 인스턴스 전환마다 즉시 1회)마다 커넥션을 오래 붙잡았고,
-            // 그게 인스턴스 전환 지연·기존 대시보드 전환 시 busy·간헐적 접속 실패로 번졌다(오케스트레이터
-            // 폐쇄망 실측, 2026-09-18). InstanceMetricSamplerService가 CPU/AAS/Lock과 같은 주기
-            // (metric-sample-interval-seconds)로 이미 같은 쿼리를 백그라운드에서 샘플링해 캐시해 두므로,
-            // 여기서는 그 결과만 읽는다 - 알림 자체는 최대 그 주기(기본 60초)만큼만 늦게 뜬다.
-            alerts.addAll(metricSamplerService.getCachedTablespaceAlerts(target.id()));
-
-            // queryLockWaitSidsByType과 같은 이유로 전용 Statement에 타임아웃을 건다(사용자 실측: 이
-            // 환경 일부 인스턴스에서 v$lock 스캔 자체가 49초까지 걸릴 수 있음) - active_alerts는 v2/v3가
-            // 10초 간격으로 폴링하므로, 캡 없이 두면 스캔이 느려질 때마다 커넥션을 오래 붙잡아 같은
-            // 인스턴스의 다른 요청까지 풀 고갈로 끌고 갈 수 있다.
-            try (Statement lockSt = conn.createStatement()) {
-                lockSt.setQueryTimeout(lockQueryTimeoutSeconds);
-                try (ResultSet rs = lockSt.executeQuery(
-                        // dba_objects join 제거(오케스트레이터 실측, 2026-09-22, 11g patent_integ_1/2):
-                        // 이 쿼리는 o의 컬럼을 하나도 안 쓰는데(TM lock은 항상 실제 object에 걸리므로
-                        // object 존재 확인 자체가 불필요), 딕셔너리 뷰 조인만 더해 11g에서 이 쿼리가
-                        // 아예 응답 없이 블로킹되는 원인이었다(SQL*Plus로 직접 실행해도 무응답 확인,
-                        // dba_objects join 빼고 실행하면 빠름).
-                        "SELECT DISTINCT s.sid FROM v$session s " +
-                                "JOIN v$lock l ON s.sid = l.sid " +
-                                "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= " + tmHolderLastCallEtSeconds + " " +
-                                "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid " +
-                                "AND w.blocking_instance = " + LOCAL_INSTANCE + ") AND ROWNUM <= 3")) {
-                    while (rs.next()) {
-                        String sid = String.valueOf(rs.getInt("sid"));
-                        alerts.add(alertItem("warning", "Blocking Session 감지(SID " + sid + ")", sid));
-                    }
-                }
-            } catch (SQLException ignored) {
-            }
-
-            try (ResultSet rs = st.executeQuery(
-                    "SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
-                            "AND username IS NOT NULL AND username != " + monitoringAccountLiteral(target) +
-                            " AND last_call_et >= " + LONG_RUNNING_QUERY_SECONDS)) {
-                if (rs.next() && rs.getInt(1) > 0) {
-                    alerts.add(alertItem("warning", "장시간 실행 쿼리 " + rs.getInt(1) + "건", null));
-                }
-            } catch (SQLException ignored) {
-            }
-        }
-        return alerts;
-    }
-
-    private Map<String, Object> alertItem(String severity, String message, String relatedSid) {
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("severity", severity);
-        item.put("message", message);
-        item.put("occurredAt", System.currentTimeMillis());
-        item.put("relatedSid", relatedSid);
-        return item;
     }
 
     // ------------------------------------------------------------- top_events
@@ -1972,7 +1778,7 @@ public class MonitorService {
 
     // ----------------------------------------------------------- failure_prob
     public Map<String, Object> getFailureProb(TargetDbConfig target) throws SQLException {
-        // dba_objects join 제거(오케스트레이터 실측, 2026-09-22, 11g patent_integ_1/2) - getActiveAlerts()의
+        // dba_objects join 제거(오케스트레이터 실측, 2026-09-22, 11g patent_integ_1/2) - 예전 getActiveAlerts()(2026-09-30 삭제)의
         // 같은 패턴 쿼리와 동일한 이유: o의 컬럼을 하나도 안 쓰면서 딕셔너리 뷰 조인만 더해 11g에서
         // 무응답으로 블로킹되던 원인이었다.
         // 버그 수정(2026-09-25): 예전 1차 쿼리는 v$session에 없는 s.inst_id(gv$ 시절 흔적)를 참조해
@@ -1986,7 +1792,7 @@ public class MonitorService {
                 "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid AND w.blocking_instance = " + LOCAL_INSTANCE + ")";
 
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
-            // getActiveAlerts()의 v$lock 조인과 같은 이유로 타임아웃을 건다(사용자 실측: 이 환경 일부
+            // 예전 getActiveAlerts()(2026-09-30 삭제)의 v$lock 조인과 같은 이유로 타임아웃을 건다(사용자 실측: 이 환경 일부
             // 인스턴스에서 v$lock 스캔 자체가 49초까지 걸릴 수 있음) - 이 쿼리도 같은 조인 패턴인데
             // 빠져 있었다(오케스트레이터 지적, 2026-09-18).
             st.setQueryTimeout(lockQueryTimeoutSeconds);

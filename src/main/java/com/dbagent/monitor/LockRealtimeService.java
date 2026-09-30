@@ -99,6 +99,13 @@ public class LockRealtimeService {
     @Value("${dbagent.monitor.lock-tx-row-lock-only:false}")
     private boolean txRowLockOnly;
 
+    // ⑧ 점검 알림의 "장시간 실행 쿼리" 실시간 카드(2026-09-30 두 번째 대시보드에서 이식) - ACTIVE 사용자 세션 중 현재 호출이
+    // 이 초 이상 도는 것(last_call_et). 두 번째 대시보드와 같은 기본 300초. 10분 주기 점검이 아니라 3초 조회에 얹는 이유:
+    // 5분 넘는 쿼리는 다음 10분 점검 전에 끝나 버려 놓치기 쉽다. 0 이하면 끔(프로젝트 관례, 2026-09-30 정밀 점검 반영 -
+    // 예전엔 0이면 모든 ACTIVE 세션이 장시간으로 잡혔다).
+    @Value("${dbagent.monitor.long-running-query-seconds:300}")
+    private int longRunningSeconds;
+
     // A안 - 최근 본 DB 백그라운드 수집(2026-09-28, 설계문서 `Lock실시간차트_빈구간_A+B_전환계획_2026-09-28.md` 4.1).
     // 마지막으로 본 뒤 keepaliveMinutes 동안은 화면이 없어도 3초마다 조회해 history를 이어 붙인다. 그보다 오래 비운
     // 구간은 지금처럼 B(fill)로 채운다. 0이면 A 비활성(= B만) - 운영 DB 부하 실측 전까지 기본값은 0.
@@ -125,6 +132,15 @@ public class LockRealtimeService {
     /** ① KPI 메모리 사용률 - 천천히 변하는 값이라 DB별 60초 캐시(3초 주기마다 v$sgastat 등을 읽지 않음). */
     private static final long MEMORY_CACHE_MS = 60000L;
     private final Map<String, double[]> memoryCache = new ConcurrentHashMap<>(); // {측정 시각, 사용률%}
+    /**
+     * ① KPI TPS·Buffer Cache Hit(2026-09-30 추가) - v$sysmetric 60초 그룹 값이라 1분마다만 바뀐다. DB별 15초 캐시로
+     * 3초 주기마다 읽지 않으면서 새 값이 나오면 15초 안에 반영.
+     */
+    private static final long SYSMETRIC_CACHE_MS = 15000L;
+    private final Map<String, Double[]> sysmetricCache = new ConcurrentHashMap<>(); // {측정 시각, TPS, Hit%}
+    /** 장시간 실행 쿼리 상위 5개 목록 - 그런 세션이 계속 있는 DB에서 3초마다 목록 조회가 나가지 않게 DB별 15초 캐시. */
+    private static final long LONG_TOP_CACHE_MS = 15000L;
+    private final Map<String, LongTop> longTopCache = new ConcurrentHashMap<>();
 
     /** DB별 object_id → OWNER.NAME. 매 주기 dba_objects 조인 금지(11g 무응답 전례) - 모르는 id만 한 번 조회. */
     private final Map<String, Map<Long, String>> objectNames = new ConcurrentHashMap<>();
@@ -199,6 +215,8 @@ public class LockRealtimeService {
         killEvents.remove(id);
         minuteSummary.remove(id);
         memoryCache.remove(id);
+        sysmetricCache.remove(id);
+        longTopCache.remove(id);
         fillCache.remove(id);
         objectNames.remove(id);
     }
@@ -277,15 +295,31 @@ public class LockRealtimeService {
                 }
             }
             // ① KPI "활성 세션" 칸(2026-09-25 추가) - 기존 대시보드 활성 세션(MonitorService의 status 조회)과 같은 정의.
-            // 같은 커넥션·같은 캐시를 타므로 원본 DB 조회 횟수는 늘지 않는다.
+            // 같은 커넥션·같은 캐시를 타므로 원본 DB 조회 횟수는 늘지 않는다. 장시간 실행 쿼리 수(2026-09-30)도 같은 스캔에서 센다.
+            String userSessions = "FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
+                    "AND username IS NOT NULL AND username != '" + target.user().toUpperCase().replace("'", "''") + "'";
+            // 장시간 실행: Idle 이벤트로 기다리는 중인 세션은 뺀다 - AQ 리스너·GoldenGate·sleep처럼 늘 ACTIVE인 대기형 세션이
+            // 항상 잡혀 카드가 영원히 떠 있지 않게(2026-09-30 정밀 점검 반영). 정수 설정값만 문자열에 넣는다.
+            String longCond = "last_call_et >= " + longRunningSeconds + " AND NOT (state = 'WAITING' AND wait_class = 'Idle')";
             try (Statement st = conn.createStatement()) {
                 st.setQueryTimeout(lockQueryTimeoutSeconds);
-                try (ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
-                        "AND username IS NOT NULL AND username != '" + target.user().toUpperCase().replace("'", "''") + "'")) {
-                    s.activeSessions = rs.next() ? rs.getInt(1) : 0;
+                try (ResultSet rs = st.executeQuery("SELECT COUNT(*), " +
+                        (longRunningSeconds > 0 ? "COUNT(CASE WHEN " + longCond + " THEN 1 END) " : "0 ") + userSessions)) {
+                    if (rs.next()) {
+                        s.activeSessions = rs.getInt(1);
+                        s.longRunning = rs.getInt(2);
+                    }
                 }
             }
+            if (s.longRunning > 0) {
+                s.longRunningTop = longRunningTop(conn, target.id(), userSessions + " AND " + longCond);
+            } else {
+                longTopCache.remove(target.id());
+            }
             s.memoryPct = memoryPct(conn, target.id());
+            Double[] sm = sysmetric(conn, target.id());
+            s.tps = sm[1];
+            s.bufferHitPct = sm[2];
             s.holders = queryHolders(conn);
             resolveObjectNames(conn, target.id(), s.holders);
             evaluate(s);
@@ -324,6 +358,83 @@ public class LockRealtimeService {
         } catch (SQLException e) {
             log.debug("memory usage lookup failed for {}: {}", dbId, e.toString());
             return cached != null ? cached[1] : null;
+        }
+    }
+
+    /**
+     * ① KPI TPS(User Transaction Per Sec)·Buffer Cache Hit Ratio - 기존 두 번째 대시보드(MonitorService의 status 조회)와
+     * 같은 지표. 단 v$sysmetric은 같은 지표가 60초 그룹(group_id 2)과 15초 그룹(group_id 3)에 한 행씩 있고, 한가하면
+     * 15초 그룹 Hit률이 0으로 나온다(2026-09-30 로컬 21c XE 실측) - 60초 그룹만 읽는다. 반환 {측정 시각, TPS, Hit%},
+     * 값이 없거나 실패하면 해당 칸 null(판단 보류, 0으로 내리지 않음). 실패도 15초 캐시한다 - 예전엔 실패 때 오래된 캐시 값을
+     * 현재 값처럼 돌려주고(몇 시간 전 값도 그대로), 시각을 안 남겨 3초마다 재시도하며 Lock 조회를 매번 늦췄다(2026-09-30 정밀 점검 반영).
+     */
+    private Double[] sysmetric(Connection conn, String dbId) {
+        Double[] cached = sysmetricCache.get(dbId);
+        long now = System.currentTimeMillis();
+        if (cached != null && now - cached[0].longValue() < SYSMETRIC_CACHE_MS) {
+            return cached;
+        }
+        try (Statement st = conn.createStatement()) {
+            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            Double tps = null;
+            Double hit = null;
+            try (ResultSet rs = st.executeQuery("SELECT metric_name, value FROM v$sysmetric WHERE group_id = 2 " +
+                    "AND metric_name IN ('User Transaction Per Sec', 'Buffer Cache Hit Ratio')")) {
+                while (rs.next()) {
+                    double v = Math.round(rs.getDouble(2) * 100.0) / 100.0;
+                    if ("User Transaction Per Sec".equals(rs.getString(1))) tps = v;
+                    else hit = v;
+                }
+            }
+            Double[] r = new Double[]{(double) now, tps, hit};
+            sysmetricCache.put(dbId, r);
+            return r;
+        } catch (SQLException e) {
+            log.debug("sysmetric lookup failed for {}: {}", dbId, e.toString());
+            Double[] r = new Double[]{(double) now, null, null};
+            sysmetricCache.put(dbId, r);
+            return r;
+        }
+    }
+
+    /**
+     * 장시간 실행 쿼리 상위 5개(오래 돈 순) - 건수가 1 이상일 때만, DB별 15초에 한 번만 읽는다. 실패하면 null(화면은 건수만 보여 주고
+     * "목록 조회 실패"), 조회는 됐는데 그사이 끝나 0행이면 빈 목록 - 둘을 구분한다. 목록 조회 실패로 Lock 스냅샷 전체를 판단 보류로
+     * 만들지 않는다. where는 userSessions + 장시간 조건(정수 설정값만 들어간 문자열).
+     */
+    private List<Map<String, Object>> longRunningTop(Connection conn, String dbId, String where) {
+        LongTop cached = longTopCache.get(dbId);
+        long now = System.currentTimeMillis();
+        if (cached != null && now - cached.at < LONG_TOP_CACHE_MS) {
+            return cached.rows;
+        }
+        List<Map<String, Object>> result = queryLongRunningTop(conn, where);
+        longTopCache.put(dbId, new LongTop(now, result));
+        return result;
+    }
+
+    private List<Map<String, Object>> queryLongRunningTop(Connection conn, String where) {
+        try (Statement st = conn.createStatement()) {
+            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            List<Map<String, Object>> rows = new ArrayList<>();
+            try (ResultSet rs = st.executeQuery("SELECT * FROM (SELECT sid, serial#, username, sql_id, last_call_et, event, program " +
+                    where + " ORDER BY last_call_et DESC) WHERE ROWNUM <= 5")) {
+                while (rs.next()) {
+                    Map<String, Object> r = new LinkedHashMap<>();
+                    r.put("sid", rs.getLong("sid"));
+                    r.put("serial", rs.getLong("serial#"));
+                    r.put("username", rs.getString("username"));
+                    r.put("sqlId", rs.getString("sql_id"));
+                    r.put("elapsedSec", rs.getLong("last_call_et"));
+                    r.put("event", rs.getString("event"));
+                    r.put("program", rs.getString("program"));
+                    rows.add(r);
+                }
+            }
+            return rows;
+        } catch (SQLException e) {
+            log.debug("long-running query list failed: {}", e.toString());
+            return null;
         }
     }
 
@@ -412,7 +523,9 @@ public class LockRealtimeService {
             if (isOver) over++;
             if (isKillable(h)) {
                 killTargets.add(h);
-                maxEt = Math.max(maxEt, et);
+                // 최장 경과는 실제로 다른 세션을 막고 있는(대기 세션이 있는) Holder만 - 예전엔 KILL 대상 전체라, 아무도 막지 않는
+                // 커밋 대기 세션 하나만 있어도 Lock 카드에 "최장 경과 … 위험"이 떴다(2026-09-30 QA). KILL 대상 범위는 그대로.
+                if ((Integer) h.get("waiters") > 0) maxEt = Math.max(maxEt, et);
             }
         }
         s.holderOverCount = over;
@@ -542,6 +655,11 @@ public class LockRealtimeService {
         } else {
             r.put("activeSessions", s.activeSessions);
             r.put("memoryPct", s.memoryPct);
+            r.put("tps", s.tps);
+            r.put("bufferHitPct", s.bufferHitPct);
+            r.put("longRunning", s.longRunning);
+            r.put("longRunningSec", longRunningSeconds);
+            r.put("longRunningTop", s.longRunningTop);
             r.put("txWait", s.txWait);
             r.put("tmWait", s.tmWait);
             r.put("holderOverCount", s.holderOverCount);
@@ -675,12 +793,27 @@ public class LockRealtimeService {
 
     // ------------------------------------------------------------------ 내부 타입
 
+    /** 장시간 실행 쿼리 상위 목록 캐시 한 칸 - rows가 null이면 조회 실패(그것도 15초 동안 재사용해 재시도를 늦춘다). */
+    private static final class LongTop {
+        final long at;
+        final List<Map<String, Object>> rows;
+
+        LongTop(long at, List<Map<String, Object>> rows) {
+            this.at = at;
+            this.rows = rows;
+        }
+    }
+
     private static final class Snapshot {
         final long at;
         boolean ok = true;
         String error;
         int activeSessions;
         Double memoryPct;
+        Double tps;
+        Double bufferHitPct;
+        int longRunning;
+        List<Map<String, Object>> longRunningTop;
         int txWait;
         int tmWait;
         int holderOverCount;

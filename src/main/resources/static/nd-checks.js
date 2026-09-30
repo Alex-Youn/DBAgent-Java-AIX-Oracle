@@ -19,7 +19,7 @@
         ERROR: { t: '점검 실패', sym: '×', cls: 'err', order: 3 }
     };
     const PCT_TYPES = ['TABLESPACE', 'FRA', 'TEMP'];
-    const st = { data: null, filter: 'all', gen: 0, showHidden: false };
+    const st = { data: null, filter: 'all', gen: 0, showHidden: false, long: null, longKey: '' };
 
     const $ = (id) => document.getElementById(id);
     const esc = (s) => String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -35,6 +35,7 @@
             case 'TABLESPACE': case 'FRA': case 'TEMP': return `${num(v, 1)}%`;
             case 'TABLE_SIZE': return `${num(v, 1)} GB`;
             case 'JOB_FAIL': return `${num(v, 0)}회`;
+            case 'LONG_QUERY': return `${num(v, 0)}건`;
             default: return `${num(v, 0)}개`;
         }
     }
@@ -53,11 +54,34 @@
                 const first = items[0] ? [items[0].owner, items[0].object_name].filter(Boolean).join('.') : '';
                 return `${num(it.value, 0)}개${first ? ' · ' + first + (items.length > 1 ? ' 외' : '') : ''}`;
             }
+            case 'LONG_QUERY': {
+                // null = 목록 조회 실패, [] = 조회는 됐는데 그사이 끝남(2026-09-30 정밀 점검 반영 - 예전엔 둘 다 "실패"로 보였다).
+                // 카드는 1분에 한 번만 다시 그리므로 초는 빼고 분까지만(초까지는 상세 창에서).
+                if (it.top === null) return '세션 목록 조회 실패 - 건수만 표시';
+                const t = it.top[0];
+                return t ? `최장 ${durMin(t.elapsedSec)} · SID ${t.sid} (${t.username || '-'})${t.sqlId ? ' · ' + t.sqlId : ''}` : '목록을 읽는 사이 세션이 끝났습니다';
+            }
             default: return '';
         }
     }
 
+    function dur(sec) {
+        const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+        return h > 0 ? `${h}시간 ${m}분` : `${m}분 ${pad(s)}초`;
+    }
+
+    function durMin(sec) {
+        const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60);
+        return h > 0 ? `${h}시간 ${m}분` : `${m}분`;
+    }
+
+    // 장시간 기준 표시 - 60의 배수가 아니면 초로(예전 Math.round(sec/60)은 90초를 "2분", 20초를 "0분"으로 보였다)
+    function thrText(sec) {
+        return sec % 60 ? `${sec}초` : `${sec / 60}분`;
+    }
+
     function periodText(type) {
+        if (type === 'LONG_QUERY') return '실시간';
         const d = st.data;
         const ts = d && d.lastByType ? d.lastByType[type] : null;
         const daily = ['TABLE_SIZE', 'INVALID_OBJ'].indexOf(type) >= 0;
@@ -78,7 +102,29 @@
     // 안 그러면 첫 화면만 앱 시각으로 보이다가 1분 뒤 바뀐다(2026-09-26 CDP 확인).
     ND.on('selection', () => { if (st.data) render(); });
 
+    // 장시간 실행 쿼리 실시간 카드(2026-09-30 두 번째 대시보드에서 이식) - 10분 주기 점검이 아니라 3초 Lock 조회('lock')에 실려 온다.
+    // 저장된 점검 결과가 아니라 숨김은 없다. 매 3초 다시 그리면 카드가 깜빡이므로 건수·세션 구성·최장 경과(분)가 바뀔 때만 그린다.
+    // 판단 보류(ok:false)면 직전 카드를 그대로 둔다(0건으로 지우지 않음).
+    ND.on('lock', (d) => {
+        if (!d || !d.ok) return;
+        const top = Array.isArray(d.longRunningTop) ? d.longRunningTop : null;
+        st.long = d.longRunning > 0 ? { count: d.longRunning, sec: d.longRunningSec, top } : null;
+        const key = st.long ? `${st.long.count}|${(top || []).map(t => t.sid + ':' + t.serial).join(',')}|${top && top[0] ? Math.floor(top[0].elapsedSec / 60) : ''}` : '';
+        if (key === st.longKey) return;
+        st.longKey = key;
+        render(); // 점검 목록(/checks)이 아직 없어도 그린다 - 3초 조회로 옮긴 의미(2026-09-30 정밀 점검 반영)
+    });
+
+    function liveItem() {
+        const l = st.long;
+        if (!l) return null;
+        return { live: true, checkType: 'LONG_QUERY', severity: 'WARN', label: '장시간 실행 쿼리',
+            targetName: `${thrText(l.sec)} 이상 실행 중`, value: l.count, threshold: null, top: l.top, sec: l.sec };
+    }
+
     ND.onReset(() => {
+        st.long = null;
+        st.longKey = '';
         st.data = null;
         const body = $('nd-checks-body');
         if (body) body.innerHTML = '<div class="nd-skel nd-skel-line" style="width: 70%;"></div>';
@@ -133,10 +179,14 @@
     }
 
     function render() {
-        const d = st.data;
-        if (!d) return;
+        ensureDom();
+        if (!$('nd-checks-body')) return;
+        // 점검 목록이 아직 없으면(첫 로딩·조회 실패) 빈 목록으로 보고 실시간 카드만 그린다
+        const d = st.data || { items: [], intervalMinutes: 10 };
         const all = (d.items || []).filter(it => it.severity !== 'OK');
         const items = all.filter(it => !it.hidden);
+        const live = liveItem();
+        if (live) items.push(live);
         const hiddenItems = all.filter(it => it.hidden);
         if (!hiddenItems.length) st.showHidden = false;
         const hb = $('nd-checks-hidden-btn');
@@ -153,8 +203,10 @@
             .filter(it => st.showHidden || st.filter === 'all' || it.severity === st.filter)
             .sort((a, b) => SEV[a.severity].order - SEV[b.severity].order || (b.value || 0) - (a.value || 0));
         const body = $('nd-checks-body');
-        if (!d.lastLight && !d.lastDaily) {
-            body.innerHTML = '<div class="nd-placeholder">아직 점검 전입니다 — 앱 기동 후 30초~1분 안에 첫 점검이 끝납니다.</div>';
+        if (!d.lastLight && !d.lastDaily && !live) {
+            body.innerHTML = st.data
+                ? '<div class="nd-placeholder">아직 점검 전입니다 — 앱 기동 후 30초~1분 안에 첫 점검이 끝납니다.</div>'
+                : '<div class="nd-skel nd-skel-line" style="width: 70%;"></div>'; // 점검 목록 로딩 중
             return;
         }
         if (!shown.length) {
@@ -164,7 +216,7 @@
         body.innerHTML = '<div class="nd-chk-cards">' + shown.map((it, i) => cardHtml(it, i)).join('') + '</div>';
         body.querySelectorAll('.nd-chk-card').forEach(c => {
             const it = shown[+c.dataset.i];
-            const open = () => ND.drawer && ND.drawer.open(() => viewDetail(it), c);
+            const open = () => ND.drawer && ND.drawer.open(() => (it.live ? viewLong(it) : viewDetail(it)), c);
             c.addEventListener('click', open);
             c.addEventListener('keydown', (e) => { if (e.target !== c) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
             const act = c.querySelector('.nd-chk-act');
@@ -174,6 +226,7 @@
 
     // 카드 오른쪽 위 버튼 - 목록에서는 "숨김", 숨긴 항목 보기에서는 "되돌리기"
     function actBtn(it) {
+        if (it.live) return '';
         return it.hidden
             ? `<button type="button" class="nd-chk-act" title="다시 알림 목록에 표시">되돌리기</button>`
             : `<button type="button" class="nd-chk-act" title="이 알림 숨기기 - 상태가 바뀌면(다시 실패·등급 상승) 다시 표시됩니다">숨김</button>`;
@@ -277,6 +330,36 @@
             title: it.targetName,
             sub: `<span class="nd-pill nd-pill-${sev.cls === 'info' || sev.cls === 'err' ? 'muted' : sev.cls}">${esc(sev.t)}</span> <span class="nd-muted">${esc(valueText(cur))}${cur.threshold !== null && cur.threshold !== undefined ? ' · 임계치 ' + esc(valueText(Object.assign({}, cur, { value: cur.threshold }))) : ''}</span>`,
             secs
+        };
+    }
+
+    // 장시간 실행 쿼리 상세 - 카드를 누른 시점의 목록(서버가 15초마다 새로 읽는 오래 돈 순 최대 5개). 세션을 누르면 6.1 세션 상세로 이어진다.
+    async function viewLong(it) {
+        const K = ND.drawerKit;
+        const rows = it.top || [];
+        const list = rows.length
+            ? '<ul class="nd-top-list nd-dw-list">' + rows.map((r, i) =>
+                `<li class="nd-clk" tabindex="0" role="button" data-i="${i}"><div class="nd-rtop"><span class="nd-rid">SID ${esc(r.sid)}</span><span class="nd-rval">${esc(dur(r.elapsedSec))}</span></div>` +
+                `<div class="nd-rmeta"><span>${esc(r.username || '-')}</span><span>${esc(r.sqlId || 'SQL_ID 없음')}</span><span>${esc(r.event || '')}</span></div></li>`).join('') + '</ul>'
+            : `<p class="nd-muted">${it.top === null ? '세션 목록을 읽지 못했습니다(건수만 확인됨).' : '목록을 읽는 사이 세션이 끝났습니다.'}</p>`;
+        return {
+            kind: '점검 알림 · 장시간 실행 쿼리',
+            title: `${it.value}건 실행 중`,
+            sub: `<span class="nd-pill nd-pill-warn">▲ 주의</span> <span class="nd-muted">현재 호출이 ${esc(thrText(it.sec))} 이상 이어지는 사용자 세션 · 실시간</span>`,
+            secs: [
+                K.sec('기준', K.kv([['조건', `ACTIVE 사용자 세션의 last_call_et ${it.sec}초 이상`],
+                    ['제외', '백그라운드 세션 · 모니터링 계정 · Idle 이벤트로 대기 중인 세션(AQ 리스너·sleep 등)'],
+                    ['갱신', '건수는 실시간, 목록은 15초마다'], ['기준 변경', 'dbagent.monitor.long-running-query-seconds (0이면 끔)']])),
+                K.sec(`오래 돈 순 상위 ${rows.length}개 · 최대 15초 전 목록`, list),
+                K.sec('조치 권장', '<p>SQL_ID로 실행계획을 확인하고 배치·보고서성 작업인지 확인하세요. 다른 세션을 막고 있지 않다면 바로 종료할 필요는 없습니다. ' +
+                    '종료가 필요하면 세션 상세에서 KILL 구문을 복사하세요(관리자).</p>')
+            ],
+            bind: (root) => root.querySelectorAll('.nd-dw-list li.nd-clk').forEach(li => {
+                const r = rows[+li.dataset.i];
+                const go = () => { if (ND.views && ND.views.session) ND.drawer.push(() => ND.views.session(r.sid, r.serial)); };
+                li.addEventListener('click', go);
+                li.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+            })
         };
     }
 

@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Resolves a db_id to Oracle/RDB connection details, backed by the db_instances SQLite table
@@ -439,14 +440,40 @@ public class DatabaseConfigService {
         return users;
     }
 
+    /**
+     * 모든 그룹의 등록 DB - 60초 샘플러·점검 알림·SQL 통계·fleet_status·ASH 보충 같은 일괄 작업용.
+     * 비밀번호를 풀 수 없는 DB(다른 서버 키로 암호화된 값 등)는 그 DB만 빼고 나머지를 돌려준다(2026-09-30 오케스트레이터 결정).
+     * 예전엔 한 건만 실패해도 전체가 예외로 끝나 일괄 작업이 모든 DB에서 멈췄다(원본 DBAgent-Java에서 포팅, 로컬 docker DB 4건이
+     * 다른 키로 암호화된 채 하루 종일 오라클 차트·점검까지 멈춘 실측). 빠진 DB는 그 DB를 직접 여는 화면(resolve)에서 지금처럼
+     * 오류로 드러난다. 30초·1분 주기마다 같은 경고가 쌓이지 않게 DB별 처음 한 번만 WARN.
+     */
     public List<TargetDbConfig> listAllInstances() {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT * FROM db_instances ORDER BY group_order, instance_order");
         List<TargetDbConfig> result = new ArrayList<>();
         for (Map<String, Object> row : rows) {
-            result.add(fromRow(row));
+            String id = (String) row.get("id");
+            try {
+                result.add(fromRow(row));
+                if (unreadableInstances.remove(id) != null) {
+                    log.info("DB instance {} is readable again - included in bulk jobs", id);
+                }
+            } catch (RuntimeException e) {
+                String msg = String.valueOf(e.getMessage());
+                if (!msg.equals(unreadableInstances.put(id, msg))) {
+                    log.warn("DB instance {} skipped in bulk jobs (sampler/checks/fleet status) - {}", id, msg);
+                }
+            }
         }
         return result;
+    }
+
+    // 일괄 작업에서 빠진 DB id → 마지막 오류 메시지(경고를 처음 한 번만 남기기 위한 기록)
+    private final Map<String, String> unreadableInstances = new ConcurrentHashMap<>();
+
+    /** 마지막 listAllInstances()에서 비밀번호를 풀 수 없어 빠진 DB id → 오류 메시지 - Fleet Overview가 "비밀번호 확인 필요"로 보여 준다. */
+    public Map<String, String> unreadableInstances() {
+        return new LinkedHashMap<>(unreadableInstances);
     }
 
     private Map<String, Object> findRow(String dbId) {

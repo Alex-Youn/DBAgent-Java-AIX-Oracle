@@ -196,7 +196,10 @@
 
     function renderActivity(d) {
         const series = d.series || [];
-        const total = series.reduce((a, p) => a + p.values.reduce((x, y) => x + y, 0), 0);
+        // null = 아직 수집이 끝나지 않은 막대(서버 collectedTo 이후) - 0으로 그리지 않고 비워 둔다(2026-09-30 QA)
+        const total = series.reduce((a, p) => a + p.values.reduce((x, y) => x + (y || 0), 0), 0);
+        const pendingCount = series.filter(p => p.values.some(v => v === null)).length;
+        const pendingNote = pendingCount ? ` · <span class="perf-hint" title="수집 완료 ${esc(human(d.collectedTo || ''))}까지">최근 ${pendingCount * d.step_minutes}분은 수집 중</span>` : '';
         const store = d.source === 'store';
         const empty = total === 0
             ? (store ? ` · <span style="color: var(--warning);">이 구간에 수집 데이터가 없습니다${d.storedFrom ? ` (수집 시작 ${esc(human(d.storedFrom))})` : ''}</span>`
@@ -207,7 +210,7 @@
             ? (total === 0 ? ' <button type="button" class="perf-link-btn" id="perf-src-toggle" data-src="oracle">원본 DB(ASH/AWR)에서 조회</button>' : '')
             : ' <button type="button" class="perf-link-btn" id="perf-src-toggle" data-src="store">수집 저장소로 돌아가기</button>';
         $('perf-meta').innerHTML = `조회 구간 <b>${esc(human(d.from))} ~ ${esc(human(d.to))}</b> · 데이터 <b>${esc(sourceText(d.source))}</b>` +
-            ` · ${d.step_minutes}분 막대 · CPU ${d.cpu_cores || '-'}` + empty + switchBtn;
+            ` · ${d.step_minutes}분 막대 · CPU ${d.cpu_cores || '-'}` + pendingNote + empty + switchBtn;
         const tg = $('perf-src-toggle');
         if (tg) tg.addEventListener('click', () => { st.source = tg.dataset.src; search(); });
         const datasets = CATS.map((c, i) => ({

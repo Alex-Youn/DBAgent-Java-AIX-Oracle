@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1">
-    <link rel="stylesheet" href="style.css?v=67">
+    <link rel="stylesheet" href="style.css?v=72">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=13"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -244,7 +244,7 @@
                             <div class="nd-status-items">
                                 <div class="nd-status-item">인스턴스 <span class="nd-dot" id="nd-st-instance-dot"></span><b id="nd-st-instance">--</b></div>
                                 <div class="nd-status-item">리스너 <span class="nd-dot" id="nd-st-listener-dot"></span><b id="nd-st-listener">--</b></div>
-                                <div class="nd-status-item">Max Session <b id="nd-st-max-session">--</b> <span>[Active <b id="nd-st-active">--</b> / Inactive <b id="nd-st-inactive">--</b>]</span></div>
+                                <div class="nd-status-item" title="Max Session 여유 확인용 - 백그라운드를 뺀 전체 세션(모니터링 계정 세션 포함). 부하 판단은 아래 KPI 활성 세션을 보세요">Max Session <b id="nd-st-max-session">--</b> <span>[Active <b id="nd-st-active">--</b> / Inactive <b id="nd-st-inactive">--</b>]</span></div>
                                 <div class="nd-status-item">Max Process <b id="nd-st-max-process">--</b> <span>[Dedicated <b id="nd-st-dedicated">--</b> / Shared <b id="nd-st-shared">--</b>]</span></div>
                             </div>
                             <div class="nd-controls">
@@ -262,14 +262,16 @@
                         </div>
                         <div class="nd-error" id="nd-error" role="alert"></div>
 
-                        <!-- ① KPI 6칸 -->
+                        <!-- ① KPI 8칸 (2026-09-30 TPS·Buffer Cache Hit 추가) -->
                         <div class="nd-card nd-kpi-row" id="nd-kpi">
                             <div class="nd-kpi" data-kpi="current"><div class="nd-kpi-label">현재 AAS</div><div class="nd-kpi-value" id="nd-kpi-current">—</div><div class="nd-kpi-sub" id="nd-kpi-current-sub">&nbsp;</div></div>
                             <div class="nd-kpi" data-kpi="avg"><div class="nd-kpi-label">구간 평균 AAS</div><div class="nd-kpi-value" id="nd-kpi-avg">—</div><div class="nd-kpi-sub" id="nd-kpi-avg-sub">&nbsp;</div></div>
                             <div class="nd-kpi" data-kpi="max"><div class="nd-kpi-label">최대 AAS</div><div class="nd-kpi-value" id="nd-kpi-max">—</div><div class="nd-kpi-sub" id="nd-kpi-max-sub">&nbsp;</div></div>
                             <div class="nd-kpi" data-kpi="over"><div class="nd-kpi-label">CPU 초과</div><div class="nd-kpi-value" id="nd-kpi-over">—</div><div class="nd-kpi-sub" id="nd-kpi-over-sub">&nbsp;</div></div>
-                            <div class="nd-kpi" data-kpi="sessions"><div class="nd-kpi-label">활성 세션</div><div class="nd-kpi-value" id="nd-kpi-sessions">—</div><div class="nd-minibar" id="nd-kpi-sessions-bar"></div></div>
+                            <div class="nd-kpi" data-kpi="sessions" title="부하 판단용 - 사용자 세션 중 ACTIVE(백그라운드·모니터링 계정 제외). 상단 Active는 모니터링 계정까지 포함한 전체라 값이 다를 수 있음"><div class="nd-kpi-label">활성 세션</div><div class="nd-kpi-value" id="nd-kpi-sessions">—</div><div class="nd-minibar" id="nd-kpi-sessions-bar"></div></div>
                             <div class="nd-kpi" data-kpi="memory"><div class="nd-kpi-label">메모리 사용률</div><div class="nd-kpi-value" id="nd-kpi-memory">—</div><div class="nd-minibar" id="nd-kpi-memory-bar"></div></div>
+                            <div class="nd-kpi" data-kpi="tps" title="User Transaction Per Sec (v$sysmetric 최근 1분 평균)"><div class="nd-kpi-label">TPS</div><div class="nd-kpi-value" id="nd-kpi-tps">—</div><div class="nd-kpi-sub">최근 1분 평균</div></div>
+                            <div class="nd-kpi" data-kpi="hit" title="Buffer Cache Hit Ratio (v$sysmetric 최근 1분) · 90% 미만 주의 / 80% 미만 위험"><div class="nd-kpi-label">Buffer Cache Hit</div><div class="nd-kpi-value" id="nd-kpi-hit">—</div><div class="nd-minibar" id="nd-kpi-hit-bar"></div></div>
                         </div>
 
                         <!-- ②③ 차트 행 -->
@@ -446,101 +448,6 @@
                         </div>
                     </div>
                     </div><!-- /#dashboard-legacy-view -->
-
-                    <div id="dashboard-v2-view" style="display: none;">
-                        <div class="iv2-header">
-                            <div class="iv2-header-main">
-                                <div class="iv2-instance-name" id="iv2-instance-name">--</div>
-                                <span class="status-badge offline" id="iv2-status-badge">상태 확인 중</span>
-                            </div>
-                            <div class="iv2-tags" id="iv2-tags"></div>
-                            <div class="iv-range-switch" id="iv2-range-switch">
-                                <button type="button" class="iv-range-btn active" data-range="1h">실시간</button>
-                                <button type="button" class="iv-range-btn" data-range="24h">24시간</button>
-                                <button type="button" class="iv-range-btn" data-range="7d">7일</button>
-                            </div>
-                        </div>
-
-                        <div class="iv2-kpi-row" id="iv2-kpi-row">
-                            <div class="iv2-kpi-tile">
-                                <div class="iv2-kpi-label">CPU 사용률</div>
-                                <div class="iv2-kpi-value" id="iv2-kpi-cpu">--%</div>
-                                <div class="iv2-kpi-bar-track"><div class="iv2-kpi-bar-fill" id="iv2-kpi-cpu-bar" style="width:0%"></div></div>
-                            </div>
-                            <div class="iv2-kpi-tile">
-                                <div class="iv2-kpi-label">메모리 사용률 (SGA/PGA)</div>
-                                <div class="iv2-kpi-value" id="iv2-kpi-mem">--%</div>
-                                <div class="iv2-kpi-bar-track"><div class="iv2-kpi-bar-fill" id="iv2-kpi-mem-bar" style="width:0%"></div></div>
-                            </div>
-                            <div class="iv2-kpi-tile">
-                                <div class="iv2-kpi-label">Active Sessions</div>
-                                <div class="iv2-kpi-value" id="iv2-kpi-sessions">-- / --</div>
-                            </div>
-                            <div class="iv2-kpi-tile">
-                                <div class="iv2-kpi-label">DB Time (AAS)</div>
-                                <div class="iv2-kpi-value" id="iv2-kpi-aas">--</div>
-                            </div>
-                            <div class="iv2-kpi-tile">
-                                <div class="iv2-kpi-label">TPS</div>
-                                <div class="iv2-kpi-value" id="iv2-kpi-tps">-- 건/초</div>
-                            </div>
-                            <div class="iv2-kpi-tile">
-                                <div class="iv2-kpi-label">Buffer Cache Hit Ratio</div>
-                                <div class="iv2-kpi-value" id="iv2-kpi-hitratio">--%</div>
-                                <div class="iv2-kpi-bar-track"><div class="iv2-kpi-bar-fill" id="iv2-kpi-hitratio-bar" style="width:0%"></div></div>
-                            </div>
-                        </div>
-
-                        <div class="iv2-charts-row iv2-charts-row-3col">
-                            <div class="panel iv2-chart-panel">
-                                <div class="panel-header"><h2>CPU / DB Time 추이</h2></div>
-                                <div class="panel-body" style="height: 220px;"><canvas id="iv2-cpu-dbtime-chart"></canvas></div>
-                            </div>
-                            <div class="panel iv2-chart-panel">
-                                <div class="panel-header"><h2>DBMS Lock 추이</h2></div>
-                                <div class="panel-body">
-                                    <div style="height: 150px;"><canvas id="iv2-lock-trend-chart"></canvas></div>
-                                    <div class="iv3-lock-grid iv2-lock-current-row">
-                                        <div class="iv3-lock-card" id="iv2-lock-tm-box">
-                                            <div class="iv3-lock-label">현재 TM Lock 대기</div>
-                                            <div class="iv3-lock-value" id="iv2-lock-tm-current">--건</div>
-                                            <div style="height:22px;"><canvas id="iv2-lock-tm-spark"></canvas></div>
-                                        </div>
-                                        <div class="iv3-lock-card" id="iv2-lock-tx-box">
-                                            <div class="iv3-lock-label">현재 TX Lock 대기</div>
-                                            <div class="iv3-lock-value" id="iv2-lock-tx-current">--건</div>
-                                            <div style="height:22px;"><canvas id="iv2-lock-tx-spark"></canvas></div>
-                                            <div class="iv2-lock-current-sub" id="iv2-lock-tx-sub"></div>
-                                        </div>
-                                    </div>
-                                    <button id="iv2-incident-action-btn" class="danger-btn admin-only" style="display: none; width: 100%; margin-top: 10px; padding: 8px; border-radius: 4px; font-size: 0.9rem;">⚠ 장애조치 (Holder 세션 자동 Kill)</button>
-                                </div>
-                            </div>
-                            <div class="panel iv2-chart-panel">
-                                <div class="panel-header"><h2>Top Wait Events</h2></div>
-                                <div class="panel-body" style="height: 220px;"><canvas id="iv2-wait-events-chart"></canvas></div>
-                            </div>
-                        </div>
-
-                        <div class="iv2-charts-row iv2-charts-row-session">
-                            <div class="panel iv2-chart-panel">
-                                <div class="panel-header"><h2>Active Session 목록 <span class="iv2-alert-count" id="iv2-session-db-name"></span></h2></div>
-                                <div class="panel-body">
-                                    <ul class="iv2-alert-list" id="iv2-session-list">
-                                        <li class="iv2-alert-item">데이터를 불러오는 중입니다...</li>
-                                    </ul>
-                                </div>
-                            </div>
-                            <div class="panel iv2-chart-panel">
-                                <div class="panel-header"><h2>확인 필요 알림 <span class="iv2-alert-count" id="iv2-alert-count">0건</span></h2></div>
-                                <div class="panel-body">
-                                    <ul class="iv2-alert-list" id="iv2-alert-list">
-                                        <li class="iv2-alert-item">데이터를 불러오는 중입니다...</li>
-                                    </ul>
-                                </div>
-                            </div>
-                        </div>
-                    </div><!-- /#dashboard-v2-view -->
                 </section>
 
                 <!-- SQL Runner Section -->
@@ -864,7 +771,8 @@
                             <div id="tablespace-summary" style="display: flex; gap: 32px; margin-bottom: 16px; padding: 12px 16px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.95rem;">
                                 <div><span style="color: var(--text-secondary);">전체 할당량:</span> <strong id="tablespace-total-mb" style="color: var(--text-main);">-- MB</strong></div>
                                 <div><span style="color: var(--text-secondary);">전체 사용량:</span> <strong id="tablespace-used-mb" style="color: var(--text-main);">-- MB</strong></div>
-                                <div><span style="color: var(--text-secondary);">전체 사용률:</span> <strong id="tablespace-total-pct" style="color: var(--text-main);">--%</strong></div>
+                                <div><span style="color: var(--text-secondary);">전체 사용률(할당 대비):</span> <strong id="tablespace-total-pct" style="color: var(--text-main);">--%</strong></div>
+                                <div title="데이터파일 자동확장 최대 크기 대비 - 대시보드 점검 알림과 같은 기준"><span style="color: var(--text-secondary);">최대 크기 대비:</span> <strong id="tablespace-max-pct" style="color: var(--text-main);">--%</strong></div>
                             </div>
                             <table class="data-table">
                                 <thead>
@@ -874,62 +782,13 @@
                                         <th>총 크기 (MB)</th>
                                         <th>사용량 (MB)</th>
                                         <th>여유 공간 (MB)</th>
-                                        <th>사용률 (%)</th>
+                                        <th title="현재 할당된 데이터파일 크기 대비">할당 대비 (%)</th>
+                                        <th title="자동확장 데이터파일은 MAXSIZE, 아니면 현재 크기">최대 크기 (MB)</th>
+                                        <th title="자동확장 최대 크기 대비 - 대시보드 점검 알림과 같은 기준. 주의·위험 색은 이 값에만 표시">최대 대비 (%)</th>
                                     </tr>
                                 </thead>
                                 <tbody id="tablespace-tbody">
-                                    <tr>
-                                        <td>SYSTEM</td>
-                                        <td><span class="status-badge online">ONLINE</span></td>
-                                        <td>1,024</td>
-                                        <td>850</td>
-                                        <td>174</td>
-                                        <td>
-                                            <div class="progress-bar-container">
-                                                <div class="progress-bar" style="width: 83%;"></div>
-                                                <span>83%</span>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    <tr>
-                                        <td>SYSAUX</td>
-                                        <td><span class="status-badge online">ONLINE</span></td>
-                                        <td>2,048</td>
-                                        <td>1,800</td>
-                                        <td>248</td>
-                                        <td>
-                                            <div class="progress-bar-container">
-                                                <div class="progress-bar warning" style="width: 87%;"></div>
-                                                <span>87%</span>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    <tr>
-                                        <td>USERS</td>
-                                        <td><span class="status-badge online">ONLINE</span></td>
-                                        <td>5,120</td>
-                                        <td>4,600</td>
-                                        <td>520</td>
-                                        <td>
-                                            <div class="progress-bar-container">
-                                                <div class="progress-bar danger" style="width: 90%;"></div>
-                                                <span>90%</span>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    <tr>
-                                        <td>UNDOTBS1</td>
-                                        <td><span class="status-badge online">ONLINE</span></td>
-                                        <td>1,024</td>
-                                        <td>150</td>
-                                        <td>874</td>
-                                        <td>
-                                            <div class="progress-bar-container">
-                                                <div class="progress-bar" style="width: 14%;"></div>
-                                                <span>14%</span>
-                                            </div>
-                                        </td>
-                                    </tr>
+                                    <tr><td colspan="8" style="text-align:center; padding: 30px;">불러오는 중입니다...</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -1348,22 +1207,6 @@
             </main>
     </div>
 
-    <!-- 오라클 인스턴스 대시보드 클래식/신규 전환 아이콘 스위치. .app-container 안(.main-content 형제 포함)에
-         두면 .app-container에 걸린 style="zoom: 90%"(2026-09-25~26 잠시 80%)가 position:fixed의 containing block을 가로채
-         (.content-section의 fadeIn transform과 같은 계열의 Chrome 버그) 뷰포트가 아니라 zoom 컨테이너의
-         스크롤 흐름에 묶여버려, 마지막 카드(확인 필요 알림) 부근에 붙어버리는 문제가 있었다(사용자 실측,
-         2026-09-16 1차 수정 후에도 재발, 2026-09-16 2차 수정). #change-pwd-modal/#image-modal 등 기존
-         모달들과 같은 레벨(.app-container 바깥, body 직속)로 옮겨서 zoom 영향을 완전히 벗어나게 한다.
-         표시 여부는 JS가 DASHBOARD 탭 활성 상태에 맞춰 토글한다(app.js의 initInstanceDashboardV2). -->
-    <div class="iv2-view-switch" id="iv2-view-switch" style="display: none;">
-        <button type="button" class="iv2-view-btn active" data-iv2-view="nd" title="새 대시보드">
-            <i data-lucide="layout-dashboard"></i>
-        </button>
-        <button type="button" class="iv2-view-btn" data-iv2-view="v2" title="신규 대시보드(베타)">
-            <i data-lucide="layout-grid"></i>
-        </button>
-    </div>
-
     <div id="image-modal" class="modal" style="display: none; position: fixed; z-index: 9999; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.8);">
         <span class="close-modal" style="position: absolute; top: 15px; right: 35px; color: #f1f1f1; font-size: 40px; font-weight: bold; cursor: pointer;">&times;</span>
         <div id="modal-content" style="margin: auto; display: block; width: 90%; max-width: 1200px; padding: 20px; background: var(--bg-card); border-radius: 8px; margin-top: 50px;">
@@ -1371,12 +1214,12 @@
     </div>
 
 
-    <script src="app.js?v=181"></script>
-    <script src="nd-dashboard.js?v=14"></script>
-    <script src="nd-aas.js?v=8"></script>
-    <script src="nd-lock.js?v=10"></script>
-    <script src="nd-top.js?v=2"></script>
-    <script src="nd-checks.js?v=4"></script>
-    <script src="perf-analysis.js?v=5"></script>
+    <script src="app.js?v=183"></script>
+    <script src="nd-dashboard.js?v=16"></script>
+    <script src="nd-aas.js?v=11"></script>
+    <script src="nd-lock.js?v=11"></script>
+    <script src="nd-top.js?v=4"></script>
+    <script src="nd-checks.js?v=6"></script>
+    <script src="perf-analysis.js?v=6"></script>
 </body>
 </html>

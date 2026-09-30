@@ -53,9 +53,6 @@
             '<div class="nd-lk-stats" id="nd-lk-stats"></div>' +
             '<div class="nd-inc-bar" id="nd-inc-bar" hidden role="alert"><span class="nd-inc-txt" id="nd-inc-txt"></span>' +
             '<span id="nd-inc-action"></span></div>' +
-            '<div class="nd-lk-legend"><span><span class="nd-sw" style="background:' + TX_COLOR + '"></span>TX Lock</span>' +
-            '<span><span class="nd-sw" style="background:' + TM_COLOR + '"></span>TM Lock</span>' +
-            '<span class="nd-lk-rule" id="nd-lk-rule"></span></div>' +
             '<div class="nd-plot" id="nd-lk-plot" tabindex="0" role="img" aria-label="최근 10분 TX, TM Lock 대기 세션 수"><svg id="nd-lk-svg"></svg></div>' +
             '<div class="nd-lk-log" id="nd-lk-log" hidden></div>';
         // KILL 확인 패널은 차트 본문이 아니라 카드 바로 아래에 둔다 - 본문 안(inset:0)이면 작은 화면(1920×1080)에서 카드 본문이
@@ -127,7 +124,6 @@
         card.classList.toggle('nd-pending', st.pending);
         $('nd-lk-hold').hidden = !st.pending;
         const d = st.last;
-        $('nd-lk-rule').textContent = d ? `장애 기준: ${d.lastCallEtThreshold}초↑ 블로킹 TM Holder ${d.incidentCount}개↑` : '';
         if (d) $('nd-lk-plot').classList.remove('nd-loading');
         renderStats();
         renderIncident();
@@ -142,28 +138,38 @@
         return v >= crit ? { c: 'crit', t: '위험' } : v >= warn ? { c: 'warn', t: '주의' } : { c: 'good', t: '정상' };
     }
 
+    // Lock 요약 한 줄(2026-09-30 오케스트레이터 결정 A안): 예전 4칸×3줄(라벨·값·상태) + 범례 줄 + 장애 기준 문구는 같은 기준을
+    // 세 번 되풀이하고 정상일 때도 "대기 없음"이 칸마다 떠 지저분했다. 라벨 앞 색 표시가 범례를 겸하고, 상태(주의·위험)는
+    // 정상이 아닐 때만 붙인다. 장애 기준·주의/위험 기준·전체 Holder 수는 항목 툴팁(title)으로 옮겼다(장애 시엔 알림 바에도 나옴).
     function renderStats() {
         const box = $('nd-lk-stats');
         if (!box) return;
         const d = st.last;
-        const cell = (label, value, unit, pill, key) =>
-            `<div class="nd-lk-stat"><div class="nd-kpi-label">${key ? `<span class="nd-sw" style="background:${key}"></span>` : ''}${esc(label)}</div>` +
-            `<div class="nd-kpi-value">${value}${unit ? `<small>${esc(unit)}</small>` : ''}</div><div class="nd-kpi-sub">${pill}</div></div>`;
-        const pill = (l, text) => `<span class="nd-lvl nd-lvl-${l.c === 'warn' ? 'serious' : l.c}">${esc(text || l.t)}</span>`;
+        const item = (label, value, tip, state, key) =>
+            `<span class="nd-lk-stat" title="${esc(tip)}"><span class="nd-lk-lbl">${key ? `<span class="nd-sw" style="background:${key}"></span>` : ''}${esc(label)}</span>` +
+            `<span class="nd-lk-val">${value}</span>${state}</span>`;
+        const pill = (c, text) => `<span class="nd-lvl nd-lvl-${c === 'warn' ? 'serious' : c}">${esc(text)}</span>`;
+        const state = (l) => l.c === 'good' ? '' : pill(l.c, l.t);
+        const txTip = `TX Lock(행 잠금) 대기 세션 수 · 주의 ${TX_WARN}건↑ / 위험 ${TX_CRIT}건↑`;
+        const tmTip = `TM Lock(테이블 잠금) 대기 세션 수 · 주의 ${TM_WARN}건↑ / 위험 ${TM_CRIT}건↑`;
         if (!d) {
-            box.innerHTML = cell('TX 대기 세션', '—', '', '&nbsp;', TX_COLOR) + cell('TM 대기 세션', '—', '', '&nbsp;', TM_COLOR) +
-                cell('블로킹 TM Holder', '—', '', '&nbsp;') + cell('최장 last_call_et', '—', '', '&nbsp;');
+            box.innerHTML = item('TX 대기', '—', txTip, '', TX_COLOR) + item('TM 대기', '—', tmTip, '', TM_COLOR) +
+                item('블로킹 Holder', '—', '다른 세션을 막고 있는 TM Lock Holder 수', '') +
+                item('최장 경과', '—', '다른 세션을 막고 있는 TM Lock Holder 중 가장 긴 last_call_et', '');
             return;
         }
         const th = d.lastCallEtThreshold, lim = d.incidentCount, oc = d.holderOverCount;
-        const ocPill = oc >= lim ? pill({ c: 'crit' }, '장애 기준 도달')
-            : oc >= 3 ? pill({ c: 'warn' }, `기준까지 ${lim - oc}개`) : pill({ c: 'good' }, `전체 Holder ${d.holderTotal}개`);
+        // 분·초는 작은 단위 글씨로 - 숫자 글꼴(Consolas)에 한글이 없어 "2분 13초"를 값 크기로 쓰면 글자가 크고 들쭉날쭉했다
+        const et = d.maxLastCallEt, etHtml = et >= 60 ? `${Math.floor(et / 60)}<small>분</small> ${pad(et % 60)}<small>초</small>` : `${et}<small>초</small>`;
+        const ocState = oc >= lim ? pill('crit', '장애 기준 도달') : oc >= 3 ? pill('warn', `기준까지 ${lim - oc}개`) : '';
         box.innerHTML =
-            cell('TX 대기 세션', String(d.txWait), '건', d.txWait ? pill(lvl(d.txWait, TX_WARN, TX_CRIT)) : pill({ c: 'good' }, '대기 없음'), TX_COLOR) +
-            cell('TM 대기 세션', String(d.tmWait), '건', d.tmWait ? pill(lvl(d.tmWait, TM_WARN, TM_CRIT)) : pill({ c: 'good' }, '대기 없음'), TM_COLOR) +
-            cell(`블로킹 TM Holder (${th}초↑)`, String(oc), `/ ${lim}개`, ocPill) +
-            cell('최장 last_call_et', d.maxLastCallEt ? esc(mmss(d.maxLastCallEt)) : '—', '',
-                d.maxLastCallEt ? pill(lvl(d.maxLastCallEt, 30, th)) : pill({ c: 'good' }, 'Holder 없음'));
+            item('TX 대기', String(d.txWait), txTip, state(lvl(d.txWait, TX_WARN, TX_CRIT)), TX_COLOR) +
+            item('TM 대기', String(d.tmWait), tmTip, state(lvl(d.tmWait, TM_WARN, TM_CRIT)), TM_COLOR) +
+            item('블로킹 Holder', `${oc}<small>/ ${lim}</small>`,
+                `last_call_et ${th}초 이상 다른 세션을 막고 있는 TM Lock Holder 수 / 장애 기준 ${lim}개 · 전체 Holder ${d.holderTotal}개`, ocState) +
+            item('최장 경과', d.maxLastCallEt ? etHtml : '—',
+                `다른 세션을 막고 있는 TM Lock Holder 중 가장 긴 last_call_et · 주의 30초↑ / 위험 ${th}초↑`,
+                d.maxLastCallEt ? state(lvl(d.maxLastCallEt, 30, th)) : '');
     }
 
     function renderIncident() {

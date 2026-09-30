@@ -19,7 +19,8 @@
         { k: 'network', n: 'Network' }, { k: 'other', n: 'Other' }
     ];
     const NC = CLS.length;
-    const METRICS = CLS.map(c => 'ash_wc_' + c.k).concat(['ash_cpu_cores']);
+    // ash_cpu_cores_phys(NUM_CPU_CORES)는 물리 코어 보조선 전용 - 판정(CPU 초과·부하율·진단)은 ash_cpu_cores(NUM_CPUS)만 쓴다(2026-09-30)
+    const METRICS = CLS.map(c => 'ash_wc_' + c.k).concat(['ash_cpu_cores', 'ash_cpu_cores_phys']);
     const RANGE_MIN = { '15m': 15, '1h': 60, '3h': 180, '24h': 1440 };
     const TICK_EVERY = { '15m': 5, '1h': 10, '3h': 30, '24h': 120 };
     const RANGE_LABEL = { '15m': '최근 15분', '1h': '최근 1시간', '3h': '최근 3시간', '24h': '최근 24시간' };
@@ -43,6 +44,7 @@
         rangeKey: '1h',
         rows: [],          // [{t: DB 시각 분 시작 ms, v: [8] | null}]
         cores: null,
+        coresPhys: null,   // 물리 코어(보조선 전용)
         lastSample: null,  // DB 시각 ms
         nowDb: null,
         hidden: new Set(),
@@ -170,11 +172,14 @@
         });
         const coreSeries = d.ash_cpu_cores || [];
         const cores = coreSeries.length ? coreSeries[coreSeries.length - 1].value : null;
+        const physSeries = d.ash_cpu_cores_phys || [];
+        const coresPhys = physSeries.length ? physSeries[physSeries.length - 1].value : null;
 
         if (rangeKey !== st.rangeKey) { st.userSel = false; st.sel = null; }
         st.rangeKey = rangeKey;
         st.rows = rows;
         st.cores = cores;
+        st.coresPhys = coresPhys;
         st.lastSample = lastSample;
         st.nowDb = nowDb;
         st.loaded = true;
@@ -186,6 +191,7 @@
     ND.onReset(() => {
         st.rows = [];
         st.cores = null;
+        st.coresPhys = null;
         st.lastSample = null;
         st.sel = null;
         st.userSel = false;
@@ -194,9 +200,9 @@
         drag = null;
         const tip = $('nd-aas-tip');
         if (tip) tip.hidden = true;
-        ['nd-kpi-current', 'nd-kpi-avg', 'nd-kpi-max', 'nd-kpi-over', 'nd-kpi-sessions', 'nd-kpi-memory'].forEach(id => { const e = $(id); if (e) e.textContent = '—'; });
+        ['nd-kpi-current', 'nd-kpi-avg', 'nd-kpi-max', 'nd-kpi-over', 'nd-kpi-sessions', 'nd-kpi-memory', 'nd-kpi-tps', 'nd-kpi-hit'].forEach(id => { const e = $(id); if (e) e.textContent = '—'; });
         ['nd-kpi-current-sub', 'nd-kpi-avg-sub', 'nd-kpi-max-sub', 'nd-kpi-over-sub'].forEach(id => { const e = $(id); if (e) e.innerHTML = '&nbsp;'; });
-        ['nd-kpi-sessions-bar', 'nd-kpi-memory-bar'].forEach(id => { const e = $(id); if (e) e.innerHTML = ''; });
+        ['nd-kpi-sessions-bar', 'nd-kpi-memory-bar', 'nd-kpi-hit-bar'].forEach(id => { const e = $(id); if (e) e.innerHTML = ''; });
         const svg = $('nd-aas-svg');
         if (svg) svg.innerHTML = '';
         const plot = $('nd-aas-plot');
@@ -371,6 +377,19 @@
                 for (let k = 0; k < acc.length; k++) acc[k] = hi[k];
             }
         });
+        // 물리 코어 보조선(2026-09-30 오케스트레이터 결정) - SMT 서버에서 CPU 층이 이 선을 넘으면 코어를 스레드로 나눠 쓰기 시작한다는
+        // 참고선. 판정에는 쓰지 않는다. 논리 CPU보다 작을 때만(SMT 없는 서버는 두 값이 같아 그리지 않음). 라벨이 CPU 라벨과 겹치면 아래로 비킨다.
+        const phys = st.coresPhys;
+        if (phys && phys > 0 && (!cores || phys < cores) && phys <= top) {
+            const py = y(phys);
+            const cyNum = cores ? y(cores) : -99;
+            const ly = Math.abs(py - cyNum) < 14 ? Math.max(py, cyNum) + 14 : py;
+            const tip = `<title>물리 코어(NUM_CPU_CORES) ${phys} - 참고선. CPU 초과 등 판정은 CPU(논리) 기준</title>`;
+            s += `<line class="nd-corel-phys" x1="${ml}" x2="${ml + pw}" y1="${py.toFixed(1)}" y2="${py.toFixed(1)}"/>`;
+            s += mr > 36
+                ? `<text class="nd-corelbl-phys" x="${ml + pw + 6}" y="${(ly + 4).toFixed(1)}">물리코어 ${phys}${tip}</text>`
+                : `<text class="nd-corelbl-phys" x="${ml + pw - 4}" y="${(ly - 5).toFixed(1)}" text-anchor="end">물리코어 ${phys}${tip}</text>`;
+        }
         if (cores) {
             const cy = y(cores).toFixed(1);
             s += `<line class="nd-corel" x1="${ml}" x2="${ml + pw}" y1="${cy}" y2="${cy}"/>`;
@@ -555,13 +574,24 @@
     }
 
     ND.on('lock', (d) => {
-        const sEl = $('nd-kpi-sessions'), mEl = $('nd-kpi-memory');
+        const sEl = $('nd-kpi-sessions'), mEl = $('nd-kpi-memory'), tEl = $('nd-kpi-tps'), hEl = $('nd-kpi-hit');
         if (!d || !d.ok) {
             // 판단 보류 - 직전 값을 지우지 않고 흐리게(0으로 보이지 않게)
-            [sEl, mEl].forEach(e => { if (e) e.classList.add('nd-stale'); });
+            [sEl, mEl, tEl, hEl].forEach(e => { if (e) e.classList.add('nd-stale'); });
             return;
         }
-        [sEl, mEl].forEach(e => { if (e) e.classList.remove('nd-stale'); });
+        [sEl, mEl, tEl, hEl].forEach(e => { if (e) e.classList.remove('nd-stale'); });
+        // TPS·Buffer Cache Hit(2026-09-30 추가) - v$sysmetric 1분 값, 서버가 못 읽으면 null → "—"(0으로 표시하지 않음).
+        // Hit 기준은 기존 두 번째 대시보드와 같다(90% 미만 주의, 80% 미만 위험 - 낮을수록 나쁨).
+        if (tEl) tEl.innerHTML = typeof d.tps === 'number' ? `${f1(d.tps)}<small>건/초</small>` : '—';
+        if (hEl) hEl.innerHTML = typeof d.bufferHitPct === 'number' ? `${f1(d.bufferHitPct)}<small>%</small>` : '—';
+        if (typeof d.bufferHitPct === 'number') {
+            const hc = d.bufferHitPct < 80 ? 'var(--nd-crit)' : d.bufferHitPct < 90 ? 'var(--nd-warn)' : 'var(--primary)';
+            miniBar('nd-kpi-hit-bar', d.bufferHitPct / 100, hc);
+        } else {
+            const hb = $('nd-kpi-hit-bar');
+            if (hb) hb.innerHTML = '';
+        }
         const th = (Array.isArray(window.currentSessionThresholds) && window.currentSessionThresholds.length === 5)
             ? window.currentSessionThresholds : DEFAULT_SESSION_THRESHOLDS;
         if (sEl) sEl.textContent = typeof d.activeSessions === 'number' ? String(d.activeSessions) : '—';

@@ -238,8 +238,16 @@
         if (v.bind) v.bind($('nd-dw-body'));
     }
 
+    // 상세 조회 구간 - ② 차트에서 고른 구간, 없으면 DB 시각 기준 최근 15분. ⑧ 장시간 실행 쿼리 카드처럼 Top 목록을 거치지 않고
+    // 세션 상세를 여는 경로가 생겨, 차트에 데이터가 없을 때(1분 수집 전·수집 실패) "상세 조회 실패"가 났다(2026-09-30 실측).
+    function detailSel() {
+        if (st.sel) return st.sel;
+        const to = Date.now() + (typeof ND.state.dbClockOffsetMs === 'number' ? ND.state.dbClockOffsetMs : 0);
+        return { from: to - 15 * 60000, to };
+    }
+
     async function getDetail(path) {
-        const sel = st.sel;
+        const sel = detailSel();
         const q = new URLSearchParams({ from: iso(sel.from), to: iso(sel.to), token: getToken() });
         const res = await fetch(`/api/dashboard/${encodeURIComponent(window.currentDbId)}/${path}${path.indexOf('?') >= 0 ? '&' : '?'}${q}`);
         const body = await res.json().catch(() => null);
@@ -253,7 +261,7 @@
     const kv = (pairs) => '<dl class="nd-kv">' + pairs.map(([k, v, raw]) => `<dt>${esc(k)}</dt><dd>${raw ? v : esc(v === null || v === undefined || v === '' ? '—' : v)}</dd>`).join('') + '</dl>';
     const code = (t) => `<pre class="nd-dw-code">${esc(t)}</pre>`;
     const queries = (list) => `<details class="nd-dw-q"><summary>조회 쿼리 보기</summary>${(list || []).map(code).join('')}</details>`;
-    const winTxt = () => `${hm(st.sel.from)} – ${hm(st.sel.to)} (${Math.round((st.sel.to - st.sel.from) / 60000)}분)`;
+    const winTxt = () => { const s = detailSel(); return `${hm(s.from)} – ${hm(s.to)} (${Math.round((s.to - s.from) / 60000)}분)${st.sel ? '' : ' · 최근'}`; };
 
     function activityHtml(a) {
         const by = a.byCategory || {};
@@ -419,6 +427,8 @@
     // ⑧ 점검 알림(nd-checks.js)이 같은 드로어·부품을 쓰도록 공개
     ND.drawer = { open: openDrawer, push: pushDrawer, close: closeDrawer };
     ND.drawerKit = { sec, kv, code, queries, esc };
+    // ⑧ 점검 알림의 장시간 실행 쿼리 카드(nd-checks.js)가 세션을 누르면 같은 세션 상세로 이어지게 공개(2026-09-30)
+    ND.views = { session: viewSession, sql: viewSql };
 
     // ================================================================== 초기 DOM
 

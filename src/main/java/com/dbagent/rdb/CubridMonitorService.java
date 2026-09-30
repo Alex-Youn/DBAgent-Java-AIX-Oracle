@@ -1,5 +1,7 @@
 package com.dbagent.rdb;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.dbagent.oracle.TargetDbConfig;
 import org.springframework.stereotype.Service;
 
@@ -53,6 +55,8 @@ import java.util.Map;
  */
 @Service
 public class CubridMonitorService implements EngineMonitorService {
+
+    private static final Logger log = LoggerFactory.getLogger(CubridMonitorService.class);
 
     /**
      * 볼륨 열거 상한. CUBRID 는 볼륨 목록을 주는 SQL 이 없어 {@code SHOW VOLUME HEADER OF n} 을
@@ -149,6 +153,8 @@ public class CubridMonitorService implements EngineMonitorService {
             // 0 을 넣으면 카드가 "가동률 0%" 로 보여 장애처럼 읽히므로 null 로 둔다.
             result.put("uptimePct", null);
         } catch (SQLException e) {
+            // 원인을 남긴다 - 예전엔 삼켜서 Fleet에서만 down인 이유를 알 수 없었다(2026-09-30 원본 DBAgent-Java docker_mssql 실측). 화면 문구는 그대로.
+            log.warn("fleet_status failed for db_id={}: {}", target.id(), e.toString());
             result.put("status", "down");
             result.put("errorMessage", "DB에 연결할 수 없습니다.");
         }

@@ -1304,10 +1304,12 @@ let layoutHTML = "";
         const tsTotalMbEl = document.getElementById('tablespace-total-mb');
         const tsUsedMbEl = document.getElementById('tablespace-used-mb');
         const tsTotalPctEl = document.getElementById('tablespace-total-pct');
+        const tsMaxPctEl = document.getElementById('tablespace-max-pct');
         const resetTablespaceTotals = () => {
             if (tsTotalMbEl) tsTotalMbEl.textContent = '-- MB';
             if (tsUsedMbEl) tsUsedMbEl.textContent = '-- MB';
             if (tsTotalPctEl) tsTotalPctEl.textContent = '--%';
+            if (tsMaxPctEl) tsMaxPctEl.textContent = '--%';
         };
         // 요청 세대 번호 - DB를 빠르게 바꾸면 이전 DB 응답이 나중에 도착할 수 있다. 가장 최근 요청의
         // 응답만 화면에 반영하고, 나머지는 버린다(체크리스트 7-1, 2026-09-25).
@@ -1319,7 +1321,7 @@ let layoutHTML = "";
             tsTbody.innerHTML = '';
             resetTablespaceTotals();
             if (!window.currentDbId) {
-                tsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 30px;">DB를 먼저 선택해주세요.</td></tr>';
+                tsTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">DB를 먼저 선택해주세요.</td></tr>';
                 return;
             }
             const mySeq = ++tsRequestSeq;
@@ -1341,12 +1343,12 @@ let layoutHTML = "";
                     if (isStale()) return;
 
                     if (data.error) {
-                        tsTbody.innerHTML = `<tr><td colspan="6" style="color:#d03b3b; text-align:center; padding: 30px;">DB Error: ${data.error}</td></tr>`;
+                        tsTbody.innerHTML = `<tr><td colspan="8" style="color:#d03b3b; text-align:center; padding: 30px;">DB Error: ${data.error}</td></tr>`;
                         if (tsTotalMbEl) tsTotalMbEl.textContent = '-- MB';
                         if (tsUsedMbEl) tsUsedMbEl.textContent = '-- MB';
                         if (tsTotalPctEl) tsTotalPctEl.textContent = '--%';
                     } else if (data.length === 0) {
-                        tsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 30px;">테이블 스페이스 정보가 없습니다.</td></tr>';
+                        tsTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 30px;">테이블 스페이스 정보가 없습니다.</td></tr>';
                         if (tsTotalMbEl) tsTotalMbEl.textContent = '0 MB';
                         if (tsUsedMbEl) tsUsedMbEl.textContent = '0 MB';
                         if (tsTotalPctEl) tsTotalPctEl.textContent = '0%';
@@ -1354,15 +1356,21 @@ let layoutHTML = "";
                         tsTbody.innerHTML = '';
                         let sumTotalMb = 0;
                         let sumUsedMb = 0;
+                        let sumMaxMb = 0;
                         data.forEach(ts => {
                             sumTotalMb += Number(ts.total_mb) || 0;
                             sumUsedMb += Number(ts.used_mb) || 0;
+                            sumMaxMb += Number(ts.max_mb) || 0;
                             const free = ts.free_mb;
                             const numPct = Number(ts.used_pct);
                             const displayPct = numPct.toFixed(1);
+                            // 주의·위험 색은 자동확장 최대 크기 대비(max_used_pct)에만 - 대시보드 점검 알림과 같은 기준(2026-09-30 QA).
+                            // 할당 대비 막대는 참고용 중립 색. 최대 기준 값이 없으면(max 0) "—"로 두고 색도 입히지 않는다.
+                            const hasMax = ts.max_used_pct !== null && ts.max_used_pct !== undefined;
+                            const maxPct = hasMax ? Number(ts.max_used_pct) : null;
                             let barClass = '';
-                            if (numPct >= 90) barClass = 'danger';
-                            else if (numPct >= 80) barClass = 'warning';
+                            if (hasMax && maxPct >= 90) barClass = 'danger';
+                            else if (hasMax && maxPct >= 80) barClass = 'warning';
                             
                             let statusBadge = 'online';
                             if (ts.status && ts.status.toUpperCase() !== 'ONLINE') {
@@ -1378,9 +1386,16 @@ let layoutHTML = "";
                                     <td>${free.toLocaleString()}</td>
                                     <td>
                                         <div class="progress-bar-container">
-                                            <div class="progress-bar ${barClass}" style="width: ${numPct}%;"></div>
+                                            <div class="progress-bar" style="width: ${numPct}%;"></div>
                                             <span>${displayPct}%</span>
                                         </div>
+                                    </td>
+                                    <td>${(Number(ts.max_mb) || 0).toLocaleString()}</td>
+                                    <td>${hasMax ? `
+                                        <div class="progress-bar-container">
+                                            <div class="progress-bar ${barClass}" style="width: ${Math.min(100, maxPct)}%;"></div>
+                                            <span>${maxPct.toFixed(1)}%</span>
+                                        </div>` : '—'}
                                     </td>
                                 </tr>
                             `;
@@ -1389,15 +1404,16 @@ let layoutHTML = "";
                         if (tsTotalMbEl) tsTotalMbEl.textContent = `${sumTotalMb.toLocaleString()} MB`;
                         if (tsUsedMbEl) tsUsedMbEl.textContent = `${sumUsedMb.toLocaleString()} MB`;
                         if (tsTotalPctEl) tsTotalPctEl.textContent = sumTotalMb > 0 ? `${((sumUsedMb / sumTotalMb) * 100).toFixed(1)}%` : '0%';
+                        if (tsMaxPctEl) tsMaxPctEl.textContent = sumMaxMb > 0 ? `${((sumUsedMb / sumMaxMb) * 100).toFixed(1)}%` : '--%';
                     }
                 } else {
-                    tsTbody.innerHTML = `<tr><td colspan="6" style="color:#d03b3b; text-align:center; padding: 30px;">API 서버 오류가 발생했습니다.</td></tr>`;
+                    tsTbody.innerHTML = `<tr><td colspan="8" style="color:#d03b3b; text-align:center; padding: 30px;">API 서버 오류가 발생했습니다.</td></tr>`;
                     resetTablespaceTotals();
                 }
             } catch (error) {
                 if (isStale()) return;
                 console.error('Tablespace fetch error:', error);
-                tsTbody.innerHTML = `<tr><td colspan="6" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+                tsTbody.innerHTML = `<tr><td colspan="8" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
                 resetTablespaceTotals();
             } finally {
                 // 스피너/오버레이는 가장 최근 요청이 끝날 때만 내린다 - 이전 DB 요청이 먼저 끝나며
@@ -3717,574 +3733,27 @@ let layoutHTML = "";
         dashRefreshBtn.addEventListener('click', fetchDashboard);
     }
 
-    // ---- Oracle instance dashboard v2/v3 (신규/베타, 2026-09-16) ----
-    // 기존 대시보드(위 dashRefreshBtn/fetchDashboard 등)는 건드리지 않는다 - 화면 하단 스위치로 뷰만
-    // 전환하고, 보이는 뷰의 폴러만 돈다. v2(스택형)/v3(벤토형)는 같은 데이터 계약(instance_overview/
-    // active_alerts/top_events/metric_history)을 공유한다(Top SQL/Quick Stats 패널은 사용자 요청으로
-    // 2026-09-18 제거, oracle-instance-dashboard-UI-spec_2.md
-    // §0 "두 버전 모두 데이터 소스와 의미는 동일 - 프레젠테이션 레이어만 다르다"). 어떤 뷰를 기본값으로
-    // 할지는 아직 미정이라 localStorage에 마지막 선택을 기억해 두고 다음 방문 때 그대로 이어서 보여준다.
-    (function initInstanceDashboardV2() {
+    // ---- 오라클 인스턴스 대시보드 표시 ----
+    // 대시보드 탭에는 새 대시보드(nd-dashboard.js)만 남았다 - 예전 게이지·탭 화면(legacy)은 2026-09-25에 스위치에서 빠졌고,
+    // 두 번째 대시보드(v2, 신규/베타)는 2026-09-30 오케스트레이터 결정으로 삭제(쓸 만한 TPS·Buffer Cache Hit·장시간 실행 쿼리는
+    // 새 대시보드로 이식). 고를 화면이 하나라 우측 하단 전환 스위치도 없앴다. fetchDashboard()(레거시 폴러)는
+    // dbagentActiveDashboardSubView가 'legacy'가 아니면 쉰다.
+    (function initInstanceDashboardView() {
         const legacyView = document.getElementById('dashboard-legacy-view');
-        const v2View = document.getElementById('dashboard-v2-view');
-        const switchBtns = document.querySelectorAll('#iv2-view-switch .iv2-view-btn');
-        if (!legacyView || !v2View || switchBtns.length === 0) return;
-
-        let currentView = 'legacy';
-        let iv2PollingTimer = null;
-        // Current Session에서 이미 겪은 것과 같은 유형의 폴링 오버랩 버그(사용자 실측 2026-09-14,
-        // scheduleNextSessionFetch 참고) 방지용. setInterval은 이전 라운드(아래 6개 API) 완료 여부와
-        // 무관하게 무조건 10초마다 새로 쏘므로, 인스턴스 하나가 느려지거나 응답이 안 오면 라운드가
-        // 계속 겹쳐 쌓이면서 브라우저 탭이 먹통이 된다(오케스트레이터 실측 2026-09-21: "다른 DB 접속시
-        // hang → 전체 먹통, 브라우저 재시작하면 정상" - 서버는 멀쩡한데 클라이언트만 죽는 것으로 확인
-        // 되어 서버가 아니라 여기가 원인). 같은 db_id의 이전 라운드가 아직 안 끝났으면 그 db_id의 새
-        // 라운드만 건너뛴다.
-        // db_id별 in-flight 여부를 단일 변수(마지막으로 시작한 db_id 하나만 기억)로 막으면, A→B→A로
-        // 빠르게 되돌아갈 때 A의 첫 라운드가 아직 안 끝난 상태에서 두 번째 A 라운드가 또 시작되고,
-        // 그러면 먼저 끝난 첫 라운드의 finally가 "지금 값이 A니까 내 라운드구나"라고 착각해 아직 진행 중인
-        // 두 번째 A 라운드의 in-flight 상태를 지워버린다 - 그 틈에 10초 폴링이 겹쳐 다시 쌓이는 같은
-        // 클래스의 버그가 재현된다. db_id마다 독립적으로 추적해야 해서 Set으로 관리한다.
-        let iv2FetchInFlightDbIds = new Set();
-        let iv2CpuDbTimeChart = null;
-        let iv2WaitEventsChart = null;
-        let iv2LockTrendChart = null;
-        let iv2TmSparkChart = null;
-        let iv2TxSparkChart = null;
-        let iv2Range = '1h';
-        let iv2LastAlerts = [];
-        let iv2LastInstanceName = '';
-        // iv2LastInstanceName이 어느 db_id에서 채워진 값인지 - DB 전환 직후엔 fetchInstanceOverviewV2()와
-        // fetchActiveSessionV2()가 같은 Promise.all로 동시에 새 dbId를 요청하지만 응답 처리 순서는 보장되지
-        // 않는다(오케스트레이터 실측, 2026-09-22) - fetchActiveSessionV2()가 먼저 끝나면 아직 이전 DB의
-        // instanceName이 남아있는 iv2LastInstanceName을 그대로 보여줘 "세션 목록은 새 DB인데 라벨은 옛
-        // DB"인 상태가 잠깐 뜬다. dbId가 일치할 때만 신뢰하고, 다르면(=아직 새 DB 값으로 안 채워짐) 값이
-        // 없는 것처럼 취급해 로그인 직후 첫 폴링과 동일한 정책(비워두고 다음 폴링에 채움)을 적용한다.
-        let iv2LastInstanceNameDbId = '';
-        let iv2LastTmVal = 0;
-        let iv2LastTxVal = 0;
-        // UI-2(v3) Lock 현황 카드처럼 미니 스파크라인을 그리기 위한 클라이언트 쪽 롤링 버퍼 - 서버
-        // 히스토리를 또 조회하지 않고 fetchIncidentGateV2()가 10초마다 받아오는 실시간 값을 그때그때
-        // 쌓아서 쓴다(오케스트레이터 요청, 2026-09-18). 20개 = 폴링 10초 간격 기준 약 3분 20초치.
-        let iv2TmSparkBuffer = [];
-        let iv2TxSparkBuffer = [];
-        const IV2_SPARK_MAX_POINTS = 20;
-
-        // v2/v3 공통 - Lock 추이 카드 아래 "현재 TM/TX Lock 대기" 요약 박스(DASHBOARD-UI-1 샘플 목업
-        // 반영, 2026-09-16 / UI-2 카드 스타일 + 실시간화로 개편, 2026-09-18). tm/tx 값은
-        // fetchIncidentGateV2()가 /api/failure_prob에서 받아오는 실시간 값(장애조치 버튼과 동일 소스),
-        // Blocking SID는 active_alerts의 "Blocking Session 감지" 항목이 이미 들고 있는 relatedSid를
-        // 그대로 재사용 - 새 조회 없음.
-        // 카드가 붉은색으로 바뀌는 임계치 - 장애조치 버튼 임계치(failure_prob 기반, iv2FailurePercentage)와
-        // 완전히 별개(오케스트레이터 지적, 2026-09-18: "1건만 돼도 붉어지는 건 너무 민감하다").
-        const IV2_TM_LOCK_DANGER_THRESHOLD = 6;
-        const IV2_TX_LOCK_DANGER_THRESHOLD = 15;
-
-        function iv2UpdateLockCurrentBoxes() {
-            const tmEl = document.getElementById('iv2-lock-tm-current');
-            const txEl = document.getElementById('iv2-lock-tx-current');
-            if (tmEl) tmEl.textContent = `${iv2LastTmVal}건`;
-            if (txEl) txEl.textContent = `${iv2LastTxVal}건`;
-            const tmBox = document.getElementById('iv2-lock-tm-box');
-            if (tmBox) tmBox.classList.toggle('danger', iv2LastTmVal >= IV2_TM_LOCK_DANGER_THRESHOLD);
-            const txBox = document.getElementById('iv2-lock-tx-box');
-            if (txBox) txBox.classList.toggle('danger', iv2LastTxVal >= IV2_TX_LOCK_DANGER_THRESHOLD);
-            const subEl = document.getElementById('iv2-lock-tx-sub');
-            if (subEl) {
-                const blocking = iv2LastAlerts.find(a => a.relatedSid);
-                subEl.textContent = (iv2LastTxVal >= IV2_TX_LOCK_DANGER_THRESHOLD && blocking) ? `SID ${blocking.relatedSid} Blocking` : '';
-            }
-        }
-
-        // 미니 스파크라인(값+추세만 보여주는 축 없는 라인차트) 공용 렌더러 - 원래 UI-2(v3) 전용이었지만
-        // UI-2 제거(오케스트레이터 요청, 2026-09-18) 후에도 UI-1의 TM/TX Lock 카드가 계속 쓰므로 이름에서
-        // v3를 뗀다.
-        function renderSparkline(canvasId, chartRef, values, color) {
-            const ctx = document.getElementById(canvasId);
-            if (!ctx) return chartRef;
-            if (chartRef) {
-                chartRef.data.labels = values.map((_, i) => i);
-                chartRef.data.datasets[0].data = values;
-                chartRef.update();
-                return chartRef;
-            }
-            return new Chart(ctx, {
-                type: 'line',
-                data: { labels: values.map((_, i) => i), datasets: [{ data: values, borderColor: color, borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false }] },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    animation: { duration: 0 },
-                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
-                    scales: { x: { display: false }, y: { display: false } }
-                }
-            });
-        }
-
-        // fetchIncidentGateV2()가 새 실시간 값을 받아올 때만 부른다 - fetchActiveAlertsV2()는 Blocking
-        // SID 라벨만 갱신하려고 iv2UpdateLockCurrentBoxes()를 따로 부르는데, 거기서 이것까지 같이
-        // 부르면 값이 안 바뀌었는데도 스파크라인에 같은 점이 중복으로 찍힌다.
-        function iv2PushLockSpark(tmVal, txVal) {
-            iv2TmSparkBuffer.push(tmVal);
-            iv2TxSparkBuffer.push(txVal);
-            if (iv2TmSparkBuffer.length > IV2_SPARK_MAX_POINTS) iv2TmSparkBuffer.shift();
-            if (iv2TxSparkBuffer.length > IV2_SPARK_MAX_POINTS) iv2TxSparkBuffer.shift();
-            // 색은 Current Session 그래프의 TM/TX LOCK과 동일(오케스트레이터 요청, 2026-09-18) -
-            // 아래 DBMS Lock 추이 그래프 색과 같은 이유(CPU/DB Time 색은 이후 원래대로 Rewind됨).
-            iv2TmSparkChart = renderSparkline('iv2-lock-tm-spark', iv2TmSparkChart, iv2TmSparkBuffer, '#be123c');
-            iv2TxSparkChart = renderSparkline('iv2-lock-tx-spark', iv2TxSparkChart, iv2TxSparkBuffer, '#7c3aed');
-        }
-
-        function fetchActiveDashboardView() {
-            if (currentView === 'v2') fetchInstanceDashboardV2();
-            if (currentView === 'nd' && window.ndDashboard) window.ndDashboard.onDbChange();
-        }
-        // instLink 클릭 핸들러(이 IIFE 밖, DB 트리 초기화 코드)가 최초 DB 자동선택/전환 직후 바로
-        // 불러 쓰기 위한 훅(오케스트레이터 실측, 2026-09-18) - 안 그러면 v2는 다음 10초 폴링
-        // 틱까지 기다려야 실제 데이터가 뜬다.
-        window.fetchActiveDashboardView = fetchActiveDashboardView;
-
-        function setView(view) {
-            currentView = view;
-            // 새 대시보드(F4, 2026-09-25)가 "기존" 자리를 대체 - 예전 게이지·탭 화면(legacy)은 더 이상 고를 수 없다.
-            legacyView.style.display = 'none';
-            v2View.style.display = view === 'v2' ? '' : 'none';
-            const ndView = document.getElementById('dashboard-nd-view');
-            if (ndView) ndView.style.display = view === 'nd' ? '' : 'none';
-            if (window.ndDashboard) {
-                if (view === 'nd') window.ndDashboard.show(); else window.ndDashboard.hide();
-            }
-            switchBtns.forEach(b => b.classList.toggle('active', b.getAttribute('data-iv2-view') === view));
-            try { localStorage.setItem('dbagent.dashboardView', view); } catch (e) { /* private mode 등 - 무시 */ }
-
-            // fetchDashboard()(레거시 2초 폴러)가 이 값을 보고 자기 자신을 쉬게 한다 - 기존 대시보드
-            // 코드는 건드리지 않고, 신규 뷰가 보이는 동안만 레거시 폴링을 멈춰 같은 인스턴스에 두 폴러가
-            // 동시에 부하를 주지 않도록 한다.
-            window.dbagentActiveDashboardSubView = view;
-
-            if (iv2PollingTimer) { clearInterval(iv2PollingTimer); iv2PollingTimer = null; }
-            if (view === 'v2') {
-                fetchInstanceDashboardV2();
-                iv2PollingTimer = setInterval(fetchInstanceDashboardV2, 10000);
-            }
-        }
-
-        switchBtns.forEach(btn => {
-            btn.addEventListener('click', () => setView(btn.getAttribute('data-iv2-view')));
-        });
-
-        document.querySelectorAll('#iv2-range-switch .iv-range-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                iv2Range = btn.getAttribute('data-range');
-                document.querySelectorAll('#iv2-range-switch .iv-range-btn').forEach(b => b.classList.toggle('active', b === btn));
-                fetchMetricHistoryV2();
-            });
-        });
-
-        function iv2RelativeTime(epochMs) {
-            const diffSec = Math.max(0, Math.round((Date.now() - epochMs) / 1000));
-            if (diffSec < 60) return '방금 전';
-            if (diffSec < 3600) return Math.floor(diffSec / 60) + '분 전';
-            return Math.floor(diffSec / 3600) + '시간 전';
-        }
-
-        function iv2FormatBytes(bytes) {
-            if (!bytes) return '0G';
-            return (bytes / (1024 * 1024 * 1024)).toFixed(1) + 'G';
-        }
-
-        // 6개 v2 위젯 fetch가 fetchInstanceDashboardV2()의 Promise.all로 묶여있어, 그 중 하나가 응답
-        // 없이 멈추면 iv2FetchInFlightDbIds 가드가 영원히 안 풀려 그 DB 전체 화면이 먹통된다(오케스트
-        // 레이터 실측, 2026-09-22: activeAlerts가 특정 인스턴스에서 pending 상태로 무한 대기). 백엔드
-        // 쪽 쿼리에 타임아웃을 걸었지만(MonitorService.getActiveAlerts), 브라우저 fetch()엔 원래
-        // 타임아웃이 없어서 이중 방어로 8초(10초 폴링 주기보다 짧게)에서 끊는다.
-        function iv2Fetch(url) {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 8000);
-            return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
-        }
-
-        // fetchInstanceOverviewV2()와 fetchActiveSessionV2()가 둘 다 iv2-session-db-name을 그리는데,
-        // 각자 자기 완료 시점에 딱 한 번만 그리고 끝나면 둘 중 먼저 끝난 쪽 기준으로 그 사이클이
-        // 굳어버린다 - instance_overview가 하위 쿼리 9개라 session보다 항상 느려서(오케스트레이터
-        // 실측, 2026-09-22: DB 전환해도 라벨이 다음 10초 폴링까지 안 뜸), session이 먼저 끝나 아직 안
-        // 채워진 값으로 빈 라벨을 그린 뒤, instance_overview가 나중에 값을 채워도 재렌더링할 계기가
-        // 없었다. 둘 다 완료 시점에 이 함수를 불러 "지금 window.currentDbId 기준 최신값"으로 다시
-        // 그리게 하면, 둘 중 나중에 끝나는 쪽이 항상 최종 렌더를 맡아 그 사이클 안에 수렴한다.
-        function iv2RenderSessionDbNameLabel() {
-            const dbNameEl = document.getElementById('iv2-session-db-name');
-            if (!dbNameEl) return;
-            const dbId = window.currentDbId || '';
-            const liveName = (iv2LastInstanceNameDbId === dbId) ? iv2LastInstanceName : '';
-            dbNameEl.textContent = liveName ? `(${liveName})` : '';
-        }
-
-        async function fetchInstanceOverviewV2() {
-            const dbId = window.currentDbId || '';
-            const res = await iv2Fetch(`/api/instance_overview?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            if (!res.ok) return;
-            const data = await res.json();
-            if (data.error) return;
-
-            const nameEl = document.getElementById('iv2-instance-name');
-            if (nameEl) nameEl.textContent = data.instanceName || '--';
-            // Active Session 목록 라벨(fetchActiveSessionV2)이 공유하는 라이브 인스턴스명 - 세션 유무와
-            // 무관하게 매 폴링마다 조회되는 이 API가 유일하게 신뢰 가능한 소스다(오케스트레이터 실측,
-            // 2026-09-22: /api/session은 ACTIVE 세션이 0건이면 응답 배열이 비어서 db_name을 못 읽고
-            // dbId로 도로 폴백했었다).
-            iv2LastInstanceName = data.instanceName || '';
-            iv2LastInstanceNameDbId = dbId;
-            iv2RenderSessionDbNameLabel();
-            const statusBadge = document.getElementById('iv2-status-badge');
-            if (statusBadge) {
-                statusBadge.textContent = data.status || '--';
-                statusBadge.classList.toggle('online', data.status === '정상 운영');
-                statusBadge.classList.toggle('offline', data.status !== '정상 운영');
-            }
-            const tagsEl = document.getElementById('iv2-tags');
-            if (tagsEl) {
-                const version = data.dbVersion ? `Oracle ${data.versionCodename || data.dbVersion}` : '--';
-                tagsEl.innerHTML = [
-                    version,
-                    data.topology || '--',
-                    `가동시간 ${Math.floor(data.uptimeDays || 0)}일`,
-                    `SGA ${iv2FormatBytes(data.sgaBytes)} / PGA ${iv2FormatBytes(data.pgaBytes)}`
-                ].map(t => `<span>${t}</span>`).join('');
-            }
-
-            const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
-            setText('iv2-kpi-cpu', `${data.cpuPct ?? '--'}%`);
-            setText('iv2-kpi-mem', `${data.memPct ?? '--'}%`);
-            setText('iv2-kpi-sessions', `${data.activeSessions ?? '--'} / ${data.maxSessions ?? '--'}`);
-            setText('iv2-kpi-aas', `${data.dbTimeAas ?? '--'}`);
-            setText('iv2-kpi-tps', `${data.tps ?? '--'} 건/초`);
-            setText('iv2-kpi-hitratio', `${data.bufferCacheHitRatio ?? '--'}%`);
-
-            // CPU/메모리/버퍼캐시 히트율 타일 밑 얇은 진행률 막대(오케스트레이터 요청, 2026-09-18).
-            const setBar = (id, pct, tone) => {
-                const el = document.getElementById(id);
-                if (!el) return;
-                el.style.width = `${Math.max(0, Math.min(100, pct || 0))}%`;
-                el.classList.remove('warning', 'danger');
-                if (tone) el.classList.add(tone);
-            };
-            setBar('iv2-kpi-cpu-bar', data.cpuPct, data.cpuPct >= 90 ? 'danger' : data.cpuPct >= 80 ? 'warning' : null);
-            setBar('iv2-kpi-mem-bar', data.memPct, data.memPct >= 90 ? 'danger' : data.memPct >= 80 ? 'warning' : null);
-            // 히트율은 낮을수록 나쁨 - 클래식 대시보드/구 헬스스코어와 같은 기준(80% 미만 위험, 90% 미만 주의).
-            const hitRatio = data.bufferCacheHitRatio;
-            setBar('iv2-kpi-hitratio-bar', hitRatio, (hitRatio ?? 100) < 80 ? 'danger' : (hitRatio ?? 100) < 90 ? 'warning' : null);
-        }
-
-        // 이벤트별로 다른 색(오케스트레이터 요청, 2026-09-18) - buildSessionRowsHtml()의 세션 대기
-        // 유형별 색상표와 같은 팔레트를 재사용해 앱 전체에서 색 의미가 일관되게 한다.
-        const IV2_WAIT_EVENT_COLORS = ['#3987e5', '#d95926', '#22d3ee', '#2ecc71', '#7c3aed', '#be123c', '#808000'];
-
-        async function fetchTopWaitEventsV2() {
-            const dbId = window.currentDbId || '';
-            const res = await iv2Fetch(`/api/top_events?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            if (!res.ok) return;
-            const events = await res.json();
-            if (!Array.isArray(events)) return;
-            const top5 = events.slice(0, 5);
-            const ctx = document.getElementById('iv2-wait-events-chart');
-            if (!ctx) return;
-            const labels = top5.map(e => e.event);
-            const values = top5.map(e => e.count);
-            const colors = labels.map((_, i) => IV2_WAIT_EVENT_COLORS[i % IV2_WAIT_EVENT_COLORS.length]);
-            if (!iv2WaitEventsChart) {
-                iv2WaitEventsChart = new Chart(ctx, {
-                    type: 'bar',
-                    // maxBarThickness(오케스트레이터 요청, 2026-09-18) - 기본값(flex)은 막대 개수에 따라
-                    // 두께가 자동으로 늘었다 줄었다 해서 1개만 있을 때 유독 두껍게 보였는데, 고정값인
-                    // barThickness를 쓰면 반대로 이벤트가 5개로 늘었을 때 150px 프레임에 안 맞아 막대가
-                    // 겹치고 라벨도 잘리는 버그가 있었다(오케스트레이터 재지적, 2026-09-18). 상한만 두는
-                    // maxBarThickness면 적을 땐 18px로 고정되고, 많을 땐 프레임에 맞게 자동으로 얇아진다.
-                    data: { labels, datasets: [{ label: '세션 수', data: values, backgroundColor: colors, maxBarThickness: 18 }] },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        animation: { duration: 0 },
-                        plugins: { legend: { display: false } },
-                        scales: {
-                            x: { beginAtZero: true, ticks: { precision: 0, color: chartLineColor(0.75) } },
-                            // autoSkip:false로 5개까지는 항상 전부 표시(기존엔 겹침 때문에 3개만 보이던 버그).
-                            y: { ticks: { autoSkip: false, color: chartLineColor(0.85), font: { size: 11 } } }
-                        }
-                    }
-                });
-            } else {
-                iv2WaitEventsChart.data.labels = labels;
-                iv2WaitEventsChart.data.datasets[0].data = values;
-                iv2WaitEventsChart.data.datasets[0].backgroundColor = colors;
-                iv2WaitEventsChart.update();
-            }
-        }
-
-        // 기존 Lock 추이 그래프가 있던 칸에 넣는 압축형 Active Session 목록(오케스트레이터 요청,
-        // 2026-09-18) - 클래식/v3 하단의 16열 테이블은 이 좁은 칸엔 안 맞아서, 알림 리스트와 같은
-        // .iv2-alert-list 카드형 스타일을 재사용한다. 그래야 확인 필요 알림과 max-height/스크롤이
-        // 같아 단차 없이 나란히 붙는다. 클릭하면 다른 세션 테이블들과 동일하게 전역
-        // .clickable-session-row 델리게이트(app.js 하단)가 session-detail.html 팝업을 띄운다.
-        async function fetchActiveSessionV2() {
-            const dbId = window.currentDbId || '';
-            const res = await iv2Fetch(`/api/session?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            const listEl = document.getElementById('iv2-session-list');
-            if (!listEl) return;
-            if (!res.ok) return;
-            const rows = await res.json();
-            // 지금 이 목록이 실제로 어느 DB 것인지 눈으로 바로 확인하기 위한 표시 - 실제 렌더링은
-            // iv2RenderSessionDbNameLabel() 공유 함수가 한다(위 선언부 주석 참고). 여기서도 한 번 더
-            // 불러주는 이유: fetchInstanceOverviewV2()가 이미 먼저 끝나 값을 채워놨을 수도 있는데, 그때
-            // 라벨을 그릴 계기가 이 fetch뿐이었을 수 있어서다(반대로 이 fetch가 먼저 끝나면 아직 값이
-            // 없어 빈 라벨로 그려졌다가, fetchInstanceOverviewV2()가 끝나며 다시 불러 올바른 값으로
-            // 덮어쓴다 - 두 fetch 중 나중에 끝나는 쪽이 항상 최종 렌더를 맡는다).
-            iv2RenderSessionDbNameLabel();
-            const sessions = Array.isArray(rows)
-                ? rows.filter(s => s && s.status && s.status.trim().toUpperCase() === 'ACTIVE')
-                : [];
-            if (!sessions.length) {
-                listEl.innerHTML = '<li class="iv2-alert-item">ACTIVE 상태인 세션이 없습니다.</li>';
-                return;
-            }
-            listEl.innerHTML = sessions.map(s => `
-                <li class="iv2-alert-item clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-serial="${s.serial || ''}" data-sql_id="${s.sql_id || ''}">
-                    <span style="font-family:monospace; color:var(--primary); flex-shrink:0;">SID ${s.sid}</span>
-                    <span style="flex-shrink:0; color:var(--text-muted);">${s.duration_time ?? '-'}초</span>
-                    <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(s.sql_text || '').replace(/"/g, '&quot;')}">${s.sql_text || s.event_name || '-'}</span>
-                </li>
-            `).join('');
-        }
-
-        async function fetchActiveAlertsV2() {
-            const dbId = window.currentDbId || '';
-            const res = await iv2Fetch(`/api/active_alerts?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-            const listEl = document.getElementById('iv2-alert-list');
-            if (!res.ok) return;
-            const alerts = await res.json();
-            iv2LastAlerts = Array.isArray(alerts) ? alerts : [];
-            const countEl = document.getElementById('iv2-alert-count');
-            if (countEl) countEl.textContent = `${iv2LastAlerts.length}건`;
-            iv2UpdateLockCurrentBoxes();
-            if (!listEl) return;
-            if (iv2LastAlerts.length === 0) {
-                listEl.innerHTML = '<li class="iv2-alert-item info">확인이 필요한 알림이 없습니다.</li>';
-                return;
-            }
-            listEl.innerHTML = iv2LastAlerts.map(a => `
-                <li class="iv2-alert-item ${a.severity}">
-                    <span>${a.message}</span>
-                    <span class="iv2-alert-time">${iv2RelativeTime(a.occurredAt)}</span>
-                </li>
-            `).join('');
-        }
-
-        async function fetchMetricHistoryV2() {
-            const dbId = window.currentDbId || '';
-            const res = await iv2Fetch(`/api/metric_history?db_id=${dbId}&range=${iv2Range}&token=${encodeURIComponent(getToken())}`);
-            if (!res.ok) return;
-            const data = await res.json();
-            if (data.error) return;
-
-            const toPoints = (series) => (series || []).map(p => ({ x: p.sampledAt, y: p.value }));
-
-            const cpuCtx = document.getElementById('iv2-cpu-dbtime-chart');
-            if (cpuCtx) {
-                const cpuPoints = toPoints(data.cpu_pct);
-                const aasPoints = toPoints(data.db_time_aas);
-                if (!iv2CpuDbTimeChart) {
-                    iv2CpuDbTimeChart = new Chart(cpuCtx, {
-                        type: 'line',
-                        data: {
-                            datasets: [
-                                // 색은 원래 배색으로 되돌림(오케스트레이터 요청, 2026-09-18 재수정) - Current
-                                // Session 팔레트 준용은 Rewind. CPU%는 파랑, DB Time(AAS)은 주황.
-                                { label: 'CPU %', data: cpuPoints, borderColor: '#3987e5', backgroundColor: 'rgba(57,135,229,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2 },
-                                { label: 'DB Time (AAS)', data: aasPoints, borderColor: '#d95926', backgroundColor: 'rgba(217,89,38,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, yAxisID: 'y1' }
-                            ]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            animation: { duration: 0 },
-                            plugins: { legend: { labels: { color: chartLineColor(0.85) } } },
-                            scales: {
-                                // 24시간제로 5분 단위 눈금만 표시(오케스트레이터 요청, 2026-09-18) -
-                                // 실시간(1시간) 범위 기준 12개 눈금(=60분/5분).
-                                x: { type: 'time', time: { unit: 'minute', stepSize: 5, displayFormats: { minute: 'HH:mm' } }, ticks: { color: chartLineColor(0.75) } },
-                                y: { beginAtZero: true, position: 'left', ticks: { color: chartLineColor(0.75) } },
-                                y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: chartLineColor(0.75) } }
-                            }
-                        }
-                    });
-                } else {
-                    iv2CpuDbTimeChart.data.datasets[0].data = cpuPoints;
-                    iv2CpuDbTimeChart.data.datasets[1].data = aasPoints;
-                    iv2CpuDbTimeChart.update();
-                }
-            }
-
-            const lockCtx = document.getElementById('iv2-lock-trend-chart');
-            if (lockCtx) {
-                const tmPoints = toPoints(data.tm_lock_waiting);
-                const txPoints = toPoints(data.tx_lock_waiting);
-                // 현재 TM/TX 대기 카드 값은 여기(추이 마지막 포인트, 최대 metric-sample-interval-seconds
-                // 만큼 지연)가 아니라 fetchIncidentGateV2()의 /api/failure_prob 실시간 값으로 채운다
-                // (오케스트레이터 지적, 2026-09-18) - 이 추이 차트 자체는 그대로 유지.
-                if (!iv2LockTrendChart) {
-                    iv2LockTrendChart = new Chart(lockCtx, {
-                        type: 'line',
-                        data: {
-                            datasets: [
-                                // 색은 Current Session 그래프의 TM LOCK/TX LOCK과 동일(오케스트레이터
-                                // 요청, 2026-09-18) - 현재값 카드 스파크라인(iv2PushLockSpark)과도 통일.
-                                { label: 'TM Lock 대기', data: tmPoints, borderColor: '#be123c', backgroundColor: 'rgba(190,18,60,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true },
-                                { label: 'TX Lock 대기', data: txPoints, borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2, stepped: true }
-                            ]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            animation: { duration: 0 },
-                            plugins: { legend: { labels: { color: chartLineColor(0.85) } } },
-                            scales: {
-                                // 24시간제로 5분 단위 눈금만 표시(오케스트레이터 요청, 2026-09-18) -
-                                // 실시간(1시간) 범위 기준 12개 눈금(=60분/5분).
-                                x: { type: 'time', time: { unit: 'minute', stepSize: 5, displayFormats: { minute: 'HH:mm' } }, ticks: { color: chartLineColor(0.75) } },
-                                y: { beginAtZero: true, ticks: { precision: 0, color: chartLineColor(0.75) } }
-                            }
-                        }
-                    });
-                } else {
-                    iv2LockTrendChart.data.datasets[0].data = tmPoints;
-                    iv2LockTrendChart.data.datasets[1].data = txPoints;
-                    iv2LockTrendChart.update();
-                }
-            }
-        }
-
-        // 클래식 대시보드의 "장애발생 가능성" 카드에 숨어있던 장애조치 버튼(사용자 요청, 2026-09-16)을
-        // 신규 뷰에도 넣는다 - 표시 조건(failure_prob 기반 percentage>=80 & 관리자)과 클릭 시 동작(TM
-        // Lock holder만 자동 kill, TX는 절대 대상 아님)을 그대로 재사용한다. 레거시 코드(dashToggleBtn
-        // 근처의 fetchLocks/incidentBtn)는 건드리지 않고 이 IIFE 안에서 동일 로직을 독립적으로 둔다 -
-        // 신규 뷰는 처음부터 레거시와 분리된 채로 만들어 왔으므로 같은 원칙을 유지.
-        function iv2FailurePercentage(count) {
-            if (count === 1) return 30;
-            if (count === 2) return 40;
-            if (count === 3) return 50;
-            if (count === 4) return 60;
-            if (count === 5) return 70;
-            if (count === 6) return 80;
-            if (count >= 7) return 90;
-            return 0;
-        }
-
-        async function fetchIncidentGateV2() {
-            const btn = document.getElementById('iv2-incident-action-btn');
-            if (!btn) return;
-            const dbId = window.currentDbId || '';
-            try {
-                const res = await iv2Fetch(`/api/failure_prob?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-                if (!res.ok) { btn.style.display = 'none'; return; }
-                const data = await res.json();
-                const count = (data && data.count !== undefined) ? data.count : 0;
-                // 장애조치 버튼과 같은 응답의 실시간 TM/TX 대기 건수 - "현재 TM/TX Lock 대기" 카드도
-                // 이걸로 채운다(오케스트레이터 지적, 2026-09-18: 버튼은 실시간인데 카드 숫자는 최대
-                // 60초 지연된 추이 샘플이라 서로 어긋났음).
-                iv2LastTmVal = (data && data.tmLockWaiting !== undefined) ? data.tmLockWaiting : 0;
-                iv2LastTxVal = (data && data.txLockWaiting !== undefined) ? data.txLockWaiting : 0;
-                iv2PushLockSpark(iv2LastTmVal, iv2LastTxVal);
-                iv2UpdateLockCurrentBoxes();
-                const percentage = iv2FailurePercentage(count);
-                btn.style.display = (percentage >= 80 && isAdmin()) ? 'block' : 'none';
-            } catch (e) {
-                btn.style.display = 'none';
-            }
-        }
-
-        document.getElementById('iv2-incident-action-btn')?.addEventListener('click', async () => {
-            const dbId = window.currentDbId || '';
-            try {
-                const tmResponse = await fetch(`/api/tmlock?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
-                const tmData = await tmResponse.json();
-                if (!tmResponse.ok || !tmData || tmData.error) {
-                    alert('TM Lock 정보를 가져오지 못했습니다.');
-                    return;
-                }
-                const holders = tmData
-                    .filter(h => h.sid != null && h.serial != null && h.lock_type === 'TM')
-                    .map(h => ({ sid: h.sid, serial: h.serial }));
-                if (holders.length === 0) {
-                    alert('현재 Kill할 TM Lock Holder 세션이 없습니다. (TX 락은 자동조치 대상이 아닙니다)');
-                    return;
-                }
-                if (!confirm(`Blocking 중인 TM Lock Holder 세션 ${holders.length}건을 즉시 Kill 하시겠습니까?`)) return;
-
-                const res = await fetch(`/api/kill_session?db_id=${dbId}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessions: holders, token: sessionStorage.getItem('dbagent_token'), reason: 'FAILOVER' })
-                });
-                const data = await res.json();
-                if (data.error) {
-                    alert(`장애조치 중 오류: ${data.error}`);
-                    return;
-                }
-                alert(dbagentKillSummary('장애조치 완료', data.results));
-                fetchInstanceDashboardV2();
-            } catch (e) {
-                alert(`장애조치 처리 중 오류가 발생했습니다: ${e.message}`);
-            }
-        });
-
-        async function fetchInstanceDashboardV2() {
-            const dashboardSection = document.getElementById('dashboard');
-            if (!dashboardSection || !dashboardSection.classList.contains('active') || currentView !== 'v2') return;
-            // DB가 아직 선택되기 전(페이지 막 로드된 시점)이면 db_id=""로 나가는 낭비성 요청을 막는다
-            // (오케스트레이터 실측, 2026-09-18: 로그인 직후 이 상태로 6개 API가 동시에 나가 각각
-            // 커넥션 타임아웃만큼 헛돌고, 다음 10초 폴링까지 기다려야 실제 데이터가 떴음).
-            const dbId = window.currentDbId;
-            if (!dbId) return;
-            if (iv2FetchInFlightDbIds.has(dbId)) return;
-            iv2FetchInFlightDbIds.add(dbId);
-            try {
-                await Promise.all([
-                    fetchInstanceOverviewV2(),
-                    fetchTopWaitEventsV2(),
-                    fetchActiveAlertsV2(),
-                    fetchMetricHistoryV2(),
-                    fetchIncidentGateV2(),
-                    fetchActiveSessionV2()
-                ]);
-            } finally {
-                iv2FetchInFlightDbIds.delete(dbId);
-            }
-        }
-
-        // 마지막 선택값 저장은 기존 방식 그대로 - 예전 값 'legacy'는 그 자리를 대체한 새 대시보드('nd')로 연다.
-        let initialView = 'nd';
-        try {
-            const saved = localStorage.getItem('dbagent.dashboardView');
-            if (saved === 'v2') initialView = saved;
-        } catch (e) { /* ignore */ }
+        const ndView = document.getElementById('dashboard-nd-view');
+        if (!ndView) return;
+        if (legacyView) legacyView.style.display = 'none';
+        window.dbagentActiveDashboardSubView = 'nd';
+        // DB 트리 클릭 핸들러(instLink)가 최초 DB 자동선택/전환 직후 바로 부르는 훅
+        window.fetchActiveDashboardView = () => { if (window.ndDashboard) window.ndDashboard.onDbChange(); };
         // nd-dashboard.js는 app.js 다음에 로드되므로 한 틱 뒤에 연다(window.ndDashboard 준비 후).
-        window.dbagentActiveDashboardSubView = initialView; // 한 틱 사이 예전 화면 폴링이 돌지 않게 먼저 표시
-        setTimeout(() => setView(initialView), 0);
-
-        // 전환 스위치는 .content-section 바깥(항상 뷰포트 기준 우측하단)에 두었기 때문에, DASHBOARD 탭이
-        // 활성화된 동안에만 보이도록 표시 여부를 직접 관리해야 한다 - .content-section.active의 CSS
-        // display 토글에 더 이상 얹혀갈 수 없다(사용자 실측 버그 수정, 2026-09-16).
-        const iv2SwitchEl = document.getElementById('iv2-view-switch');
-        function syncIv2SwitchVisibility() {
-            const dashboardSection = document.getElementById('dashboard');
-            if (iv2SwitchEl) {
-                iv2SwitchEl.style.display = (dashboardSection && dashboardSection.classList.contains('active')) ? '' : 'none';
-            }
-        }
-        syncIv2SwitchVisibility();
+        setTimeout(() => {
+            ndView.style.display = '';
+            if (window.ndDashboard) window.ndDashboard.show();
+        }, 0);
         document.querySelectorAll('.nav-item[data-target]').forEach(nav => {
             nav.addEventListener('click', () => {
-                syncIv2SwitchVisibility();
-                if (nav.getAttribute('data-target') === 'dashboard') setTimeout(fetchActiveDashboardView, 50);
+                if (nav.getAttribute('data-target') === 'dashboard') setTimeout(window.fetchActiveDashboardView, 50);
             });
         });
     })();

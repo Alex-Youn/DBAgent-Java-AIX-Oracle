@@ -28,4 +28,16 @@ final class CpuCores {
             return rs.next() ? rs.getInt(2) : 0;
         }
     }
+
+    /**
+     * NUM_CPU_CORES(물리 코어), 없으면 0 - ② 차트의 "물리 코어" 보조선 전용(2026-09-30 오케스트레이터 결정). CPU 초과·부하율
+     * 판정은 계속 NUM_CPUS(위 query)로 한다(09-28 결정 유지). SMT 서버(폐쇄망 AIX 쿼드코어 18장 = 72코어)에서 CPU 층이 이 선을
+     * 넘으면 코어를 스레드로 나눠 쓰기 시작해 세션당 처리 속도가 떨어질 수 있다는 참고선이다. 일부 플랫폼·권한에서는 행이 없다.
+     */
+    static int queryPhysical(Connection conn) throws SQLException {
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPU_CORES'")) {
+            return rs.next() ? rs.getInt(1) : 0;
+        }
+    }
 }

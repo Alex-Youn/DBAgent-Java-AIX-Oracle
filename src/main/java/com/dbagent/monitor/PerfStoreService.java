@@ -45,6 +45,20 @@ public class PerfStoreService implements InitializingBean {
     @Value("${dbagent.monitor.perf-retention-days:15}")
     private int retentionDays;
 
+    // DB별 "이 분(minute_key) 앞까지는 수집이 끝났다" - 샘플러가 저장할 때마다 올린다(2026-09-30 QA). 성능 분석 차트가 아직 수집
+    // 안 된 최근 1~2분을 0으로 그려 부하가 꺼진 것처럼 보이던 문제를 막는다. 메모리 값이라 앱 기동 직후 첫 샘플 전에는 없다(null).
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> collectedBefore = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 샘플러: dbId의 수집 완료 기준을 key(이 분 앞까지 완료)로 올린다. 뒤로 가지 않는다. */
+    public void markCollected(String dbId, long key) {
+        collectedBefore.merge(dbId, key, Math::max);
+    }
+
+    /** 이 분 앞까지 수집 완료(없으면 null - 아직 모름). */
+    public Long collectedBefore(String dbId) {
+        return collectedBefore.get(dbId);
+    }
+
     public PerfStoreService(@Qualifier("perfJdbcTemplate") JdbcTemplate jdbc, @Qualifier("perfDataSource") HikariDataSource ds) {
         this.jdbc = jdbc;
         this.h2 = ds.getJdbcUrl() != null && ds.getJdbcUrl().startsWith("jdbc:h2:");

@@ -389,12 +389,13 @@ public class MonitorController {
     private final Map<String, CompletableFuture<Map<String, Object>>> fleetStatusInFlight = new ConcurrentHashMap<>();
 
     private CompletableFuture<Map<String, Object>> fleetStatusFor(TargetDbConfig inst) {
-        return fleetStatusInFlight.computeIfAbsent(inst.id(), id -> {
-            CompletableFuture<Map<String, Object>> f =
-                    CompletableFuture.supplyAsync(() -> fleetStatusDispatch(inst), FLEET_STATUS_EXECUTOR);
-            f.whenComplete((result, error) -> fleetStatusInFlight.remove(id, f));
-            return f;
-        });
+        // 정리(whenComplete)는 computeIfAbsent 밖에서 건다(2026-09-30, LockRealtimeService.inFlightFor와 같은 방식). 안에서 걸면
+        // 조회가 아주 빨리 끝날 때(쿨다운 즉시 실패 등) 맵에 넣기 전에 remove가 먼저 돌고, 끝난 future가 영구히 남아 DB를 고쳐도
+        // 재기동 전까지 옛 결과(down)만 돌려준다 - 원본 DBAgent-Java에서 포팅(docker_mssql 비밀번호를 고친 뒤 Fleet에서만 계속 down 실측·재현).
+        final CompletableFuture<Map<String, Object>> f = fleetStatusInFlight.computeIfAbsent(inst.id(),
+                id -> CompletableFuture.supplyAsync(() -> fleetStatusDispatch(inst), FLEET_STATUS_EXECUTOR));
+        f.whenComplete((result, error) -> fleetStatusInFlight.remove(inst.id(), f));
+        return f;
     }
 
     // Only seam that's engine-aware - every other piece of fleet_status orchestration (executor,
@@ -454,6 +455,17 @@ public class MonitorController {
         for (CompletableFuture<Map<String, Object>> f : futures) {
             results.add(f.join());
         }
+        // 비밀번호를 풀 수 없어 listAllInstances()에서 빠진 DB(2026-09-30) - 응답에서 그냥 빠지면 화면이 "접근 권한이 없는 DB일 수
+        // 있습니다"로 잘못 안내하므로, down + reason=credential로 넣어 카드에 "비밀번호 확인 필요"가 보이게 한다.
+        for (Map.Entry<String, String> e : configService.unreadableInstances().entrySet()) {
+            if (!authService.canAccessDb(token, e.getKey())) continue;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", e.getKey());
+            item.put("status", "down");
+            item.put("reason", "credential");
+            item.put("errorMessage", "등록된 비밀번호를 풀 수 없습니다 - DB 관리 화면에서 비밀번호를 다시 저장하세요. (" + e.getValue() + ")");
+            results.add(item);
+        }
         return ResponseEntity.ok(results);
     }
 
@@ -474,84 +486,10 @@ public class MonitorController {
         }
     }
 
-    // ---- dashboard v2 (oracle-instance-dashboard-spec.md, 2026-09-16) ----
-
-    @GetMapping("/instance_overview")
-    public ResponseEntity<Object> instanceOverview(@RequestParam(required = false) String db_id,
-                                                     @RequestParam(required = false) String token) {
-        if (!authService.canAccessDb(token, db_id)) {
-            return dbAccessDenied();
-        }
-        TargetDbConfig target = configService.resolve(db_id);
-        if (target == null) {
-            return dbNotFound();
-        }
-        try {
-            return ResponseEntity.ok(monitorService.getInstanceOverview(target));
-        } catch (SQLException e) {
-            return dbError(e);
-        }
-    }
-
-    // fleet_status와 같은 이유로 같은 패턴(withTimeout + 전용 executor + db_id별 in-flight dedupe)을
-    // 쓴다 - 오케스트레이터 실측(2026-09-22, 11g 인스턴스 patent_integ_1/2): getActiveAlerts() 내부
-    // v$lock/dba_objects 조인 쿼리가 락 대기로 블로킹되면 이미 걸려 있던 Statement.setQueryTimeout()도
-    // 취소를 못 시킨다(SQL*Plus로 직접 돌려도 응답 없음 확인) - JDBC 레벨 쿼리 타임아웃은 세션이 CPU를
-    // 쓰며 도는 동안만 신뢰할 수 있고, 락 대기로 멈춰있으면 취소 신호 자체가 처리 안 된다. v2가 10초
-    // 간격으로 폴링하는데 이 하나가 안 풀리면 iv2FetchInFlightDbIds 가드가 영원히 안 풀려 그 DB 전체
-    // 화면이 먹통된다 - 그래서 쿼리를 못 끊는 대신 "호출자가 기다리는 것"만이라도 끊는다.
-    private static final ExecutorService ACTIVE_ALERTS_EXECUTOR = Executors.newCachedThreadPool();
-
+    // failure_prob 호출 대기 한도(초) - 원래 두 번째 대시보드(v2)의 active_alerts와 같이 쓰던 값. v2 삭제(2026-09-30,
+    // 오케스트레이터 결정)로 instance_overview·active_alerts API는 없어졌고 이 값은 failure_prob만 쓴다(키 이름은 호환 위해 유지).
     @Value("${dbagent.monitor.active-alerts-timeout-seconds:5}")
     private long activeAlertsTimeoutSeconds;
-
-    private final Map<String, CompletableFuture<List<Map<String, Object>>>> activeAlertsInFlight = new ConcurrentHashMap<>();
-
-    private CompletableFuture<List<Map<String, Object>>> activeAlertsFor(TargetDbConfig target) {
-        return activeAlertsInFlight.computeIfAbsent(target.id(), id -> {
-            CompletableFuture<List<Map<String, Object>>> f = CompletableFuture.supplyAsync(() -> {
-                try {
-                    return monitorService.getActiveAlerts(target);
-                } catch (SQLException e) {
-                    throw new CompletionException(e);
-                }
-            }, ACTIVE_ALERTS_EXECUTOR);
-            f.whenComplete((result, error) -> activeAlertsInFlight.remove(id, f));
-            return f;
-        });
-    }
-
-    @GetMapping("/active_alerts")
-    public ResponseEntity<Object> activeAlerts(@RequestParam(required = false) String db_id,
-                                                @RequestParam(required = false) String token) {
-        if (!authService.canAccessDb(token, db_id)) {
-            return dbAccessDenied();
-        }
-        TargetDbConfig target = configService.resolve(db_id);
-        if (target == null) {
-            return dbNotFound();
-        }
-        try {
-            List<Map<String, Object>> alerts =
-                    withTimeout(activeAlertsFor(target), activeAlertsTimeoutSeconds, TimeUnit.SECONDS).join();
-            return ResponseEntity.ok(alerts);
-        } catch (CompletionException ex) {
-            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-            if (cause instanceof TimeoutException) {
-                // getActiveAlerts() 내부의 개별 쿼리 3개도 각자 실패하면 그 알림만 조용히 생략하는
-                // 정책이다(코드 내 catch(SQLException ignored) 참고) - 여기서도 같은 정책을 outer
-                // 레벨에서 한 번 더 적용: "못 걷었다"를 "알림 없음"으로 접는다. 안 풀린 쿼리 자체는
-                // ACTIVE_ALERTS_EXECUTOR 스레드에서 계속 돌다가 나중에 끝나든 안 끝나든 다음 폴링과는
-                // 무관하다(활성 alert dedupe map에서 이미 빠짐).
-                log.warn("active_alerts timed out after {}s for db_id={}", activeAlertsTimeoutSeconds, db_id);
-                return ResponseEntity.ok(Lists.of());
-            }
-            if (cause instanceof SQLException) {
-                return dbError((SQLException) cause);
-            }
-            throw ex;
-        }
-    }
 
     private static final int MAX_KILL_SESSIONS = 200;
 
@@ -657,7 +595,7 @@ public class MonitorController {
         }
     }
 
-    // active_alerts와 같은 이유(같은 v$lock 조인 패턴, 같은 Promise.all에 걸린 v2 위젯)로 같은 패턴을
+    // 예전 active_alerts(2026-09-30 v2와 함께 삭제)와 같은 이유(같은 v$lock 조인 패턴)로 같은 패턴을
     // 쓴다 - dba_objects join은 제거했지만(MonitorService.getFailureProb), 다른 환경에서 또 다른 원인
     // 으로 느려질 가능성까지 막으려면 호출자 쪽 타임아웃도 필요하다.
     private static final ExecutorService FAILURE_PROB_EXECUTOR = Executors.newCachedThreadPool();
@@ -665,17 +603,17 @@ public class MonitorController {
     private final Map<String, CompletableFuture<Map<String, Object>>> failureProbInFlight = new ConcurrentHashMap<>();
 
     private CompletableFuture<Map<String, Object>> failureProbFor(TargetDbConfig target) {
-        return failureProbInFlight.computeIfAbsent(target.id(), id -> {
-            CompletableFuture<Map<String, Object>> f = CompletableFuture.supplyAsync(() -> {
-                try {
-                    return monitorService.getFailureProb(target);
-                } catch (SQLException e) {
-                    throw new CompletionException(e);
-                }
-            }, FAILURE_PROB_EXECUTOR);
-            f.whenComplete((result, error) -> failureProbInFlight.remove(id, f));
-            return f;
-        });
+        // 정리는 computeIfAbsent 밖에서 건다 - fleetStatusFor와 같은 이유(빨리 끝난 future가 영구히 남는 문제, 2026-09-30).
+        final CompletableFuture<Map<String, Object>> f = failureProbInFlight.computeIfAbsent(target.id(),
+                id -> CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return monitorService.getFailureProb(target);
+                    } catch (SQLException e) {
+                        throw new CompletionException(e);
+                    }
+                }, FAILURE_PROB_EXECUTOR));
+        f.whenComplete((result, error) -> failureProbInFlight.remove(target.id(), f));
+        return f;
     }
 
     @GetMapping("/failure_prob")

@@ -871,7 +871,7 @@
                 // 카드에 너무 상세한 에러 문구가 떠 있음) - the full backend message is still there as
                 // a native tooltip (title attr) for anyone who hovers to check.
                 const bars = d.status === 'down'
-                    ? `<div class="down-banner" title="${(d.errorMessage || '').replace(/"/g, '&quot;')}">${WARNING_ICON_SVG}<span>연결할 수 없습니다</span></div>`
+                    ? `<div class="down-banner" title="${(d.errorMessage || '').replace(/"/g, '&quot;')}">${WARNING_ICON_SVG}<span>${d.reason === 'credential' ? '비밀번호 확인 필요' : '연결할 수 없습니다'}</span></div>`
                     : `<div class="mini-bar-row">
                            <span class="mb-label">CPU</span>
                            <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${d.cpuPct}%; background:${barColor(d.cpuPct)};"></div></div>
