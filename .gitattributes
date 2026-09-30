@@ -1,0 +1,35 @@
+# 줄바꿈 정책(2026-09-30 오케스트레이터 결정)
+# - 저장소 안에는 텍스트를 항상 LF로 저장하고, 작업 폴더에서는 OS 기본(Windows=CRLF)으로 풀어 쓴다.
+#   PC마다 core.autocrlf 설정이 달라도 결과가 같도록 저장소 쪽에서 규칙을 고정한다.
+* text=auto
+
+# AIX에서 실행하는 셸 스크립트는 CRLF로 풀리면 "/bin/sh^M: bad interpreter"로 기동이 안 된다
+# - Windows 작업 폴더에서도 항상 LF로 둔다.
+*.sh text eol=lf
+
+# Windows 전용 스크립트는 CRLF가 안전하다(cmd가 LF 전용 .bat에서 라벨·goto를 잘못 읽는 경우가 있음).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 바이너리 - 줄바꿈 변환·diff 대상이 아니다
+*.jar binary
+*.class binary
+*.db binary
+*.sqlite binary
+*.bak binary
+*.hwp binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.pdf binary
+*.xlsx binary
+*.docx binary
