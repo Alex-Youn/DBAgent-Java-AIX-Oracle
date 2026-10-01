@@ -2008,3 +2008,57 @@ body.app-shell { overflow-y: hidden; }
 .perf-hint { color: var(--text-secondary); font-size: 0.8rem; font-weight: 400; }
 .perf-h3 { margin: 0 0 8px; color: var(--text-primary); font-size: 1.05rem; }
 .perf-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); }
+
+/* ============================================================================
+   대시보드 통합 프레임(2026-10-01, 설계문서/대시보드_통합프레임_체크리스트_2026-10-01.md)
+   - #dashboard-nd-view 자체를 다른 메뉴 .panel과 같은 프레임으로(모서리 16px, --bg-panel, 1px --border).
+     새 래퍼를 두지 않아 HTML·JS는 그대로다 - fitHeight는 nd-view 위치부터 재고(border-box라 테두리는 높이 안),
+     ResizeObserver 감시 대상(nd-view 직계 자식)도 그대로다.
+   - 영역 사이는 1px 가로선만, 카드 테두리·모서리·간격은 없앤다. 칸 사이(KPI·차트 2개·Top 3칸)는 세로선.
+   - 높이 맞춤(nd-dashboard.js fitChart/plotOverhead) 제약: 프레임 자신에는 padding을 주지 않고(clientHeight 과대 계산),
+     직계 자식에는 margin을 주지 않는다(offsetHeight에 빠짐). 간격은 0이고 구분선은 자식의 border-top이다.
+   - 기존 카드 규칙은 지우지 않고 여기서만 덮어쓴다 - 되돌리려면 이 블록만 지우면 된다.
+   ============================================================================ */
+#dashboard-nd-view {
+    gap: 0;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+}
+/* 카드 → 프레임 안 영역 */
+#dashboard-nd-view .nd-card { background: transparent; border: 0; border-radius: 0; }
+/* 영역 사이 가로선 - KPI·진단 띠·점검 알림은 .nd-card이기도 해서, 위 초기화(border:0)와 같은 특이성(1,1,0)으로 그 뒤에 둔다 */
+#dashboard-nd-view > :not(:first-child) { border-top: 1px solid var(--border); }
+/* 머리 줄(상태바): .panel-header처럼 배경 없이 아래 구분선만(다음 영역의 border-top) */
+#dashboard-nd-view > .nd-statusbar { background: transparent; border: 0; border-radius: 0; padding: 8px 18px; }
+#dashboard-nd-view > .nd-error { border-radius: 0; padding: 8px 18px; }
+/* ② 차트 2개: 간격 0 + 가운데 세로선 */
+/* 차트 행 위 선은 행의 border-top이 아니라 KPI 행의 border-bottom으로 그린다 - 행은 fitChart가 높이(border-box)를 정하는데
+   plotOverhead는 행의 선을 몰라, 행 border-top 1px만큼 그래프가 최소 150px보다 작아졌다(2026-10-01 코드 점검, 작은 창 149px) */
+#dashboard-nd-view > .nd-chart-row { gap: 0; border-top: 0; }
+#dashboard-nd-view > .nd-kpi-row { border-bottom: 1px solid var(--border); }
+#dashboard-nd-view .nd-chart-row > .nd-card { padding: 10px 18px 8px; }
+#dashboard-nd-view .nd-chart-row > .nd-card + .nd-card { border-left: 1px solid var(--border); }
+/* 선택 구간 진단 띠 */
+#dashboard-nd-view > .nd-banner { background: var(--nd-surface-2); padding: 8px 18px 9px; }
+/* 출처 줄: 진단 띠 바로 아래 작은 글씨 - 음수 margin(카드 사이 간격 10px 전제)을 없애고, 이 줄과 Top 행 사이에는 선을 넣지 않는다.
+   진단 띠와 Top 영역 사이 가로선은 이 줄의 border-top(위 > :not(:first-child) 규칙)이 그리므로 여기서 border-top을 지우면 안 된다. */
+#dashboard-nd-view > .nd-top-src { margin: 0; padding: 6px 18px 0; }
+#dashboard-nd-view > .nd-top-src + .nd-top-row { border-top: 0; }
+/* Top 3칸: 간격 0 + 칸 사이 세로선 */
+#dashboard-nd-view > .nd-top-row { gap: 0; padding: 4px 18px 8px; }
+#dashboard-nd-view .nd-top-row > .nd-card { padding: 6px 14px; }
+#dashboard-nd-view .nd-top-row > .nd-card:first-child { padding-left: 0; }
+#dashboard-nd-view .nd-top-row > .nd-card:last-child { padding-right: 0; }
+#dashboard-nd-view .nd-top-row > .nd-card + .nd-card { border-left: 1px solid var(--border); }
+/* 점검 알림(안쪽 개별 알림 카드 .nd-chk-card는 그대로) */
+#dashboard-nd-view > .nd-checks { padding: 10px 18px 12px; }
+/* Lock 장애 강조: 카드 테두리가 없어졌으므로 안쪽 선(inset)으로 표시하고 깜빡임도 안쪽으로 - 바깥 3px 그림자는 옆 영역에 번진다.
+   위 카드 초기화(특이성 1,1,0)보다 높게 다시 선언한다. color-mix()는 폐쇄망 브라우저 호환을 위해 쓰지 않는다. */
+#dashboard-nd-view #nd-lock-card.nd-incident {
+    background: linear-gradient(var(--nd-crit-bg), var(--nd-crit-bg)), var(--nd-surface);
+    box-shadow: inset 0 0 0 1px var(--nd-crit);
+    animation: nd-inc-pulse-in 2.4s ease-in-out infinite;
+}
+@keyframes nd-inc-pulse-in { 0%, 100% { box-shadow: inset 0 0 0 1px var(--nd-crit); } 50% { box-shadow: inset 0 0 0 3px rgba(208, 59, 59, 0.6); } }
+@media (prefers-reduced-motion: reduce) { #dashboard-nd-view #nd-lock-card.nd-incident { animation: none; } }
