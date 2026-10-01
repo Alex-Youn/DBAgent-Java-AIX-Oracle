@@ -231,14 +231,24 @@
 
     // ------------------------------------------------------------------ 높이 맞춤 (2.2)
 
-    // .app-container의 zoom(현재 80%) 때문에 CSS vh만으로는 정확히 맞지 않는다 - 실제 화면 배율을 재서 "창 아래까지"
+    // .app-container의 zoom(현재 90%) 때문에 CSS vh만으로는 정확히 맞지 않는다 - 실제 화면 배율을 재서 "창 아래까지"
     // 높이를 준다. 배율 값을 하드코딩하지 않는다(2.4: zoom 값이 바뀌어도 동작).
+    // 아래 여백은 좌우와 같은 프레임 여백(style.css --frame-gutter)을 본문(.content-area)에서 읽어 쓴다 - 예전엔 화면 12px 고정
+    // (2026-10-01 오케스트레이터 지시: 프레임 여백 1~1.5mm). 본문 아래 여백은 style.css가 대시보드에서만 같은 값으로 줄인다.
     function fitHeight() {
         const el = $('dashboard-nd-view');
         if (!el || el.style.display === 'none') return;
         const rect = el.getBoundingClientRect();
         const scale = el.offsetHeight > 0 ? rect.height / el.offsetHeight : 1;
-        const available = (window.innerHeight - rect.top - 12) / (scale || 1);
+        const area = el.closest('.content-area');
+        const gutter = (area && parseFloat(getComputedStyle(area).paddingLeft)) || 0;
+        // 화면 전환 애니메이션(.content-section fadeIn 0.4초, 10px 아래에서 올라옴) 도중에 재면 그만큼 아래에 있는 위치로 계산돼
+        // 높이가 모자랐다 - 처음 열 때·메뉴 전환 때 아래가 화면 약 8px 더 비었다(2026-10-01 실측: 아래 13.6px, 창 크기를 바꾸면 5.4px).
+        // 지금 걸려 있는 이동량(CSS px)을 읽어 빼 준다.
+        const section = el.closest('.content-section');
+        const tf = section ? getComputedStyle(section).transform : 'none';
+        const shift = tf && tf !== 'none' && typeof DOMMatrixReadOnly === 'function' ? new DOMMatrixReadOnly(tf).m42 : 0;
+        const available = (window.innerHeight - rect.top) / (scale || 1) + shift - gutter;
         el.style.height = Math.max(400, Math.floor(available)) + 'px';
         fitChart();
     }

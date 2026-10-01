@@ -47,6 +47,13 @@
        segment once reused as the track color - the empty track and the gray segment became
        indistinguishable. Kept deliberately lighter than --border. */
     --track-bg: rgba(255, 255, 255, 0.12);
+
+    /* 메뉴 프레임 바깥 여백(2026-10-01 오케스트레이터 지시: 프레임이 좌우로 꽉 차게, 여백 1~1.5mm. 메뉴 탭과 프레임 사이도 같게).
+       6 CSS px × .app-container zoom 90% = 화면 5.4px ≈ 1.43mm(96dpi). 예전 값은 32px(화면 28.8px ≈ 7.6mm).
+       .content-area(위·좌우)와 .top-header(좌우)가 함께 참조해 탭 줄과 본문 왼쪽 끝이 어긋나지 않는다.
+       --frame-bottom은 본문 아래 여백으로 예전 값 그대로다 - 대시보드만 아래도 --frame-gutter로 맞춘다(#dashboard-nd-view). */
+    --frame-gutter: 6px;
+    --frame-bottom: calc(32px + 1cm);
 }
 
 :root[data-theme="light"] {
@@ -293,7 +300,7 @@ body.app-shell { overflow-y: hidden; }
 /* 세로 여백을 .top-header-row 가 높이로 직접 잡는다(RDB .pmm-header 와 같은 54px). 예전에는 여기
    padding 24px 이 그 역할을 해서 상단 줄이 RDB 쪽보다 눈에 띄게 두꺼웠다(2026-09-06 사용자 요청). */
 .top-header {
-    padding: 0 32px;
+    padding: 0 var(--frame-gutter);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -610,7 +617,7 @@ body.app-shell { overflow-y: hidden; }
 }
 
 .content-area {
-    padding: 32px 32px calc(32px + 1cm) 32px;
+    padding: var(--frame-gutter) var(--frame-gutter) var(--frame-bottom) var(--frame-gutter);
 }
 
 /* Sections */
@@ -2024,6 +2031,9 @@ body.app-shell { overflow-y: hidden; }
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 16px;
+    /* 대시보드는 창 아래 끝까지 채우므로(nd-dashboard.js fitHeight) 본문 아래 여백(--frame-bottom)이 그대로 남으면 바깥(.main-content)이
+       약 50px 넘쳐 오른쪽에 스크롤바가 생겼다(2026-10-01 실측). 음수 여백으로 아래도 --frame-gutter만 남긴다 - 다른 메뉴는 그대로. */
+    margin-bottom: calc(var(--frame-gutter) - var(--frame-bottom));
 }
 /* 카드 → 프레임 안 영역 */
 #dashboard-nd-view .nd-card { background: transparent; border: 0; border-radius: 0; }

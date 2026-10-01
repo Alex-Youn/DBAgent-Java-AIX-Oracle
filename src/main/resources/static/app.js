@@ -23,6 +23,12 @@ function chartLineColor(alpha) {
 // --- Auth Logic ---
 const API_BASE_AUTH = `/api`;
 
+// 좌측 아래 계정 이름 밑의 역할 문구. 예전엔 index.html에 "Database Admin"이 고정돼 일반 사용자로 로그인해도 관리자처럼 보였다
+// (2026-10-01 오케스트레이터 확인·문구 결정). 로그인·check-auth 응답의 role(admin/user)로 표시한다.
+function dbagentRoleLabel(role) {
+    return role === 'admin' ? 'Database Admin' : 'Database User';
+}
+
 async function checkAuth() {
     const token = sessionStorage.getItem('dbagent_token');
     if (!token) {
@@ -40,6 +46,7 @@ async function checkAuth() {
             if (data.authenticated) {
                 document.getElementById('login-overlay').style.display = 'none';
                 document.querySelector('.user-name').textContent = data.username;
+                document.querySelector('.user-role').textContent = dbagentRoleLabel(data.role);
                 sessionStorage.setItem('dbagent_role', data.role || 'user');
                 sessionStorage.setItem('dbagent_account_hidden_menus', JSON.stringify(data.hidden_menus || []));
                 sessionStorage.setItem('dbagent_account_hidden_dbs', JSON.stringify(data.hidden_dbs || []));
@@ -312,6 +319,7 @@ function dbagentSectionVisible(id) {
                     sessionStorage.setItem('dbagent_fleet_overview', data.fleet_overview ? 'true' : 'false');
                     sessionStorage.setItem('dbagent_fleet_overview_auto_redirect', data.fleet_overview_auto_redirect ? 'true' : 'false');
                     document.querySelector('.user-name').textContent = data.username;
+                    document.querySelector('.user-role').textContent = dbagentRoleLabel(data.role);
                     // Fleet Overview (fleet-overview.html) is the post-login landing screen
                     // (사용자 결정), but only for accounts with access (admin, or granted via 계정 관리 >
                     // "Fleet Overview 접근 허용") AND who haven't personally turned the auto-jump off
