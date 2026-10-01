@@ -60,6 +60,47 @@
         el.style.display = msg ? 'block' : 'none';
     }
 
+    // 403은 "권한 없음"과 "로그인 만료"가 같은 코드로 온다. 서버는 기동할 때마다 로그인 세션을 모두 지우므로(AuthService.init)
+    // jar 교체·재기동 뒤 열려 있던 탭은 전부 403을 받아 "권한이 없습니다"로 오해했다(2026-10-01 재배포 후 실제로 발생).
+    // 403이면 /api/check-auth로 한 번 확인해, 로그인이 풀렸으면(401) 로그인 화면을 띄운다. 다시 로그인하면 페이지가 새로 뜬다.
+    let loginExpired = false;
+    let authCheck = null; // 같은 주기의 여러 403이 check-auth를 한 번만 부르게 공유
+    function isLoginExpired() {
+        if (loginExpired) return Promise.resolve(true);
+        if (!authCheck) {
+            // 5초 안에 답이 없으면 끊는다 - 응답이 멈추면 이 Promise를 기다리는 갱신 주기 전체가 멈춘다(2026-10-01 코드 점검).
+            const ac = typeof AbortController === 'function' ? new AbortController() : null;
+            const timer = ac ? setTimeout(() => ac.abort(), 5000) : null;
+            authCheck = fetch('/api/check-auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: getToken() }),
+                signal: ac ? ac.signal : undefined
+            }).then(r => r.status === 401).catch(() => false) // 확인 실패·시간 초과는 판단 보류 - 기존 문구 유지
+              .finally(() => {
+                  if (timer) clearTimeout(timer);
+                  setTimeout(() => { authCheck = null; }, 5000);
+              });
+        }
+        return authCheck;
+    }
+    function showLoginExpired() {
+        if (loginExpired) return;
+        loginExpired = true;
+        // 만료된 토큰으로 3초마다 403만 받는 폴링은 멈춘다. 다시 로그인하면 페이지가 새로 떠서 원래대로 돈다.
+        state.auto = false;
+        clearTimers();
+        showError('로그인이 해제되었습니다. 다시 로그인해 주세요.');
+        const overlay = document.getElementById('login-overlay');
+        const err = document.getElementById('login-error');
+        if (err) {
+            // 401은 재기동뿐 아니라 세션 만료(session-ttl-days)·계정 삭제에도 온다 - 원인을 단정하지 않는다(2026-10-01 코드 점검).
+            err.textContent = '로그인이 해제되었습니다(서버 재기동·세션 만료 등). 다시 로그인해 주세요.';
+            err.style.display = 'block';
+        }
+        if (overlay) overlay.style.display = 'flex';
+    }
+
     // ------------------------------------------------------------------ 요청
 
     function makeCtx() {
@@ -88,6 +129,11 @@
                 }
                 if (ctx.isStale()) return null;
                 if (res.status === 403) {
+                    if (await isLoginExpired()) {
+                        showLoginExpired();
+                        return null;
+                    }
+                    if (ctx.isStale()) return null;
                     showError('이 DB에 대한 조회 권한이 없습니다.');
                     return null;
                 }

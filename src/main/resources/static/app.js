@@ -946,14 +946,36 @@ function dbagentSectionVisible(id) {
     const relationEmptyState = document.getElementById('relation-empty-state');
     const relationContainer = document.getElementById('relation-container');
 
+    // 관계도 화면 HTML 이스케이프 - 테이블·FK 이름은 따옴표 식별자면 특수문자가 들어갈 수 있다.
+    const relEsc = v => String(v == null ? '' : v).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+    // 트리 카드 클릭 → 테이블 정보 팝업. 카드마다 inline onclick 대신 위임(이름에 따옴표가 있어도 안전).
+    if (relationContainer) {
+        relationContainer.addEventListener('click', e => {
+            const card = e.target.closest('[data-table-ref]');
+            if (card && typeof window.showTableInfoModal === 'function') window.showTableInfoModal(card.dataset.tableRef);
+        });
+    }
+
+    // 마지막 조회만 화면에 반영한다(2026-10-01 코드 점검) - 연속 클릭·스키마 버튼 연타 때 늦게 온 이전 응답이 나중 결과를
+    // 덮어써, 입력칸은 B인데 A의 관계도가 보일 수 있었다. Current Session 차트와 같은 dbagentLatestRequest를 쓴다.
+    const relationRequestGuard = dbagentLatestRequest();
+    const relationStale = req => {
+        if (!req.isStale()) return false;
+        // 마지막 요청인데 DB만 바뀐 경우 - 이전 DB 결과를 보이지 않고 다시 조회를 안내한다("조회 중"에 멈춰 있지 않게).
+        if (req.isLatest()) relationContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-secondary);">DB가 바뀌어 이전 조회 결과를 표시하지 않았습니다. 다시 조회해 주세요.</div>';
+        return true;
+    };
+
     if (relationSearchBtn) {
         relationSearchBtn.addEventListener('click', async () => {
-            const tableName = relationSearchInput.value.trim().toUpperCase();
-            if (!tableName) {
+            const inputName = relationSearchInput.value.trim().toUpperCase();
+            if (!inputName) {
                 alert('테이블명을 입력해주세요.');
                 return;
             }
 
+            const req = relationRequestGuard.begin();
             relationEmptyState.style.display = 'none';
             relationContainer.style.display = 'block';
             relationContainer.innerHTML = '<div style="padding: 20px; text-align: center;">데이터 조회 중...</div>';
@@ -961,59 +983,105 @@ function dbagentSectionVisible(id) {
             try {
                 const directionEl = document.querySelector('input[name="relation-direction"]:checked');
                 const direction = directionEl ? directionEl.value : 'bi';
-                const response = await fetch(`/api/relation?db_id=${window.currentDbId || ""}&table_name=${encodeURIComponent(tableName)}&direction=${direction}&token=${encodeURIComponent(getToken())}`);
-                if (!response.ok) throw new Error('Failed to fetch relation data');
-                const result = await response.json();
-                
-                if (result.error) {
-                    throw new Error(result.error);
+                const response = await fetch(`/api/relation?db_id=${window.currentDbId || ""}&table_name=${encodeURIComponent(inputName)}&direction=${direction}&token=${encodeURIComponent(getToken())}`);
+                const result = await response.json().catch(() => ({}));
+                if (relationStale(req)) return;
+                if (!response.ok || result.error) {
+                    throw new Error(result.error || 'Failed to fetch relation data');
                 }
 
-                
-                
-                const data = result.data;
-                
-                const parentRelations = data.filter(item => item.child_table.toUpperCase() === tableName);
-                const childRelations = data.filter(item => item.parent_table.toUpperCase() === tableName);
-                
-                let treeHTML = `<div style="display: flex; flex-direction: column; align-items: center;">`;
+                // 스키마 구분(2026-10-01 오케스트레이터 결정): "TABLE" 또는 "SCHEMA.TABLE". 없는 테이블과 여러 스키마에 있는
+                // 이름은 관계도를 그리지 않고 안내한다 - 예전엔 둘 다 "관계 없음"이거나 다른 스키마 관계가 섞여 나왔다(2026-09-30 QA).
+                if (result.not_found) {
+                    relationContainer.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-secondary);">테이블을 찾을 수 없습니다: <b>${relEsc(inputName)}</b></div>`;
+                    return;
+                }
+                if (result.ambiguous) {
+                    const owners = result.owners || [];
+                    relationContainer.innerHTML = `
+                        <div style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                            <div><b>${relEsc(result.table_name)}</b> 테이블이 여러 스키마에 있습니다. 스키마를 골라 주세요(또는 <b>스키마.테이블</b> 형식으로 입력).</div>
+                            <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 12px;">
+                                ${owners.map(o => `<button type="button" class="secondary-btn" data-rel-pick="${relEsc(o + '.' + result.table_name)}">${relEsc(o)}</button>`).join('')}
+                            </div>
+                        </div>`;
+                    relationContainer.querySelectorAll('[data-rel-pick]').forEach(btn => btn.addEventListener('click', () => {
+                        relationSearchInput.value = btn.dataset.relPick;
+                        relationSearchBtn.click();
+                    }));
+                    return;
+                }
 
-                let mermaidSyntax = "erDiagram\n";
+                const owner = result.owner;
+                const table = result.table_name;
+                const tableName = `${owner}.${table}`;
+                const isMe = (o, t) => o === owner && t === table;
+                // 응답은 FK 컬럼마다 1행 - 복합 FK는 카드·ERD 선 하나로 묶는다.
+                const fkMap = new Map();
+                (result.data || []).forEach(r => {
+                    const key = `${r.child_owner}.${r.fk_name}`;
+                    if (!fkMap.has(key)) fkMap.set(key, Object.assign({}, r, { child_columns: [], parent_columns: [] }));
+                    fkMap.get(key).child_columns.push(r.child_column);
+                    fkMap.get(key).parent_columns.push(r.parent_column);
+                });
+                const fks = [...fkMap.values()];
+                const parentRelations = fks.filter(f => isMe(f.child_owner, f.child_table));
+                // 단방향(부모만)은 자식 쪽을 그리지 않는다 - 자기 참조 FK가 "부모만"에서도 Child 카드로 나오던 문제(2026-09-30 QA).
+                const childRelations = direction === 'uni' ? [] : fks.filter(f => isMe(f.parent_owner, f.parent_table));
+
+                // ERD(2026-09-30 QA 라벨 겹침): 가로 배치(LR) + 같은 두 테이블 사이 FK는 선 하나로 합쳐 라벨을 한 번만 그린다.
+                // 엔티티 id는 영숫자·_만 되므로 별칭 ["OWNER.TABLE"]으로 실제 이름을 보인다. id는 순번(T1, T2…) - 이름의 점을 _로
+                // 바꿔 쓰면 A.B_C와 A_B.C가 같은 id가 돼 상자 하나로 합쳐졌다(2026-10-01 코드 점검).
+                const erdIds = new Map();
+                const erdId = (o, t) => {
+                    const key = `${o}.${t}`;
+                    if (!erdIds.has(key)) erdIds.set(key, 'T' + (erdIds.size + 1));
+                    return erdIds.get(key);
+                };
+                const erdLabel = (o, t) => `${o}.${t}`.replace(/"/g, '');
+                const erdEntities = new Map([[erdId(owner, table), erdLabel(owner, table)]]);
+                const erdEdges = new Map();
+                const addEdge = f => {
+                    const pId = erdId(f.parent_owner, f.parent_table);
+                    const cId = erdId(f.child_owner, f.child_table);
+                    erdEntities.set(pId, erdLabel(f.parent_owner, f.parent_table));
+                    erdEntities.set(cId, erdLabel(f.child_owner, f.child_table));
+                    const key = `${pId}|${cId}`;
+                    if (!erdEdges.has(key)) erdEdges.set(key, { pId, cId, names: [] });
+                    const names = erdEdges.get(key).names;
+                    if (!names.includes(f.fk_name)) names.push(f.fk_name);
+                };
+                const card = (f, side) => {
+                    const o = side === 'parent' ? f.parent_owner : f.child_owner;
+                    const t = side === 'parent' ? f.parent_table : f.child_table;
+                    const selfRef = isMe(f.parent_owner, f.parent_table) && isMe(f.child_owner, f.child_table);
+                    return `
+                            <div class="tree-card" style="cursor: pointer;" data-table-ref="${relEsc(o + '.' + t)}">
+                                <div class="table-name"><i data-lucide="${side === 'parent' ? 'arrow-up-circle' : 'arrow-down-circle'}"></i> ${relEsc(o + '.' + t)}</div>
+                                <div class="relation-type">${side === 'parent' ? 'Parent' : 'Child'} (FK: ${relEsc(f.fk_name)})${selfRef ? ' · 자기 참조' : ''}</div>
+                                <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 5px;">
+                                    ${relEsc(f.child_columns.join(', '))} → ${relEsc(f.parent_columns.join(', '))}
+                                </div>
+                            </div>
+                        `;
+                };
+
+                let treeHTML = `<div style="display: flex; flex-direction: column; align-items: center;">`;
                 let hasData = false;
-                const uniqueRelations = new Set();
-                
-                // Helper to clean table names for mermaid nodes
-                const cleanName = (name) => name.replace(/[^A-Za-z0-9_]/g, '_');
 
                 // 1. 내가 자식인 경우 (부모 테이블들)
                 if (parentRelations.length > 0) {
                     hasData = true;
                     treeHTML += `<div style="text-align: center; margin-bottom: 5px; font-weight: bold; color: var(--text-secondary);">내가 참조하는 부모 테이블들 (내가 자식)</div>`;
                     treeHTML += `<div class="tree-children" style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 20px; width: 100%;">`;
-                    parentRelations.forEach(item => {
-                        treeHTML += `
-                            <div class="tree-card" style="cursor: pointer;" onclick="if(window.showTableInfoModal) window.showTableInfoModal('${item.parent_table}')">
-                                <div class="table-name"><i data-lucide="arrow-up-circle"></i> ${item.parent_table}</div>
-                                <div class="relation-type">Parent (FK: ${item.fk_name})</div>
-                                <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 5px;">
-                                    ${item.child_column} → ${item.parent_column}
-                                </div>
-                            </div>
-                        `;
-                        const relKey = `    ${cleanName(item.parent_table)} ||--o{ ${cleanName(tableName)} : "${item.fk_name}"
-`;
-                        if (!uniqueRelations.has(relKey)) {
-                            mermaidSyntax += relKey;
-                            uniqueRelations.add(relKey);
-                        }
-                    });
+                    parentRelations.forEach(f => { treeHTML += card(f, 'parent'); addEdge(f); });
                     treeHTML += `</div>`;
                 }
 
                 // 2. 검색 대상 테이블 (Root)
                 treeHTML += `
-                    <div class="tree-card root" style="border: 2px solid var(--primary-color); box-shadow: 0 0 10px rgba(57, 135, 229, 0.3); cursor: pointer;" onclick="if(window.showTableInfoModal) window.showTableInfoModal('${tableName}')">
-                        <div class="table-name"><i data-lucide="table"></i> ${tableName}</div>
+                    <div class="tree-card root" style="border: 2px solid var(--primary-color); box-shadow: 0 0 10px rgba(57, 135, 229, 0.3); cursor: pointer;" data-table-ref="${relEsc(tableName)}">
+                        <div class="table-name"><i data-lucide="table"></i> ${relEsc(tableName)}</div>
                         <div class="relation-type">Selected Table (검색 대상)</div>
                     </div>
                 `;
@@ -1022,38 +1090,25 @@ function dbagentSectionVisible(id) {
                 if (childRelations.length > 0) {
                     hasData = true;
                     treeHTML += `<div class="tree-children" style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 20px; width: 100%;">`;
-                    childRelations.forEach(item => {
-                        treeHTML += `
-                            <div class="tree-card" style="cursor: pointer;" onclick="if(window.showTableInfoModal) window.showTableInfoModal('${item.child_table}')">
-                                <div class="table-name"><i data-lucide="arrow-down-circle"></i> ${item.child_table}</div>
-                                <div class="relation-type">Child (FK: ${item.fk_name})</div>
-                                <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 5px;">
-                                    ${item.child_column} → ${item.parent_column}
-                                </div>
-                            </div>
-                        `;
-                        const relKey = `    ${cleanName(tableName)} ||--o{ ${cleanName(item.child_table)} : "${item.fk_name}"
-`;
-                        if (!uniqueRelations.has(relKey)) {
-                            mermaidSyntax += relKey;
-                            uniqueRelations.add(relKey);
-                        }
-                    });
+                    childRelations.forEach(f => { treeHTML += card(f, 'child'); addEdge(f); });
                     treeHTML += `</div>`;
                     treeHTML += `<div style="text-align: center; margin-top: 5px; font-weight: bold; color: var(--text-secondary);">나를 참조하는 자식 테이블들 (내가 부모)</div>`;
                 }
-                
+
                 if (!hasData) {
                     treeHTML += `
                         <div style="margin-top: 20px; color: var(--text-secondary); text-align: center;">
                             관계된 부모/자식 테이블이 없습니다.
                         </div>
                     `;
-                    mermaidSyntax += `    ${cleanName(tableName)}
-`;
                 }
-                
+
                 treeHTML += `</div>`;
+
+                let mermaidSyntax = 'erDiagram\n    direction LR\n';
+                erdEntities.forEach((label, id) => { mermaidSyntax += `    ${id}["${label}"]\n`; });
+                erdEdges.forEach(e => { mermaidSyntax += `    ${e.pId} ||--o{ ${e.cId} : "${e.names.join(', ').replace(/"/g, '')}"\n`; });
+
 let layoutHTML = "";
                 if (direction === 'uni') {
                     // 단방향: 좌우 분할 레이아웃
@@ -1113,6 +1168,7 @@ let layoutHTML = "";
                         mermaid.init(undefined, document.querySelectorAll('#relation-container .mermaid'));
                         
                         setTimeout(() => {
+                            if (relationStale(req)) return; // 새 조회가 시작됐으면 그 조회가 마무리하고, DB만 바뀐 경우는 안내 문구로 대체(숨겨진 ERD가 빈 칸으로 남지 않게)
                             const svg = document.querySelector('#relation-container .mermaid svg');
                             if (svg) {
                                 // 테이블명은 svg <text>가 아니라 <g class="label"><foreignObject><div>...</div></foreignObject></g>
@@ -1181,7 +1237,7 @@ let layoutHTML = "";
                                 const clickableElements = svg.querySelectorAll('.entityBox, .node, text, span, foreignObject');
                                 clickableElements.forEach(el => {
                                     const txt = el.textContent ? el.textContent.trim() : '';
-                                    if (txt && txt.length < 40 && /^[A-Za-z0-9_$]+$/.test(txt.replace(/[^A-Za-z0-9_$]/g, '')) && txt !== 'REFERENCES') {
+                                    if (txt && /^[A-Za-z0-9_$#]+\.[A-Za-z0-9_$#]+$/.test(txt)) { // OWNER.TABLE 엔티티 라벨만
                                         el.style.cursor = 'pointer';
                                     }
                                 });
@@ -1207,7 +1263,7 @@ let layoutHTML = "";
                                                      기준으로 상대 경로를 풀어 같은 CSS를 읽는다. mermaid theme:'dark'라 도식 영역
                                                      배경은 어두운 색 고정(.pp-erd-area - 예전 사용자 확인 2026-08-29). -->
                                                 <link rel="stylesheet" href="style.css?v=56">
-                                                <link rel="stylesheet" href="popup.css?v=2">
+                                                <link rel="stylesheet" href="popup.css?v=3">
                                                 <script>if ((localStorage.getItem('dbagent_theme') || 'dark') === 'light') document.documentElement.setAttribute('data-theme', 'light');<\/script>
                                             </head>
                                             <body class="pp-body">
@@ -1257,13 +1313,10 @@ let layoutHTML = "";
                                         current = current.parentNode;
                                     }
                                     
-                                    if (clickedTableName) {
-                                        // Extract alphanumeric table name
-                                        clickedTableName = clickedTableName.replace(/[^A-Za-z0-9_$]/g, '');
-                                        if (clickedTableName && clickedTableName !== 'REFERENCES' && clickedTableName.toLowerCase() !== 'has' && clickedTableName.toLowerCase() !== 'manages') {
-                                            if (typeof window.showTableInfoModal === 'function') {
-                                                window.showTableInfoModal(clickedTableName.toUpperCase());
-                                            }
+                                    // 엔티티 라벨은 "OWNER.TABLE"(2026-10-01) - 점이 없는 텍스트(FK 이름 라벨 등)는 테이블이 아니다.
+                                    if (clickedTableName && /^[A-Za-z0-9_$#]+\.[A-Za-z0-9_$#]+$/.test(clickedTableName)) {
+                                        if (typeof window.showTableInfoModal === 'function') {
+                                            window.showTableInfoModal(clickedTableName.toUpperCase());
                                         }
                                     }
                                 });
@@ -1285,7 +1338,8 @@ let layoutHTML = "";
                 }
 
             } catch (error) {
-                relationContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align: center;">오류 발생: ${error.message}</div>`;
+                if (relationStale(req)) return;
+                relationContainer.innerHTML = `<div style="padding: 20px; color: var(--danger); text-align: center;">오류 발생: ${relEsc(error.message)}</div>`;
             }
         });
 
@@ -2056,10 +2110,11 @@ let layoutHTML = "";
     }
 
     // 세션 목록 스크롤 높이 맞춤(체크리스트 1-4, 2026-09-25) - 행이 SESSLIST_VISIBLE_ROWS개를 넘으면 목록
-    // 영역을 "머리글 + 첫 7행"의 실제 높이로 제한해 그 아래는 세로 스크롤로 본다. 행 높이는 내용(대기
+    // 영역을 "머리글 + 첫 6행"의 실제 높이로 제한해 그 아래는 세로 스크롤로 본다. 행 높이는 내용(대기
     // 막대 등)과 화면 배율에 따라 달라 고정 px 대신 매번 잰다. 숨겨진 탭은 높이를 잴 수 없으므로 CSS의
     // 대략값(.sesslist-scroll max-height)을 그대로 두고, 탭을 열 때 다시 잰다.
-    const SESSLIST_VISIBLE_ROWS = 7;
+    // 7 → 6행(2026-10-01 오케스트레이터 요청: 7번째 행부터 세로 스크롤 - 아래 화면 공간 확보)
+    const SESSLIST_VISIBLE_ROWS = 6;
     function fitSessListScroll(tbody) {
         if (!tbody) return;
         const box = tbody.closest('.sesslist-scroll');
@@ -2381,6 +2436,8 @@ let layoutHTML = "";
         ['ash-kpi-current', 'ash-kpi-cores', 'ash-kpi-avg', 'ash-kpi-exceed'].forEach(id => ashSetText(id, '–'));
         const deltaEl = document.getElementById('ash-kpi-delta');
         if (deltaEl) deltaEl.textContent = '';
+        const avgSubEl = document.getElementById('ash-kpi-avg-sub');
+        if (avgSubEl) { avgSubEl.textContent = ''; avgSubEl.title = ''; }
     }
 
     // 첫 로딩 스켈레톤(체크리스트 1-2, 2026-09-25) - 예전엔 첫 ASH 응답이 와야 차트를 처음 만들어서, 폐쇄망처럼
@@ -2472,6 +2529,21 @@ let layoutHTML = "";
         ashSetText('ash-kpi-current', current.toFixed(2));
         ashSetText('ash-kpi-cores', String(cpuCores));
         ashSetText('ash-kpi-avg', avg.toFixed(2));
+        // 평균·초과 비율은 수집된 샘플만으로 낸다(저장값 경로는 60초 샘플이 있는 분만 내려오고 0으로 채우지 않음).
+        // 수집이 선택 구간의 90%에 못 미치면 실제 범위를 함께 보여 구간 전체 평균으로 오해하지 않게 한다(2026-09-30 QA 6번).
+        // 실시간 경로(step_minutes=1)는 서버가 버킷을 채워 주므로 항상 전체 구간으로 본다.
+        const avgSubEl = document.getElementById('ash-kpi-avg-sub');
+        if (avgSubEl) {
+            const rangeMin = data.range_minutes || ashActivityRangeMinutes;
+            const collected = data.step_minutes ? rangeMin : Math.min(series.length, rangeMin);
+            const dur = min => {
+                const h = Math.floor(min / 60), m = min % 60;
+                return h ? `${h}시간${m ? ' ' + m + '분' : ''}` : `${m}분`;
+            };
+            const partial = series.length > 0 && collected < rangeMin * 0.9;
+            avgSubEl.textContent = partial ? `수집 ${dur(collected)} / ${dur(rangeMin)}` : '';
+            avgSubEl.title = partial ? `선택 구간 ${dur(rangeMin)} 중 실제 수집된 ${dur(collected)}만으로 낸 값입니다(수집 안 된 시간은 계산에서 뺍니다).` : '';
+        }
         ashSetText('ash-kpi-exceed', cpuCores > 0 ? Math.round(exceedCount / sums.length * 100) + '%' : '–');
 
         const deltaEl = document.getElementById('ash-kpi-delta');
@@ -2589,7 +2661,9 @@ let layoutHTML = "";
             + '<th style="text-align:right;">합계</th></tr></thead><tbody>';
         (data.series || []).forEach(pt => {
             const total = pt.values.reduce((a, b) => a + b, 0);
-            const timeLabel = new Date(pt.time).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+            // 24시간제 - 차트 축(HH:mm)과 같게. ko-KR 기본(12시간제)은 "오전 03:…"으로 칸에서 잘렸다(2026-09-30 QA).
+            // hour12:false 대신 hourCycle 'h23' - 일부 브라우저는 hour12:false에서 자정을 "24:00"으로 낸다.
+            const timeLabel = new Date(pt.time).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
             html += '<tr><td style="text-align:left;">' + timeLabel + '</td>'
                 + pt.values.map(v => `<td style="text-align:right;">${v.toFixed(2)}</td>`).join('')
                 + `<td style="text-align:right; font-weight:600;">${total.toFixed(2)}</td></tr>`;
@@ -2741,18 +2815,32 @@ let layoutHTML = "";
         }
     }
 
+    // Top SQL 범례·툴팁 라벨. 2026-09-22 결정대로 카테고리명(+모듈)을 쓰되, 같은 라벨이 둘 이상이면 범례에
+    // SQL_ID 앞 6자리를 붙여 구분한다(2026-09-30 QA: "CPU (SQL*Plus)"가 3개 나란히 떠 어느 SQL인지 알 수 없었음).
+    // 차트 툴팁(full)은 공간 여유가 있어 항상 전체 SQL_ID를 붙인다.
+    function ashTopSqlLabels(sqlCategories) {
+        const base = sqlCategories.map(s => s.module ? `${s.label} (${s.module})` : s.label);
+        const counts = {};
+        base.forEach(b => { counts[b] = (counts[b] || 0) + 1; });
+        return sqlCategories.map((s, i) => ({
+            legend: counts[base[i]] > 1 && s.sql_id ? `${base[i]} · ${String(s.sql_id).slice(0, 6)}` : base[i],
+            full: s.sql_id ? `${base[i]} · ${s.sql_id}` : base[i]
+        }));
+    }
+
     function renderAshTopSqlLegend(sqlCategories) {
         const container = document.getElementById('ash-topsql-legend');
         if (!container) return;
-        const items = sqlCategories.map(s => ({
-            label: s.module ? `${s.label} (${s.module})` : s.label,
+        const labels = ashTopSqlLabels(sqlCategories);
+        const items = sqlCategories.map((s, i) => ({
+            label: labels[i].legend,
             color: ASH_TOPSQL_CATEGORY_COLOR[s.category] || ASH_TOPSQL_OTHER_COLOR
         }));
         // §9.1: 범례의 Other 항목에 클릭 가능 표시(밑줄 호버 + ▸ 화살표) - 클릭 시 드릴다운 패널 토글.
         container.innerHTML = items.map((it, i) => {
             const hidden = ashTopSqlHiddenSqlIds.has(sqlCategories[i].sql_id);
             return `
-            <span class="ash-topsql-legend-item" data-sql-id="${sqlCategories[i].sql_id}" title="클릭: 이 SQL 숨기기/보이기 (드래그 조회에서도 제외)" style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; cursor:pointer; user-select:none; color: ${hidden ? 'var(--text-muted)' : 'var(--text-main)'}; opacity:${hidden ? '0.45' : '1'};">
+            <span class="ash-topsql-legend-item" data-sql-id="${sqlCategories[i].sql_id}" title="SQL_ID ${sqlCategories[i].sql_id} - 클릭: 이 SQL 숨기기/보이기 (드래그 조회에서도 제외)" style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; cursor:pointer; user-select:none; color: ${hidden ? 'var(--text-muted)' : 'var(--text-main)'}; opacity:${hidden ? '0.45' : '1'};">
                 <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${it.color}; flex:none;"></span>
                 ${it.label}
             </span>`;
@@ -2797,10 +2885,11 @@ let layoutHTML = "";
         renderAshTopSqlLegend(data.sql_categories || []);
 
         const sqlCats = data.sql_categories || [];
+        const sqlLabels = ashTopSqlLabels(sqlCats);
         const datasets = sqlCats.map((s, i) => {
             const color = ASH_TOPSQL_CATEGORY_COLOR[s.category] || ASH_TOPSQL_OTHER_COLOR;
             return {
-                label: s.module ? `${s.label} (${s.module})` : s.label,
+                label: sqlLabels[i].full,
                 hidden: ashTopSqlHiddenSqlIds.has(s.sql_id),
                 data: data.series.map(pt => ({ x: new Date(pt.time).getTime(), y: pt.values[i] })),
                 borderColor: color,

@@ -279,6 +279,18 @@
         badge.textContent = st.lastSample === null ? '수집 이전' : `수집 지연 · 마지막 ${hm(st.lastSample)}`;
     }
 
+    function durText(min) {
+        const h = Math.floor(min / 60), m = min % 60;
+        return h ? `${h}시간${m ? ' ' + m + '분' : ''}` : `${m}분`;
+    }
+
+    // 구간 평균 칸 아래 문구 - 수집이 충분하면 구간 이름, 모자라면 "수집 2시간 10분 / 24시간"(칸이 좁아 짧게, 전체 설명은 title).
+    function coverageHtml(collected, rangeMin, label) {
+        if (collected >= rangeMin * 0.9) return esc(label);
+        const tip = `${label} 중 실제 수집된 ${durText(collected)}만으로 낸 평균입니다(수집 안 된 시간은 계산에서 뺍니다).`;
+        return `<span title="${esc(tip)}">수집 ${esc(durText(collected))} / ${esc(label.replace('최근 ', ''))}</span>`;
+    }
+
     function renderKpis() {
         const vals = st.rows.filter(r => r.v).map(r => ({ t: r.t, tot: total(r.v) }));
         const cores = st.cores;
@@ -292,13 +304,15 @@
             return;
         }
         const now = vals[vals.length - 1];
+        // 평균은 수집된 분만으로 낸다(값 없음을 0으로 치지 않음 - 원칙대로). 대신 수집이 구간의 90%에 못 미치면 실제 범위를
+        // 함께 보여 "최근 24시간 평균"으로 오해하지 않게 한다(2026-09-30 QA: 2시간분으로 "1.1 · 최근 24시간" 표시).
         const avg = vals.reduce((a, b) => a + b.tot, 0) / vals.length;
         let mx = vals[0];
         vals.forEach(v => { if (v.tot > mx.tot) mx = v; });
         set('nd-kpi-current', f1(now.tot));
         set('nd-kpi-current-sub', `${hm(now.t)}${cores ? ' · 부하율 ' + (now.tot / cores).toFixed(2) : ''}`);
         set('nd-kpi-avg', f1(avg));
-        set('nd-kpi-avg-sub', esc(RANGE_LABEL[st.rangeKey]));
+        set('nd-kpi-avg-sub', coverageHtml(vals.length, RANGE_MIN[st.rangeKey] || 60, RANGE_LABEL[st.rangeKey]));
         set('nd-kpi-max', f1(mx.tot));
         set('nd-kpi-max-sub', `${hm(mx.t)}${cores ? ' · CPU의 ' + Math.round(mx.tot / cores * 100) + '%' : ''}`);
         if (!cores) {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>세션 상세정보</title>
     <link rel="stylesheet" href="style.css?v=55">
-    <link rel="stylesheet" href="popup.css?v=2">
+    <link rel="stylesheet" href="popup.css?v=3">
     <script>
         // Match the main app's saved theme choice so this popup doesn't clash when kept open
         // side-by-side with the dashboard on a second monitor.
@@ -70,7 +70,7 @@
                     }
                     document.title = `세션 상세정보 (SID: ${result.sid})`;
                     const note = result.session_state === 'ENDED'
-                        ? '<span class="pp-note">세션이 이미 종료되어 ASH 마지막 기록으로 표시합니다(SPID·OS User·Command·Status·Logon Time 없음).</span>' : '';
+                        ? '<span class="pp-note">세션이 이미 종료되어 ASH 마지막 기록으로 표시합니다(SPID·OS User·Status·Logon Time 없음).</span>' : '';
 
                     contentEl.innerHTML = `
                         <div class="pp-head">

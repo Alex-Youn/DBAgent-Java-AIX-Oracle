@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.SQLException;
@@ -545,11 +546,32 @@ public class MonitorController {
         if (target == null) {
             return dbNotFound();
         }
+        String[] name = parseTableName(tableName);
+        if (name == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", TABLE_NAME_FORMAT_ERROR));
+        }
         try {
-            return ResponseEntity.ok(monitorService.getRelation(target, tableName.toUpperCase(), direction));
+            return ResponseEntity.ok(monitorService.getRelation(target, name[0], name[1], direction));
         } catch (SQLException e) {
             return dbError(e);
         }
+    }
+
+    private static final String TABLE_NAME_FORMAT_ERROR = "테이블명은 TABLE 또는 SCHEMA.TABLE 형식으로 입력해 주세요.";
+
+    /**
+     * Table 관계·테이블 정보 입력 "TABLE" 또는 "SCHEMA.TABLE"을 대문자로 나눈다 - [owner(생략 시 null), table].
+     * 점이 둘 이상이거나 한쪽이 비면 null(2026-10-01 스키마 구분 추가). 값은 바인드 변수로만 쓴다.
+     */
+    static String[] parseTableName(String raw) {
+        String v = raw == null ? "" : raw.trim().toUpperCase();
+        if (v.isEmpty()) return null;
+        int dot = v.indexOf('.');
+        if (dot < 0) return new String[]{null, v};
+        String owner = v.substring(0, dot).trim();
+        String table = v.substring(dot + 1).trim();
+        if (owner.isEmpty() || table.isEmpty() || table.indexOf('.') >= 0) return null;
+        return new String[]{owner, table};
     }
 
     @GetMapping("/session_query")
@@ -588,8 +610,12 @@ public class MonitorController {
         if (target == null) {
             return dbNotFound();
         }
+        String[] name = parseTableName(tableName);
+        if (name == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", TABLE_NAME_FORMAT_ERROR));
+        }
         try {
-            return ResponseEntity.ok(monitorService.getTableInfo(target, tableName.toUpperCase()));
+            return ResponseEntity.ok(monitorService.getTableInfo(target, name[0], name[1]));
         } catch (SQLException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Maps.of("error", e.getMessage()));
         }
@@ -852,6 +878,19 @@ public class MonitorController {
 
     private ResponseEntity<Object> dbAccessDenied() {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Maps.of("error", "해당 DB에 대한 접근 권한이 없습니다."));
+    }
+
+    /**
+     * 요청 본문 JSON을 읽지 못한 경우(예: kill_session의 sid에 문자열) - Spring 기본 오류 JSON(timestamp/status/error 영문)
+     * 대신 이 API들의 공통 형식 {"error": 한국어}로 400을 준다(2026-09-30 QA 낮음 항목). 이 컨트롤러에만 적용된다.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Object> handleUnreadableBody(HttpMessageNotReadableException e) {
+        // 본문이 없거나 JSON이 깨진 경우도 여기로 온다 - 문구는 원인을 단정하지 않게 일반적으로 둔다(2026-10-01 코드 점검).
+        // 클라이언트 실수라 운영 로그를 채우지 않도록 debug로만 남긴다.
+        log.debug("요청 본문 파싱 실패: {}", e.getMostSpecificCause().getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Maps.of("error", "요청 본문을 읽을 수 없습니다. JSON 형식과 값(예: sid·serial은 숫자)을 확인해 주세요."));
     }
 
     private ResponseEntity<Object> dbNotFound() {

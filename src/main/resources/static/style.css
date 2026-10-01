@@ -1584,7 +1584,8 @@ body.app-shell { overflow-y: hidden; }
    스크롤이 생긴다. 실제 높이는 app.js의 fitSessListScroll()이 머리글+7행을 재서 정하고, 아래
    max-height는 측정 전(숨겨진 탭 등)에 쓰는 대략값이다. 머리글은 .data-table th의 sticky로 고정된다. */
 .sesslist-scroll {
-    max-height: 340px;
+    /* 머리글 + 약 6행의 대략값 - 탭이 보이면 app.js fitSessListScroll이 실제 행 높이로 다시 잰다(2026-10-01 7→6행) */
+    max-height: 300px;
     overflow-y: auto;
     border: 1px solid var(--border-color);
     border-radius: 4px;

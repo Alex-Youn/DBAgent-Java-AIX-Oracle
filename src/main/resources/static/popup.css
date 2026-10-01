@@ -53,6 +53,10 @@ body.pp-body { background: var(--bg-main); color: var(--text-main); overflow: hi
 .pp-table tr.clickable:hover td { background: var(--bg-hover); }
 .pp-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .pp-table td.em { font-weight: 700; color: var(--primary); }
+/* 열 구분선(opt-in, 2026-10-01 오케스트레이터 요청) - 열이 많은 세션·이벤트 목록에서 값이 어느 열인지 헷갈리지 않게 회색 세로선.
+   --border(흰색 10%)는 행 구분용이라 너무 옅어, 두 테마(모두 어두운 배경)에서 보이는 회색을 따로 둔다. */
+:root { --pp-col-sep: rgba(160, 160, 160, 0.35); }
+.pp-col-lines th + th, .pp-col-lines td + td { border-left: 1px solid var(--pp-col-sep); }
 
 /* 코드(SQL·Plan) */
 .pp-pre { background: rgba(0, 0, 0, 0.3); color: #e2e8f0; padding: 12px; border-radius: 4px; overflow: auto; font-family: monospace; font-size: 13px; margin: 0; }

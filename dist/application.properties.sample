@@ -93,6 +93,9 @@
 # v$lock 스캔(Current Session 세션 리스트의 TX/TM Lock 집계, Lock Holder/Waiter Tree) 쿼리 타임아웃(초).
 # 일부 인스턴스는 enqueue 해시체인이 길어 v$lock 스캔 자체가 수십 초까지 걸릴 수 있어 짧게 캡을 건다.
 #dbagent.monitor.lock-query-timeout-seconds=3
+# 화면 조회 공통 쿼리 타임아웃(초) - Current Session 세션 리스트·서브탭(Active Transaction 등), 테이블 스페이스,
+# Table 관계·테이블 정보, 세션 상세 SQL/실행계획. 넘으면 이번 조회만 실패(빈 목록/오류)하고 다음 폴링에서 다시 시도한다(2026-10-01).
+#dbagent.monitor.screen-query-timeout-seconds=10
 # TM Lock 장애 판정 기준(초). last_call_et 가 이 시간 이상이면서, 자기는 막혀 있지 않고 다른 세션을
 # 막고 있는 TM Lock Holder 만 장애 판정(장애조치 버튼)과 "Blocking Session 감지" 알림에 센다.
 # 값이 없거나 잘못된 값이면 60 으로 동작한다.

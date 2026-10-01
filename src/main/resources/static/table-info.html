@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>테이블 정보</title>
     <link rel="stylesheet" href="style.css?v=56">
-    <link rel="stylesheet" href="popup.css?v=2">
+    <link rel="stylesheet" href="popup.css?v=3">
     <script src="lib/lucide.js"></script>
     <script>
         // Match the main app's saved theme choice so this popup doesn't clash when kept open
@@ -23,6 +23,8 @@
     <script>
         (function () {
             function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
+            // 오류 문구·테이블명은 사용자가 입력한 값이 섞이므로("테이블을 찾을 수 없습니다: 입력값") 이스케이프해서 넣는다(2026-10-01).
+            function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (ch) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]; }); }
             function qs(name) { return new URLSearchParams(window.location.search).get(name) || ''; }
 
             const dbId = qs('db_id');
@@ -44,10 +46,12 @@
                 .then(res => res.json())
                 .then(data => {
                     if (data.error) {
-                        contentEl.innerHTML = `<h3 style="color: var(--danger);">조회 오류</h3><p>${data.error}</p>`;
+                        contentEl.innerHTML = `<h3 style="color: var(--danger);">조회 오류</h3><p>${esc(data.error)}</p>`;
                         return;
                     }
-                    document.title = `${data.table_name} 상세정보`;
+                    // OWNER.TABLE로 표시(2026-10-01 스키마 구분) - 같은 이름 테이블이 여러 스키마에 있을 수 있다.
+                    const fullName = data.owner ? `${data.owner}.${data.table_name}` : data.table_name;
+                    document.title = `${fullName} 상세정보`;
 
                     const colsHtml = (data.columns && data.columns.length > 0)
                         ? data.columns.map(c => `
@@ -74,7 +78,7 @@
 
                     contentEl.innerHTML = `
                         <div style="color: var(--text-main); text-align: left;">
-                            <h2 class="pp-title" style="margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; font-size: 1.5rem; color: var(--primary-color);">${data.table_name} 상세정보</h2>
+                            <h2 class="pp-title" style="margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; font-size: 1.5rem; color: var(--primary-color);">${esc(fullName)} 상세정보</h2>
                             <div style="margin-bottom: 20px; font-size: 1.1rem; font-weight: 500; padding: 10px; background-color: rgba(59, 130, 246, 0.1); border-radius: 6px;">
                                 ${data.table_comment ? `📝 ${data.table_comment}` : '등록된 테이블 코멘트가 없습니다.'}
                             </div>

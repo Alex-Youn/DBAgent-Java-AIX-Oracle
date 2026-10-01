@@ -67,6 +67,18 @@ public class MonitorService {
     @Value("${dbagent.monitor.ash-activity-query-timeout-seconds:10}")
     private int ashActivityQueryTimeoutSeconds;
 
+    // 화면 조회(Current Session 세션 리스트·서브탭, 테이블 스페이스, Table 관계·정보, 세션 상세 SQL) 공통 타임아웃(초).
+    // 이 조회들에만 setQueryTimeout이 빠져 있어, DB가 느려지면 커넥션을 무한정 붙잡을 수 있었다(2026-09-30 QA 낮음 항목).
+    // 실패하면 화면이 오류/빈 목록으로 끝나고 다음 폴링에서 다시 시도한다.
+    @Value("${dbagent.monitor.screen-query-timeout-seconds:10}")
+    private int screenQueryTimeoutSeconds;
+
+    /** try-with-resources 헤더 안에서 Statement에 화면 조회 타임아웃을 건다(ResultSet을 같은 헤더에서 여는 곳용). */
+    private <T extends Statement> T timed(T st) throws SQLException {
+        st.setQueryTimeout(screenQueryTimeoutSeconds);
+        return st;
+    }
+
     // D2(2026-09-25): 선택 구간이 ASH 인메모리 보관 범위를 벗어나면 dba_hist_active_sess_history(AWR)로 보충.
     // Diagnostics Pack이 없는 사이트는 false로 끈다(설계 대시보드 UI 개선 7장 ash.awrFallback).
     @Value("${dbagent.monitor.ash-awr-fallback:true}")
@@ -448,7 +460,7 @@ public class MonitorService {
 
         List<Map<String, Object>> sessions = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
-             Statement st = conn.createStatement();
+             Statement st = timed(conn.createStatement());
              ResultSet rs = st.executeQuery(query)) {
             while (rs.next()) {
                 Map<String, Object> row = new LinkedHashMap<>();
@@ -977,15 +989,19 @@ public class MonitorService {
             // getHistorySessions()와 동일한 NVL(sql_exec_start, sample_time)/sample_time 기준 경과시간 계산 -
             // "SYSDATE 기준으로 계산하면 과거 구간의 경과시간이 부풀려진다"는 결함을 피한다(design-advisor, 2026-09-22).
             // 사용자명은 SID당 최신 1건만 남긴 뒤 dba_users에서 붙인다(행마다 JOIN하지 않음).
+            // Command(2026-10-01 버그 수정): ASH sql_opcode를 audit_actions(모든 버전에 있음, v$session.command와 같은 코드)로
+            // 이름을 붙인다 - 예전엔 command를 내려주지 않아 팝업 Command 열이 항상 "-"였다. SID당 1행만 남긴 뒤라 스칼라
+            // 서브쿼리 횟수는 세션 수만큼이고 audit_actions는 수백 행짜리 사전 테이블이다(성능 분석 commandNames와 같은 출처).
             String query = "SELECT b.sid, b.serial, b.sql_id, b.event_name, " +
                     "TO_CHAR(b.sample_time, 'YYYY-MM-DD HH24:MI:SS') AS capture_time, b.duration_time, b.program_name, " +
+                    "(SELECT aa.name FROM audit_actions aa WHERE aa.action = b.opcode) AS command_name, " +
                     "u.username AS username, (SELECT instance_name FROM v$instance) AS db_name FROM (" +
                     "SELECT a.*, ROW_NUMBER() OVER (PARTITION BY a.sid, a.serial ORDER BY a.sample_time DESC) AS rn FROM (" +
                     AshRange.baseSql(window,
                             "h.session_id AS sid, h.session_serial# AS serial, h.sql_id AS sql_id, " +
                             "NVL(h.event, 'ON CPU') AS event_name, h.sample_time, h.user_id, " +
                             "ROUND((CAST(h.sample_time AS DATE) - CAST(NVL(h.sql_exec_start, h.sample_time) AS DATE)) * 86400, 2) AS duration_time, " +
-                            "h.program AS program_name",
+                            "h.program AS program_name, h.sql_opcode AS opcode",
                             extra.toString()) +
                     ") a) b LEFT JOIN dba_users u ON b.user_id = u.user_id " +
                     "WHERE b.rn = 1 ORDER BY b.sample_time DESC";
@@ -1006,6 +1022,8 @@ public class MonitorService {
                         Object duration = rs.getObject("duration_time");
                         row.put("duration_time", duration == null ? 0 : Math.max(0, ((Number) duration).doubleValue()));
                         row.put("program_name", rs.getString("program_name"));
+                        String cmd = rs.getString("command_name");
+                        row.put("command", cmd == null || "UNKNOWN".equals(cmd) ? null : cmd);
                         row.put("username", rs.getString("username"));
                         row.put("db_name", rs.getString("db_name"));
                         sessions.add(row);
@@ -1080,7 +1098,7 @@ public class MonitorService {
                 "AND s.username IS NOT NULL AND s.username != " + monitoringAccountLiteral(target) + " " +
                 "ORDER BY s.sid";
         List<Map<String, Object>> rows = new ArrayList<>();
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
+        try (Statement st = timed(conn.createStatement()); ResultSet rs = st.executeQuery(query)) {
             while (rs.next()) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("db_name", rs.getString("db_name"));
@@ -1102,6 +1120,8 @@ public class MonitorService {
             }
         } catch (SQLException ignored) {
             // Best-effort - leave the tab empty rather than failing the whole session_extra call.
+            // 타임아웃(ORA-01013)이 결과 스트리밍 도중 나면 앞서 담은 행이 남아 불완전한 목록을 완전한 것처럼 내리므로 비운다(2026-10-01).
+            rows.clear();
         }
         return rows;
     }
@@ -1112,7 +1132,7 @@ public class MonitorService {
                 "FROM v$px_session px JOIN v$session s ON s.sid = px.sid AND s.serial# = px.serial# " +
                 "ORDER BY px.qcsid, px.server#";
         List<Map<String, Object>> rows = new ArrayList<>();
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
+        try (Statement st = timed(conn.createStatement()); ResultSet rs = st.executeQuery(query)) {
             while (rs.next()) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("sid", rs.getObject("sid"));
@@ -1129,6 +1149,8 @@ public class MonitorService {
                 rows.add(row);
             }
         } catch (SQLException ignored) {
+            // 타임아웃(ORA-01013)이 결과 스트리밍 도중 나면 앞서 담은 행이 남아 불완전한 목록을 완전한 것처럼 내리므로 비운다(2026-10-01).
+            rows.clear();
         }
         return rows;
     }
@@ -1153,7 +1175,7 @@ public class MonitorService {
                 "AND (s.event LIKE '%dblink%' OR s.program LIKE 'oracle@% (TNS V1-V3)') " +
                 "ORDER BY direction, CASE WHEN s.status = 'ACTIVE' THEN 0 ELSE 1 END, s.last_call_et DESC";
         List<Map<String, Object>> rows = new ArrayList<>();
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
+        try (Statement st = timed(conn.createStatement()); ResultSet rs = st.executeQuery(query)) {
             while (rs.next()) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("direction", rs.getString("direction"));
@@ -1171,6 +1193,8 @@ public class MonitorService {
                 rows.add(row);
             }
         } catch (SQLException ignored) {
+            // 타임아웃(ORA-01013)이 결과 스트리밍 도중 나면 앞서 담은 행이 남아 불완전한 목록을 완전한 것처럼 내리므로 비운다(2026-10-01).
+            rows.clear();
         }
         return rows;
     }
@@ -1181,7 +1205,7 @@ public class MonitorService {
                 "TO_CHAR(retry_time, 'YYYY-MM-DD HH24:MI:SS') as retry_time, os_user " +
                 "FROM dba_2pc_pending ORDER BY fail_time";
         List<Map<String, Object>> rows = new ArrayList<>();
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(query)) {
+        try (Statement st = timed(conn.createStatement()); ResultSet rs = st.executeQuery(query)) {
             while (rs.next()) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("local_tran_id", rs.getString("local_tran_id"));
@@ -1197,6 +1221,8 @@ public class MonitorService {
             }
         } catch (SQLException ignored) {
             // Most app accounts won't have SELECT on DBA_2PC_PENDING - empty tab rather than an error.
+            // 타임아웃(ORA-01013)이 결과 스트리밍 도중 나면 앞서 담은 행이 남아 불완전한 목록을 완전한 것처럼 내리므로 비운다(2026-10-01).
+            rows.clear();
         }
         return rows;
     }
@@ -1246,7 +1272,7 @@ public class MonitorService {
     // 5900~6100 covers both the 60s bucket's normal jitter. Value is per-second, scaled to per-minute
     // since that's the more readable unit for a dashboard card.
     private long queryTxnPerMinute(Connection conn) {
-        try (Statement st = conn.createStatement();
+        try (Statement st = timed(conn.createStatement());
              ResultSet rs = st.executeQuery(
                      "SELECT value FROM v$sysmetric WHERE metric_name = 'User Transaction Per Sec' " +
                      "AND intsize_csec BETWEEN 5900 AND 6100")) {
@@ -1278,7 +1304,7 @@ public class MonitorService {
 
         List<Map<String, Object>> tablespaces = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
-             Statement st = conn.createStatement();
+             Statement st = timed(conn.createStatement());
              ResultSet rs = st.executeQuery(query)) {
             while (rs.next()) {
                 Map<String, Object> row = new LinkedHashMap<>();
@@ -1313,6 +1339,7 @@ public class MonitorService {
         List<Map<String, Object>> datafiles = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
              PreparedStatement ps = conn.prepareStatement(query)) {
+            ps.setQueryTimeout(screenQueryTimeoutSeconds);
             ps.setString(1, tablespaceName);
             ps.setString(2, tablespaceName);
             try (ResultSet rs = ps.executeQuery()) {
@@ -1335,7 +1362,7 @@ public class MonitorService {
 
     // -------------------------------------------------------------- dashboard
     public Map<String, Object> getDashboardStats(TargetDbConfig target) throws SQLException {
-        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+        try (Connection conn = poolManager.getConnection(target); Statement st = timed(conn.createStatement())) {
             double numCpus = 1;
             try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
                 if (rs.next()) numCpus = rs.getDouble(1);
@@ -1387,7 +1414,7 @@ public class MonitorService {
                 "GROUP BY event ORDER BY cnt DESC";
         List<Map<String, Object>> events = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
-             Statement st = conn.createStatement();
+             Statement st = timed(conn.createStatement());
              ResultSet rs = st.executeQuery(query)) {
             while (rs.next()) {
                 Map<String, Object> row = new LinkedHashMap<>();
@@ -1494,9 +1521,32 @@ public class MonitorService {
     }
 
     // -------------------------------------------------------------- relation
-    public Map<String, Object> getRelation(TargetDbConfig target, String tableName, String direction) throws SQLException {
-        String baseQuery = "select uc.table_name as child_table, uc.constraint_name as fk_name, " +
-                "ucc.column_name as child_column, ruc.table_name as parent_table, rucc.column_name as parent_column " +
+    /**
+     * 테이블 이름(필요하면 owner까지)으로 그 테이블을 가진 스키마 목록을 찾는다. Table 관계·테이블 정보 화면이 owner 조건 없이
+     * 이름만으로 조회해 다른 스키마의 같은 이름 테이블 관계·컬럼이 섞이고, 없는 테이블도 "관계 없음"으로 보이던 문제(2026-09-30 QA)
+     * - 결과가 0개면 없는 테이블, 2개 이상이면 스키마를 지정해 달라고 안내한다(2026-10-01 오케스트레이터 결정).
+     */
+    private List<String> findTableOwners(Connection conn, String owner, String tableName) throws SQLException {
+        String sql = "SELECT owner FROM dba_tables WHERE table_name = ?" + (owner != null ? " AND owner = ?" : "") + " ORDER BY owner";
+        List<String> owners = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setQueryTimeout(screenQueryTimeoutSeconds);
+            ps.setString(1, tableName);
+            if (owner != null) ps.setString(2, owner);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) owners.add(rs.getString(1));
+            }
+        }
+        return owners;
+    }
+
+    /**
+     * owner가 null(스키마 생략)이면 이름이 한 스키마에만 있을 때 그 스키마로 조회한다. 응답: 정상이면 data·owner·table_name,
+     * 없는 테이블이면 not_found:true, 여러 스키마에 있으면 ambiguous:true + owners(화면이 "스키마.테이블로 입력" 안내).
+     */
+    public Map<String, Object> getRelation(TargetDbConfig target, String owner, String tableName, String direction) throws SQLException {
+        String baseQuery = "select uc.owner as child_owner, uc.table_name as child_table, uc.constraint_name as fk_name, " +
+                "ucc.column_name as child_column, ruc.owner as parent_owner, ruc.table_name as parent_table, rucc.column_name as parent_column " +
                 "from dba_constraints uc " +
                 "join dba_cons_columns ucc on uc.owner = ucc.owner and uc.constraint_name = ucc.constraint_name " +
                 "join dba_constraints ruc on uc.r_owner = ruc.owner and uc.r_constraint_name = ruc.constraint_name " +
@@ -1505,28 +1555,54 @@ public class MonitorService {
                 "where uc.constraint_type = 'R'";
 
         boolean uni = "uni".equals(direction);
-        String query = baseQuery + (uni ? " and uc.table_name = ?" : " and (ruc.table_name = ? or uc.table_name = ?)");
+        String query = baseQuery + (uni
+                ? " and uc.owner = ? and uc.table_name = ?"
+                : " and ((ruc.owner = ? and ruc.table_name = ?) or (uc.owner = ? and uc.table_name = ?))")
+                + " order by uc.owner, uc.constraint_name, ucc.position";
 
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("table_name", tableName);
         List<Map<String, Object>> results = new ArrayList<>();
-        try (Connection conn = poolManager.getConnection(target);
-             PreparedStatement ps = conn.prepareStatement(query)) {
-            ps.setString(1, tableName);
-            if (!uni) ps.setString(2, tableName);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("child_table", rs.getString(1));
-                    row.put("fk_name", rs.getString(2));
-                    row.put("child_column", rs.getString(3));
-                    row.put("parent_table", rs.getString(4));
-                    row.put("parent_column", rs.getString(5));
-                    results.add(row);
+        try (Connection conn = poolManager.getConnection(target)) {
+            List<String> owners = findTableOwners(conn, owner, tableName);
+            if (owners.isEmpty()) {
+                body.put("owner", owner);
+                body.put("not_found", true);
+                body.put("data", results);
+                return body;
+            }
+            if (owners.size() > 1) {
+                body.put("ambiguous", true);
+                body.put("owners", owners);
+                body.put("data", results);
+                return body;
+            }
+            String resolvedOwner = owners.get(0);
+            try (PreparedStatement ps = conn.prepareStatement(query)) {
+                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setString(1, resolvedOwner);
+                ps.setString(2, tableName);
+                if (!uni) {
+                    ps.setString(3, resolvedOwner);
+                    ps.setString(4, tableName);
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("child_owner", rs.getString("child_owner"));
+                        row.put("child_table", rs.getString("child_table"));
+                        row.put("fk_name", rs.getString("fk_name"));
+                        row.put("child_column", rs.getString("child_column"));
+                        row.put("parent_owner", rs.getString("parent_owner"));
+                        row.put("parent_table", rs.getString("parent_table"));
+                        row.put("parent_column", rs.getString("parent_column"));
+                        results.add(row);
+                    }
                 }
             }
+            body.put("owner", resolvedOwner);
         }
-        Map<String, Object> body = new LinkedHashMap<>();
         body.put("data", results);
-        body.put("table_name", tableName);
         return body;
     }
 
@@ -1561,6 +1637,7 @@ public class MonitorService {
                         "s.status, s.module, TO_CHAR(s.logon_time, 'YYYY-MM-DD HH24:MI:SS') AS logon_time " +
                         "FROM v$session s LEFT JOIN v$process p ON p.addr = s.paddr WHERE s.sid = ?" + (haveSerial ? " AND s.serial# = ?" : "");
                 try (PreparedStatement ps = conn.prepareStatement(sessionSql)) {
+                    ps.setQueryTimeout(screenQueryTimeoutSeconds);
                     ps.setString(1, sidVal);
                     if (haveSerial) ps.setString(2, serialVal);
                     try (ResultSet rs = ps.executeQuery()) {
@@ -1592,13 +1669,17 @@ public class MonitorService {
                             // the same sid/serial# pair when available. 상단 표의 Program·Machine·Module·DB User도
                             // 같은 샘플에서 채운다(caller가 sql_id를 이미 줬으면 sql_id는 덮어쓰지 않는다).
                             sessionState = "ENDED";
-                            String ashSql = "SELECT sql_id, sql_child_number, program, machine, module, username FROM (" +
+                            // Command도 ASH sql_opcode로 채운다(2026-10-01 버그 수정) - 예전엔 종료 세션 상세의 Command가 항상 "-"였다.
+                            // 이름은 살아 있는 세션(위 v$session.command)과 같은 audit_actions 기준이다.
+                            String ashSql = "SELECT sql_id, sql_child_number, program, machine, module, username, command_name FROM (" +
                                     "SELECT a.sql_id, a.sql_child_number, a.program, a.machine, a.module, " +
-                                    "(SELECT u.username FROM dba_users u WHERE u.user_id = a.user_id) AS username " +
+                                    "(SELECT u.username FROM dba_users u WHERE u.user_id = a.user_id) AS username, " +
+                                    "(SELECT aa.name FROM audit_actions aa WHERE aa.action = a.sql_opcode) AS command_name " +
                                     "FROM v$active_session_history a " +
                                     "WHERE a.session_id = ?" + (haveSerial ? " AND a.session_serial# = ?" : "") +
                                     " AND a.sql_id IS NOT NULL ORDER BY a.sample_time DESC) WHERE ROWNUM = 1";
                             try (PreparedStatement ashPs = conn.prepareStatement(ashSql)) {
+                                ashPs.setQueryTimeout(screenQueryTimeoutSeconds);
                                 ashPs.setString(1, sidVal);
                                 if (haveSerial) ashPs.setString(2, serialVal);
                                 try (ResultSet ashRs = ashPs.executeQuery()) {
@@ -1612,6 +1693,11 @@ public class MonitorService {
                                         info.put("machine", ashRs.getString(4));
                                         info.put("module", ashRs.getString(5));
                                         info.put("username", ashRs.getString(6));
+                                        String ashCmd = ashRs.getString(7);
+                                        // caller가 준 sql_id(과거 스냅샷)와 마지막 샘플의 sql_id가 다르면 이 Command는 다른 SQL의 것이라
+                                        // 화면의 SQL 텍스트와 어긋난다 - 비워 둔다(2026-10-01 오케스트레이터 결정, 코드 점검 지적).
+                                        boolean otherSql = haveClientSqlId && !sqlIdVal.trim().equals(ashRs.getString(1));
+                                        info.put("command", otherSql || ashCmd == null || "UNKNOWN".equals(ashCmd) ? null : ashCmd);
                                     }
                                 }
                             } catch (SQLException e) {
@@ -1635,6 +1721,7 @@ public class MonitorService {
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT sql_fulltext, hash_value, child_number FROM v$sql WHERE sql_id = ? AND ROWNUM = 1")) {
+                ps.setQueryTimeout(screenQueryTimeoutSeconds);
                 ps.setString(1, sSqlId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
@@ -1662,6 +1749,7 @@ public class MonitorService {
                         ? "SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(?, ?, 'TYPICAL'))"
                         : "SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(?, NULL, 'TYPICAL'))";
                 try (PreparedStatement ps = conn.prepareStatement(planSql)) {
+                    ps.setQueryTimeout(screenQueryTimeoutSeconds);
                     ps.setString(1, sSqlId);
                     if (sChildNumber != null) ps.setInt(2, sChildNumber);
                     StringBuilder sb = new StringBuilder();
@@ -1683,6 +1771,7 @@ public class MonitorService {
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT name, position, datatype_string, value_string, TO_CHAR(last_captured, 'YYYY-MM-DD HH24:MI:SS') " +
                             "FROM v$sql_bind_capture WHERE sql_id = ? ORDER BY position")) {
+                ps.setQueryTimeout(screenQueryTimeoutSeconds);
                 ps.setString(1, sSqlId);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -1697,6 +1786,7 @@ public class MonitorService {
                 }
             } catch (SQLException ignored) {
                 // Bind capture is best-effort, same as the Python route.
+                binds.clear(); // 타임아웃으로 중간에 끊기면 일부 바인드만 남지 않게 비운다(2026-10-01).
             }
 
             Map<String, Object> result = new LinkedHashMap<>();
@@ -1714,11 +1804,27 @@ public class MonitorService {
     }
 
     // --------------------------------------------------------------- table_info
-    public Map<String, Object> getTableInfo(TargetDbConfig target, String tableName) throws SQLException {
+    // owner를 지정하지 않으면 findTableOwners로 하나로 정해질 때만 조회한다 - 예전엔 이름만으로 조회해 같은 이름 테이블이
+    // 여러 스키마에 있으면 컬럼·인덱스가 섞여 나왔다(2026-09-30 QA). 없거나 여러 개면 error로 안내한다(table-info.html이 표시).
+    public Map<String, Object> getTableInfo(TargetDbConfig target, String owner, String tableName) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
+            List<String> owners = findTableOwners(conn, owner, tableName);
+            if (owners.isEmpty()) {
+                Map<String, Object> err = new LinkedHashMap<>();
+                err.put("error", "테이블을 찾을 수 없습니다: " + (owner != null ? owner + "." : "") + tableName);
+                return err;
+            }
+            if (owners.size() > 1) {
+                Map<String, Object> err = new LinkedHashMap<>();
+                err.put("error", tableName + " 테이블이 여러 스키마(" + String.join(", ", owners) + ")에 있습니다. 스키마.테이블 형식으로 지정해 주세요.");
+                return err;
+            }
+            String resolvedOwner = owners.get(0);
             String tableComment = "";
-            try (PreparedStatement ps = conn.prepareStatement("SELECT comments FROM dba_tab_comments WHERE table_name = ?")) {
-                ps.setString(1, tableName);
+            try (PreparedStatement ps = conn.prepareStatement("SELECT comments FROM dba_tab_comments WHERE owner = ? AND table_name = ?")) {
+                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setString(1, resolvedOwner);
+                ps.setString(2, tableName);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) tableComment = rs.getString(1);
                 }
@@ -1728,9 +1834,11 @@ public class MonitorService {
             String colQuery = "SELECT c.column_name, c.data_type, c.data_length, c.nullable, cm.comments " +
                     "FROM dba_tab_columns c " +
                     "LEFT JOIN dba_col_comments cm ON c.owner = cm.owner AND c.table_name = cm.table_name AND c.column_name = cm.column_name " +
-                    "WHERE c.table_name = ? ORDER BY c.owner, c.column_id";
+                    "WHERE c.owner = ? AND c.table_name = ? ORDER BY c.column_id";
             try (PreparedStatement ps = conn.prepareStatement(colQuery)) {
-                ps.setString(1, tableName);
+                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setString(1, resolvedOwner);
+                ps.setString(2, tableName);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         Map<String, Object> c = new LinkedHashMap<>();
@@ -1751,10 +1859,12 @@ public class MonitorService {
                     "MAX(c.constraint_type) as constraint_type " +
                     "FROM dba_indexes i " +
                     "JOIN dba_ind_columns ic ON i.owner = ic.index_owner AND i.index_name = ic.index_name " +
-                    "LEFT JOIN dba_constraints c ON i.owner = c.owner AND i.table_name = c.table_name AND i.index_name = c.index_name " +
-                    "WHERE i.table_name = ? GROUP BY i.index_name ORDER BY i.index_name";
+                    "LEFT JOIN dba_constraints c ON c.owner = i.table_owner AND c.table_name = i.table_name AND c.index_name = i.index_name " +
+                    "WHERE i.table_owner = ? AND i.table_name = ? GROUP BY i.owner, i.index_name ORDER BY i.index_name";
             try (PreparedStatement ps = conn.prepareStatement(idxQuery)) {
-                ps.setString(1, tableName);
+                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setString(1, resolvedOwner);
+                ps.setString(2, tableName);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         Map<String, Object> idx = new LinkedHashMap<>();
@@ -1768,6 +1878,7 @@ public class MonitorService {
             }
 
             Map<String, Object> result = new LinkedHashMap<>();
+            result.put("owner", resolvedOwner);
             result.put("table_name", tableName);
             result.put("table_comment", tableComment);
             result.put("columns", columns);
