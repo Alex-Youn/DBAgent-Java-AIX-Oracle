@@ -2009,7 +2009,8 @@ let layoutHTML = "";
 
             // session_extra is best-effort (feeds the trend lines + the 3 extra tabs below) - a
             // failure there shouldn't take down the primary Active Session list/table.
-            let extra = { active_transactions: [], parallel_sessions: [], pending_2pc: [], tx_lock_count: 0, tx_lock_sids: [], tm_lock_count: 0, tm_lock_sids: [] };
+            // 못 받아오면 null로 둔다 - 예전엔 빈 목록을 기본값으로 써서 네 탭이 "없습니다"로 보였다(2026-10-01, sessExtraFail 참고).
+            let extra = null;
             try {
                 if (extraResponse.ok) {
                     const extraData = await extraResponse.json();
@@ -2043,10 +2044,11 @@ let layoutHTML = "";
             lastActiveSessions = activeSessions;
             renderActiveSessionRows();
 
-            renderActiveTransactionsTab(extra.active_transactions);
-            renderParallelSessionsTab(extra.parallel_sessions);
-            renderRemoteSessionsTab(extra.remote_sessions);
-            renderPending2pcTab(extra.pending_2pc);
+            const ex = extra || {};
+            renderActiveTransactionsTab(ex.active_transactions, sessExtraFail(extra, 'active_transactions'));
+            renderParallelSessionsTab(ex.parallel_sessions, sessExtraFail(extra, 'parallel_sessions'));
+            renderRemoteSessionsTab(ex.remote_sessions, sessExtraFail(extra, 'remote_sessions'));
+            renderPending2pcTab(ex.pending_2pc, sessExtraFail(extra, 'pending_2pc'));
         } catch (error) {
             if (req.isStale()) return;
             console.error('Error fetching sessions:', error);
@@ -2061,6 +2063,7 @@ let layoutHTML = "";
     // 자동 갱신(기본 3초)으로 목록이 다시 그려져도 고른 정렬을 유지하려고 마지막 데이터와 정렬 상태를 들고 있다.
     let lastActiveSessions = [];
     let lastActiveTxRows = [];
+    let lastActiveTxFail = null; // 마지막 조회가 실패였으면 그 사유 - 정렬을 눌러 다시 그릴 때 "없습니다"로 바뀌지 않게
     const sessionDurationSort = { active: null, tx: null }; // null | 'desc' | 'asc'
 
     function sortByDuration(rows, dir) {
@@ -2090,7 +2093,7 @@ let layoutHTML = "";
             sessionDurationSort[key] = cur === null ? 'desc' : cur === 'desc' ? 'asc' : null;
             updateDurationSortHeader(key);
             if (key === 'active') renderActiveSessionRows();
-            else renderActiveTransactionsTab(lastActiveTxRows);
+            else renderActiveTransactionsTab(lastActiveTxRows, lastActiveTxFail);
         });
     });
 
@@ -2231,9 +2234,31 @@ let layoutHTML = "";
     // Column set mirrors the Active Session tab's rendering (same fields, same duration/wait bar
     // treatment) - Active Transaction shows the same columns, just scoped to sessions holding a
     // transaction rather than status='ACTIVE'.
-    function renderActiveTransactionsTab(rows) {
+    // 조회 실패를 "없음"으로 보이지 않게 한다(2026-10-01 코드 점검 보고 - 권한 없음·타임아웃이면 "활성 트랜잭션이 없습니다"처럼
+    // 정상으로 보였다). 서버(/api/session_extra)가 탭마다 <키>_ok와 실패 사유 <키>_fail(timeout | privilege | error)을 내려준다.
+    // session_extra 호출 자체가 실패하면 extra가 null이라 네 탭 모두 실패로 표시한다. _ok가 없는 옛 서버 응답은 성공으로 본다.
+    function sessExtraFail(extra, key) {
+        if (!extra) return 'error';
+        if (extra[key + '_ok'] === false) return extra[key + '_fail'] || 'error';
+        return null;
+    }
+    function sessExtraFailRow(colspan, reason) {
+        const msg = reason === 'privilege' ? '조회 권한이 없어 표시할 수 없습니다 (모니터링 계정의 조회 권한 확인 필요)'
+            : reason === 'timeout' ? '조회 시간 초과 - 다음 갱신 때 다시 시도합니다'
+            : '조회 실패 - 다음 갱신 때 다시 시도합니다';
+        return `<tr><td colspan="${colspan}" style="text-align:center; padding: 30px; color: var(--warning);">${msg}</td></tr>`;
+    }
+
+    function renderActiveTransactionsTab(rows, fail) {
         const tbody = document.getElementById('sesslist-active-tx-tbody');
         if (!tbody) return;
+        lastActiveTxFail = fail || null;
+        if (fail) {
+            lastActiveTxRows = [];
+            tbody.innerHTML = sessExtraFailRow(15, fail);
+            fitSessListScroll(tbody);
+            return;
+        }
         lastActiveTxRows = rows || [];
         rows = sortByDuration(lastActiveTxRows, sessionDurationSort.tx);
         if (!rows || rows.length === 0) {
@@ -2282,9 +2307,14 @@ let layoutHTML = "";
     }
 
     // E5(체크리스트 1-8, 2026-09-25): Remote 탭 - DB Link로 들어온(IN)/나가는(OUT) 세션.
-    function renderRemoteSessionsTab(rows) {
+    function renderRemoteSessionsTab(rows, fail) {
         const tbody = document.getElementById('sesslist-remote-tbody');
         if (!tbody) return;
+        if (fail) {
+            tbody.innerHTML = sessExtraFailRow(11, fail);
+            fitSessListScroll(tbody);
+            return;
+        }
         if (!rows || rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">DB Link로 연결된 세션이 없습니다.</td></tr>';
             fitSessListScroll(tbody);
@@ -2308,9 +2338,14 @@ let layoutHTML = "";
         fitSessListScroll(tbody);
     }
 
-    function renderParallelSessionsTab(rows) {
+    function renderParallelSessionsTab(rows, fail) {
         const tbody = document.getElementById('sesslist-parallel-tbody');
         if (!tbody) return;
+        if (fail) {
+            tbody.innerHTML = sessExtraFailRow(11, fail);
+            fitSessListScroll(tbody);
+            return;
+        }
         if (!rows || rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding: 30px;">병렬 세션이 없습니다.</td></tr>';
             fitSessListScroll(tbody);
@@ -2334,9 +2369,14 @@ let layoutHTML = "";
         fitSessListScroll(tbody);
     }
 
-    function renderPending2pcTab(rows) {
+    function renderPending2pcTab(rows, fail) {
         const tbody = document.getElementById('sesslist-2pc-tbody');
         if (!tbody) return;
+        if (fail) {
+            tbody.innerHTML = sessExtraFailRow(9, fail);
+            fitSessListScroll(tbody);
+            return;
+        }
         if (!rows || rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 30px;">보류 중인 2PC 트랜잭션이 없습니다.</td></tr>';
             fitSessListScroll(tbody);

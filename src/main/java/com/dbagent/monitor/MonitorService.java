@@ -73,6 +73,11 @@ public class MonitorService {
     @Value("${dbagent.monitor.screen-query-timeout-seconds:10}")
     private int screenQueryTimeoutSeconds;
 
+    // Current Session 서브탭(session_extra) 조회 실패가 이어질 때 같은 DB·탭·사유의 warn 로그를 다시 남기는 간격(분).
+    // 처음 실패·사유 변경·복구는 간격과 상관없이 바로 남긴다. 0이면 이어지는 실패는 다시 남기지 않는다(logExtraTab 참고).
+    @Value("${dbagent.monitor.session-extra-fail-log-minutes:10}")
+    private int sessionExtraFailLogMinutes;
+
     /** try-with-resources 헤더 안에서 Statement에 화면 조회 타임아웃을 건다(ResultSet을 같은 헤더에서 여는 곳용). */
     private <T extends Statement> T timed(T st) throws SQLException {
         st.setQueryTimeout(screenQueryTimeoutSeconds);
@@ -1042,10 +1047,10 @@ public class MonitorService {
     public Map<String, Object> getSessionExtra(TargetDbConfig target) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("active_transactions", queryActiveTransactions(conn, target));
-            result.put("parallel_sessions", queryParallelSessions(conn));
-            result.put("remote_sessions", queryRemoteSessions(conn, target));
-            result.put("pending_2pc", queryPending2pc(conn));
+            putExtraTab(result, target, "active_transactions", queryActiveTransactions(conn, target));
+            putExtraTab(result, target, "parallel_sessions", queryParallelSessions(conn));
+            putExtraTab(result, target, "remote_sessions", queryRemoteSessions(conn, target));
+            putExtraTab(result, target, "pending_2pc", queryPending2pc(conn));
             // 사용자 요청(2026-08-31): Trace 그래프 점(개별 세션)을 Lock Wait 여부로도 색칠하려면 몇 명인지
             // 뿐 아니라 어떤 SID인지가 필요 - 목록으로 바꾸고 카운트는 그 목록의 크기로 계산해 v$lock을
             // 두 번 조회하지 않는다.
@@ -1064,10 +1069,103 @@ public class MonitorService {
         }
     }
 
+    /**
+     * session_extra의 탭 하나 결과. 조회 실패(권한 없음·타임아웃 등)를 빈 목록으로 내리면 화면에 "활성 트랜잭션이 없습니다"처럼
+     * 정상인 것으로 보였다(2026-10-01 코드 점검 보고, "조회 실패를 없음·0으로 내리지 않는다" 원칙). 실패면 rows는 null이고
+     * 사유를 함께 든다 - 화면이 "권한 없음"(다시 해도 같음)과 "시간 초과·오류"(다음 갱신 때 재시도)를 다르게 안내한다.
+     */
+    private static final class ExtraRows {
+        final List<Map<String, Object>> rows;
+        final String failReason; // 성공이면 null. "timeout" | "privilege" | "error"
+        final String detail;
+
+        private ExtraRows(List<Map<String, Object>> rows, String failReason, String detail) {
+            this.rows = rows;
+            this.failReason = failReason;
+            this.detail = detail;
+        }
+
+        static ExtraRows ok(List<Map<String, Object>> rows) {
+            return new ExtraRows(rows, null, null);
+        }
+
+        static ExtraRows failed(SQLException e) {
+            int code = e.getErrorCode();
+            // ORA-01013: 쿼리 타임아웃으로 취소됨. ORA-00942/01031: 뷰 조회 권한 없음(DBA_2PC_PENDING 등).
+            String reason = (e instanceof java.sql.SQLTimeoutException || code == 1013) ? "timeout"
+                    : (code == 942 || code == 1031) ? "privilege" : "error";
+            return new ExtraRows(null, reason, e.toString());
+        }
+    }
+
+    /** 탭 결과를 응답에 넣는다: 목록(실패면 null) + {@code <키>_ok} + 실패 시 {@code <키>_fail}(사유). 한 탭이 실패해도 다른 탭은 그대로 내린다. */
+    private void putExtraTab(Map<String, Object> result, TargetDbConfig target, String key, ExtraRows r) {
+        result.put(key, r.rows);
+        result.put(key + "_ok", r.failReason == null);
+        if (r.failReason != null) {
+            result.put(key + "_fail", r.failReason);
+        }
+        logExtraTab(target.id(), key, r);
+    }
+
+    /** session_extra 탭 실패 로그 상태 - DB·탭마다 하나. 실패가 이어지는 동안만 들고 있고 복구되면 지운다. */
+    private static final class ExtraFailLog {
+        String reason;
+        long lastLoggedAt;
+        int suppressed; // 마지막 로그 뒤로 로그 없이 넘어간 실패 횟수
+    }
+
+    private final Map<String, ExtraFailLog> extraFailLogs = new ConcurrentHashMap<>();
+
+    /**
+     * 탭 조회 실패를 운영 로그에 남기되 넘치지 않게 한다(2026-10-01 오케스트레이터 결정: 같은 DB·탭·사유는 10분에 1번).
+     * Current Session은 수 초마다 폴링하므로 실패할 때마다 warn을 찍으면 화면 하나가 분당 수십 줄을 만든다 - 그렇다고 debug로만
+     * 두면 현장 로그에 사유가 안 남는다(code-inspector 지적).
+     * <ul>
+     *   <li>시간 초과·오류: 처음 났을 때와 사유가 바뀌었을 때 바로 warn, 이어지면 {@code sessionExtraFailLogMinutes}마다 1번(그사이 횟수 포함).</li>
+     *   <li>권한 없음: 다시 해도 같고 정상 운영에서도 흔해(DBA_2PC_PENDING 등) info로 한 번만.</li>
+     *   <li>복구: info 한 번.</li>
+     * </ul>
+     */
+    private void logExtraTab(String dbId, String key, ExtraRows r) {
+        String stateKey = dbId + "|" + key;
+        if (r.failReason == null) {
+            ExtraFailLog prev = extraFailLogs.remove(stateKey);
+            if (prev != null) {
+                log.info("session_extra {} recovered for {} (was {})", key, dbId, prev.reason);
+            }
+            return;
+        }
+        long now = System.currentTimeMillis();
+        extraFailLogs.compute(stateKey, (k, st) -> {
+            boolean privilege = "privilege".equals(r.failReason);
+            if (st == null || !r.failReason.equals(st.reason)) {
+                ExtraFailLog fresh = new ExtraFailLog();
+                fresh.reason = r.failReason;
+                fresh.lastLoggedAt = now;
+                if (privilege) {
+                    log.info("session_extra {} not available for {} (no privilege): {}", key, dbId, r.detail);
+                } else {
+                    log.warn("session_extra {} failed for {} ({}): {}", key, dbId, r.failReason, r.detail);
+                }
+                return fresh;
+            }
+            st.suppressed++;
+            if (!privilege && sessionExtraFailLogMinutes > 0
+                    && now - st.lastLoggedAt >= sessionExtraFailLogMinutes * 60000L) {
+                log.warn("session_extra {} still failing for {} ({}, {} more since last log): {}",
+                        key, dbId, r.failReason, st.suppressed, r.detail);
+                st.lastLoggedAt = now;
+                st.suppressed = 0;
+            }
+            return st;
+        });
+    }
+
     // Column set intentionally mirrors getSessions()'s Active Session query (same ash_summary wait-%
     // breakdown, same v$process/v$sql joins) - Active Transaction is meant to show the identical
     // columns, just scoped to sessions that hold a transaction (v$transaction) instead of status='ACTIVE'.
-    private List<Map<String, Object>> queryActiveTransactions(Connection conn, TargetDbConfig target) {
+    private ExtraRows queryActiveTransactions(Connection conn, TargetDbConfig target) {
         String query = "WITH ash_summary AS (" +
                 "SELECT session_id, session_serial#, " +
                 "ROUND(SUM(CASE WHEN session_state = 'ON CPU' THEN 1 ELSE 0 END) / COUNT(*) * 100) as cpu_pct, " +
@@ -1118,15 +1216,15 @@ public class MonitorService {
                 row.put("sql_text", rs.getString("sql_text"));
                 rows.add(row);
             }
-        } catch (SQLException ignored) {
-            // Best-effort - leave the tab empty rather than failing the whole session_extra call.
-            // 타임아웃(ORA-01013)이 결과 스트리밍 도중 나면 앞서 담은 행이 남아 불완전한 목록을 완전한 것처럼 내리므로 비운다(2026-10-01).
-            rows.clear();
+        } catch (SQLException e) {
+            // 이 탭만 실패로 내린다(session_extra 전체를 실패시키지 않음). 타임아웃(ORA-01013)이 결과 스트리밍 도중 나면 앞서 담은
+            // 행이 남아 불완전한 목록을 완전한 것처럼 내리게 되므로, 담던 목록은 버린다(2026-10-01).
+            return ExtraRows.failed(e);
         }
-        return rows;
+        return ExtraRows.ok(rows);
     }
 
-    private List<Map<String, Object>> queryParallelSessions(Connection conn) {
+    private ExtraRows queryParallelSessions(Connection conn) {
         String query = "SELECT px.sid, px.serial#, px.qcsid, px.qcserial#, px.server#, px.degree, px.req_degree, " +
                 "s.username, s.status, s.program, s.machine " +
                 "FROM v$px_session px JOIN v$session s ON s.sid = px.sid AND s.serial# = px.serial# " +
@@ -1148,11 +1246,10 @@ public class MonitorService {
                 row.put("machine", rs.getString("machine"));
                 rows.add(row);
             }
-        } catch (SQLException ignored) {
-            // 타임아웃(ORA-01013)이 결과 스트리밍 도중 나면 앞서 담은 행이 남아 불완전한 목록을 완전한 것처럼 내리므로 비운다(2026-10-01).
-            rows.clear();
+        } catch (SQLException e) {
+            return ExtraRows.failed(e); // 담던 목록은 버린다(queryActiveTransactions 주석 참고)
         }
-        return rows;
+        return ExtraRows.ok(rows);
     }
 
     /**
@@ -1165,7 +1262,7 @@ public class MonitorService {
      * </ul>
      * 로컬 XE 루프백 링크로 두 경우의 v$session 값을 실측해 기준을 정했다. v$만 사용(RAC 원칙).
      */
-    private List<Map<String, Object>> queryRemoteSessions(Connection conn, TargetDbConfig target) {
+    private ExtraRows queryRemoteSessions(Connection conn, TargetDbConfig target) {
         String query = "SELECT CASE WHEN s.event LIKE '%dblink%' THEN 'OUT' ELSE 'IN' END AS direction, " +
                 "(SELECT instance_name FROM v$instance) AS db_name, s.sid, s.serial#, s.status, s.username, " +
                 "s.machine, s.program, s.event, s.sql_id, s.last_call_et, s.osuser " +
@@ -1192,14 +1289,13 @@ public class MonitorService {
                 row.put("osuser", rs.getString("osuser"));
                 rows.add(row);
             }
-        } catch (SQLException ignored) {
-            // 타임아웃(ORA-01013)이 결과 스트리밍 도중 나면 앞서 담은 행이 남아 불완전한 목록을 완전한 것처럼 내리므로 비운다(2026-10-01).
-            rows.clear();
+        } catch (SQLException e) {
+            return ExtraRows.failed(e); // 담던 목록은 버린다(queryActiveTransactions 주석 참고)
         }
-        return rows;
+        return ExtraRows.ok(rows);
     }
 
-    private List<Map<String, Object>> queryPending2pc(Connection conn) {
+    private ExtraRows queryPending2pc(Connection conn) {
         String query = "SELECT local_tran_id, global_tran_id, state, mixed, tran_comment, host, " +
                 "TO_CHAR(fail_time, 'YYYY-MM-DD HH24:MI:SS') as fail_time, " +
                 "TO_CHAR(retry_time, 'YYYY-MM-DD HH24:MI:SS') as retry_time, os_user " +
@@ -1219,12 +1315,12 @@ public class MonitorService {
                 row.put("os_user", rs.getString("os_user"));
                 rows.add(row);
             }
-        } catch (SQLException ignored) {
-            // Most app accounts won't have SELECT on DBA_2PC_PENDING - empty tab rather than an error.
-            // 타임아웃(ORA-01013)이 결과 스트리밍 도중 나면 앞서 담은 행이 남아 불완전한 목록을 완전한 것처럼 내리므로 비운다(2026-10-01).
-            rows.clear();
+        } catch (SQLException e) {
+            // 모니터링 계정에 DBA_2PC_PENDING 조회 권한이 없는 경우가 많다(ORA-00942) - 예전엔 빈 탭("없습니다")으로 보였고,
+            // 이제 사유 "privilege"로 내려 화면이 "조회 권한 없음"으로 안내한다(2026-10-01).
+            return ExtraRows.failed(e);
         }
-        return rows;
+        return ExtraRows.ok(rows);
     }
 
     // 사용자 실측: 이 환경 일부 인스턴스에서 v$lock 스캔 자체가 49초까지 걸릴 수 있음(enqueue
@@ -1271,7 +1367,9 @@ public class MonitorService {
     // elapsed centiseconds for the bucket, not always exactly 6000, hence the range instead of equality;
     // 5900~6100 covers both the 60s bucket's normal jitter. Value is per-second, scaled to per-minute
     // since that's the more readable unit for a dashboard card.
-    private long queryTxnPerMinute(Connection conn) {
+    // 조회 실패·타임아웃이거나 60초 구간 행이 없으면 null(값 없음) - 예전엔 0을 내려 Fleet 카드에 "분당 트랜잭션 0"으로 보였다
+    // ("실패를 0으로 내리지 않는다" 원칙, 2026-10-01 코드 점검 보고). 화면은 null을 "—"로 표시한다.
+    private Long queryTxnPerMinute(Connection conn) {
         try (Statement st = timed(conn.createStatement());
              ResultSet rs = st.executeQuery(
                      "SELECT value FROM v$sysmetric WHERE metric_name = 'User Transaction Per Sec' " +
@@ -1279,9 +1377,10 @@ public class MonitorService {
             if (rs.next()) {
                 return Math.round(rs.getDouble(1) * 60);
             }
-        } catch (SQLException ignored) {
+        } catch (SQLException e) {
+            log.debug("txnPerMin lookup failed: {}", e.toString());
         }
-        return 0;
+        return null;
     }
 
     // ------------------------------------------------------------ tablespace
@@ -2074,6 +2173,7 @@ public class MonitorService {
     public void clearBusyState(String targetId) {
         busySince.remove(targetId);
         lockObjectNames.remove(targetId);
+        extraFailLogs.keySet().removeIf(k -> k.startsWith(targetId + "|")); // 설정이 바뀐 DB는 실패 로그 상태도 새로 시작
     }
 
     /**
@@ -2220,7 +2320,7 @@ public class MonitorService {
                 if (rs.next()) activeSessions = rs.getInt(1);
             }
 
-            long txnPerMin = queryTxnPerMinute(conn);
+            Long txnPerMin = queryTxnPerMinute(conn); // 조회 실패면 null(카드에 "—")
             double uptimePct = Math.min(100.0, Math.round((uptimeDays / UPTIME_FULL_DAYS) * 10000.0) / 100.0);
 
             // v1 threshold: CPU high or memory high reads as "경고", rolled up into one status instead

@@ -658,11 +658,15 @@
                 // CPU isn't repeated here - it's already shown as the mini-bar below (사용자 피드백:
                 // "아래 그래프에 CPU/MEM 있으니 CPU 문구 빼도 될거 같다"), so this row only carries
                 // the two stats that have no other representation on the card.
+                // 분당 트랜잭션은 서버가 조회 실패 시 null을 내린다(2026-10-01, 예전엔 0) - "—"로 표시(표 보기와 같게).
+                const txnCell = d.txnPerMin != null
+                    ? `<div class="stat-value">${d.txnPerMin}</div>`
+                    : `<div class="stat-value muted" title="조회 실패 - 다음 갱신 때 다시 시도합니다">—</div>`;
                 const statCells = d.status === 'down'
                     ? `<div class="stat-cell"><div class="stat-label">Active Session</div><div class="stat-value muted">—</div></div>
                        <div class="stat-cell"><div class="stat-label">분당 트랜잭션</div><div class="stat-value muted">—</div></div>`
                     : `<div class="stat-cell"><div class="stat-label">Active Session</div><div class="stat-value">${d.activeSession}</div></div>
-                       <div class="stat-cell"><div class="stat-label">분당 트랜잭션</div><div class="stat-value">${d.txnPerMin}</div></div>`;
+                       <div class="stat-cell"><div class="stat-label">분당 트랜잭션</div>${txnCell}</div>`;
                 // Card shows a short generic label, not the full ORA-/tnsnames detail (사용자 피드백:
                 // 카드에 너무 상세한 에러 문구가 떠 있음) - the full backend message is still there as
                 // a native tooltip (title attr) for anyone who hovers to check.
