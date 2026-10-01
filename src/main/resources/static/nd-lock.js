@@ -445,12 +445,16 @@
             logLine = `<span class="nd-crit-t">${hms(now)} 장애 처리 실패 · ${esc((body && body.error) || ('HTTP ' + (res ? res.status : '-')))}</span>`;
         } else {
             const ok = body.results.filter(r => r.result === 'SUCCESS');
+            const marked = ok.filter(r => r.marked).length; // ORA-00031 - 작업 정리 후 끊김(2026-10-01)
             const skipped = body.results.filter(r => r.result === 'SKIPPED').length;
-            const failed = body.results.filter(r => r.result === 'FAILED').length;
+            const failedRows = body.results.filter(r => r.result === 'FAILED');
+            const failed = failedRows.length;
             logLine = `${hms(body.ts || now)} 장애 처리 완료 · TM Lock Holder ${ok.length}개 세션 KILL` +
                 (ok.length ? ` (SID ${ok.map(r => r.sid).join(', ')})` : '') +
+                (marked ? ` · ${marked}개는 종료 표시(작업 정리 후 끊김)` : '') +
                 (skipped ? ` · 건너뜀 ${skipped}개(이미 종료)` : '') +
-                (failed ? ` · <span class="nd-crit-t">실패 ${failed}개</span>` : '') +
+                (failed ? ` · <span class="nd-crit-t">실패 ${failed}개` +
+                    (failedRows[0].message ? ` - ${esc(failedRows[0].message)}` : '') + '</span>' : '') +
                 (body.auditWriteFailed ? ' · <span class="nd-crit-t">감사 기록 저장 실패 — 관리자에게 알리세요</span>' : '');
         }
         closePanel();

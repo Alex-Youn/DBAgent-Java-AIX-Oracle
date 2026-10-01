@@ -2062,3 +2062,59 @@ body.app-shell { overflow-y: hidden; }
 }
 @keyframes nd-inc-pulse-in { 0%, 100% { box-shadow: inset 0 0 0 1px var(--nd-crit); } 50% { box-shadow: inset 0 0 0 3px rgba(208, 59, 59, 0.6); } }
 @media (prefers-reduced-motion: reduce) { #dashboard-nd-view #nd-lock-card.nd-incident { animation: none; } }
+
+/* ============================================================================
+   세션 KILL 확인·결과 창(2026-10-01, 폐쇄망 피드백) - 예전 브라우저 기본 창(confirm/alert) 대신 앱 안 창.
+   app.js dbagentKillModal/dbagentConfirmKill/dbagentShowKillResult. body 바로 아래에 붙어 .app-container zoom 밖이다.
+   ============================================================================ */
+.kill-dlg {
+    background: var(--bg-panel);
+    color: var(--text-main);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    width: min(760px, calc(100vw - 48px));
+    max-height: calc(100vh - 80px);
+    display: flex;
+    flex-direction: column;
+    font-size: 0.9rem;
+}
+.kill-dlg-head { padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.kill-dlg-head h3 { margin: 0; font-size: 1.05rem; font-weight: 600; }
+.kill-dlg-body { padding: 14px 20px; overflow: auto; min-height: 0; }
+.kill-dlg-foot { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+.kill-dlg-btn {
+    padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-card);
+    color: var(--text-main); cursor: pointer; font-size: 0.88rem;
+}
+.kill-dlg-btn:hover { border-color: var(--text-secondary); }
+.kill-dlg-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.kill-dlg-btn.danger { background: var(--danger); border-color: transparent; color: #fff; font-weight: 600; }
+.kill-dlg-btn.primary { background: var(--primary); border-color: transparent; color: #fff; }
+.kill-dlg-lead { margin: 0 0 10px; color: var(--text-secondary); }
+.kill-dlg-note { margin: 10px 0 0; color: var(--text-secondary); font-size: 0.84rem; line-height: 1.5; }
+.kill-dlg-note.fail { color: var(--danger); }
+.kill-dlg-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+.kill-dlg-table { margin-top: 10px; border: 1px solid var(--border); border-radius: 6px; overflow: auto; max-height: 50vh; }
+.kill-dlg-table table { width: 100%; border-collapse: collapse; }
+.kill-dlg-table th {
+    position: sticky; top: 0; background: var(--bg-panel); text-align: left; font-weight: 600; color: var(--text-secondary);
+    padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.kill-dlg-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.kill-dlg-table tr:last-child td { border-bottom: 0; }
+.kill-dlg-table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kill-badge {
+    display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 0.8rem; font-weight: 600; white-space: nowrap;
+    border: 1px solid transparent;
+}
+.kill-badge.ok { color: var(--success); border-color: var(--success); }
+.kill-badge.marked { color: var(--warning); border-color: var(--warning); }
+.kill-badge.skip { color: var(--text-secondary); border-color: var(--border); }
+.kill-badge.fail { color: var(--danger); border-color: var(--danger); }
+.kill-dlg-detail { margin-top: 4px; }
+.kill-dlg-detail summary { cursor: pointer; color: var(--primary); font-size: 0.8rem; }
+.kill-dlg-detail pre {
+    margin: 4px 0 0; padding: 6px 8px; background: var(--bg-main); border-radius: 4px; font-size: 0.78rem;
+    white-space: pre-wrap; word-break: break-all; color: var(--text-secondary);
+}

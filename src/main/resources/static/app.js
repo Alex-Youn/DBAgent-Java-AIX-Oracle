@@ -104,16 +104,108 @@ function dbagentPopupFeatures(width, height) {
     return `width=${width || 1100},height=${height || 680},resizable=yes,scrollbars=yes`;
 }
 
-// /api/kill_session 결과 요약(2026-09-26) - 서버가 실행 직전 재조회해서 사라진/SERIAL# 바뀐/USER 아닌 세션은
-// skipped로 돌려주므로 "실패"와 따로 센다. 건너뜀·실패 사유는 세션별로 덧붙인다.
-function dbagentKillSummary(title, results) {
+// KILL 확인·결과 창(2026-10-01, 폐쇄망 피드백) - 예전엔 브라우저 기본 창(confirm/alert, 흰 창)에 줄바꿈 글자로만 적어
+// ORA 원문과 드라이버가 붙인 문서 URL까지 그대로 보여 지저분했다. 앱 안 창(어두운 테마)에 표로 보여 주고, ORA 원문은 [상세]에서만 펼친다.
+// /api/kill_session 결과 status: killed(성공) / marked(종료 표시 - ORA-00031, 작업 정리 후 끊김) / skipped(건너뜀) / error(실패).
+// 서버가 실행 직전 재조회해서 사라진/SERIAL# 바뀐/USER 아닌 세션은 skipped로 돌려주므로 "실패"와 따로 센다(2026-09-26).
+function dbagentEsc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+/** 앱 안 창 하나 - 누른 버튼의 value로 끝난다(Esc·바깥 클릭은 null). body 바로 아래에 붙여 .app-container zoom 영향을 받지 않는다. */
+function dbagentKillModal(title, bodyHtml, buttons) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay kill-dlg-overlay';
+        overlay.innerHTML = `<div class="kill-dlg" role="dialog" aria-modal="true" aria-label="${dbagentEsc(title)}">` +
+            `<div class="kill-dlg-head"><h3>${dbagentEsc(title)}</h3></div>` +
+            `<div class="kill-dlg-body">${bodyHtml}</div>` +
+            `<div class="kill-dlg-foot">${buttons.map((b, i) => `<button type="button" class="kill-dlg-btn ${b.cls || ''}" data-i="${i}">${dbagentEsc(b.label)}</button>`).join('')}</div>` +
+            `</div>`;
+        const opener = document.activeElement; // 닫힌 뒤 초점을 되돌린다
+        // Esc는 이 창만 닫는다 - 뒤의 서랍(nd-top)·다른 창의 Esc 처리까지 같이 타지 않게 전파를 끊는다.
+        const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); } };
+        function close(v) {
+            document.removeEventListener('keydown', onKey, true);
+            overlay.remove();
+            if (opener && typeof opener.focus === 'function' && document.contains(opener)) opener.focus();
+            resolve(v);
+        }
+        overlay.addEventListener('click', e => {
+            if (e.target === overlay) { close(null); return; }
+            const btn = e.target.closest('.kill-dlg-foot button');
+            if (btn) close(buttons[+btn.dataset.i].value);
+        });
+        document.addEventListener('keydown', onKey, true);
+        overlay.style.display = 'flex';
+        document.body.appendChild(overlay);
+        const first = overlay.querySelector('.kill-dlg-foot button'); // 첫 버튼(취소/닫기)에 초점 - Enter로 바로 KILL되지 않게
+        if (first) first.focus();
+    });
+}
+
+/** 체크박스가 있는 행에서 SID·SERIAL#·사용자·프로그램을 읽는다(머리글 이름으로 열을 찾음 - Current Session·Lock Tree 공통). */
+function dbagentKillRowInfo(cb) {
+    const info = { sid: cb.getAttribute('data-sid'), serial: cb.getAttribute('data-serial') };
+    const tr = cb.closest('tr');
+    const table = tr && tr.closest('table');
+    if (!table) return info;
+    const heads = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim().toLowerCase());
+    const cellAt = pred => {
+        const i = heads.findIndex(pred);
+        return i >= 0 && tr.cells[i] ? tr.cells[i].textContent.trim() : '';
+    };
+    info.user = cellAt(h => h.includes('oracle user') || h === 'username');
+    info.program = cellAt(h => h.includes('program'));
+    return info;
+}
+
+/** KILL 전 확인 - 대상 목록을 보여 주고 true/false. */
+function dbagentConfirmKill(title, rows, lead) {
+    // 버튼을 연타하면 확인 창이 겹쳐 열려 KILL 요청이 두 번 나갈 수 있다 - 이미 떠 있으면 취소로 본다.
+    if (document.querySelector('.kill-dlg-overlay')) return Promise.resolve(false);
+    const body = `<p class="kill-dlg-lead">${dbagentEsc(lead || `아래 ${rows.length}개 세션을 즉시 KILL합니다. 진행 중인 트랜잭션은 롤백됩니다.`)}</p>` +
+        '<div class="kill-dlg-table"><table><thead><tr><th>SID</th><th>SERIAL#</th><th>사용자</th><th>프로그램</th></tr></thead><tbody>' +
+        rows.map(r => `<tr><td class="num">${dbagentEsc(r.sid)}</td><td class="num">${dbagentEsc(r.serial)}</td>` +
+            `<td>${dbagentEsc(r.user || '-')}</td><td>${dbagentEsc(r.program || '-')}</td></tr>`).join('') +
+        '</tbody></table></div>';
+    return dbagentKillModal(title, body, [
+        { label: '취소', value: false },
+        { label: `KILL 실행 (${rows.length}건)`, cls: 'danger', value: true }
+    ]).then(v => v === true);
+}
+
+const DBAGENT_KILL_STATUS = {
+    killed: { label: '성공', cls: 'ok' },
+    marked: { label: '종료 표시', cls: 'marked' },
+    skipped: { label: '건너뜀', cls: 'skip' },
+    error: { label: '실패', cls: 'fail' }
+};
+
+/** KILL 결과 - 건수 요약 + 세션별 결과 배지·사유, ORA 원문은 [상세]. */
+function dbagentShowKillResult(title, results) {
     const list = results || [];
-    const n = (st) => list.filter(r => r.status === st).length;
-    let msg = `${title}:\n성공: ${n('killed')}건\n건너뜀: ${n('skipped')}건\n실패: ${n('error')}건`;
-    const notes = list.filter(r => r.status !== 'killed' && r.message).map(r => `- SID ${r.sid}: ${r.message}`);
-    if (notes.length) msg += '\n\n' + notes.slice(0, 10).join('\n') + (notes.length > 10 ? `\n외 ${notes.length - 10}건` : '');
-    if (list.some(r => r.auditWriteFailed)) msg += '\n\n※ 일부 감사 기록 저장에 실패했습니다(서버 로그 확인).';
-    return msg;
+    const statusOf = r => DBAGENT_KILL_STATUS[r.status] ? r.status : 'error';
+    const n = st => list.filter(r => statusOf(r) === st).length;
+    let body = '<div class="kill-dlg-summary">' +
+        Object.keys(DBAGENT_KILL_STATUS).map(st => `<span class="kill-badge ${DBAGENT_KILL_STATUS[st].cls}">${DBAGENT_KILL_STATUS[st].label} ${n(st)}</span>`).join('') +
+        '</div>';
+    if (n('marked')) {
+        body += '<p class="kill-dlg-note">종료 표시: Oracle이 KILL을 받아들였고, 세션이 하던 작업(PL/SQL·롤백 등)을 정리하는 대로 끊깁니다. ' +
+            '세션 목록에 잠시 남아 있을 수 있습니다.</p>';
+    }
+    body += '<div class="kill-dlg-table"><table><thead><tr><th>SID</th><th>SERIAL#</th><th>결과</th><th>사유</th></tr></thead><tbody>' +
+        list.map(r => {
+            const st = DBAGENT_KILL_STATUS[statusOf(r)];
+            const detail = r.detail ? `<details class="kill-dlg-detail"><summary>상세</summary><pre>${dbagentEsc(r.detail)}</pre></details>` : '';
+            return `<tr><td class="num">${dbagentEsc(r.sid)}</td><td class="num">${dbagentEsc(r.serial)}</td>` +
+                `<td><span class="kill-badge ${st.cls}">${st.label}</span></td><td>${dbagentEsc(r.message || '')}${detail}</td></tr>`;
+        }).join('') +
+        '</tbody></table></div>';
+    if (list.some(r => r.auditWriteFailed)) {
+        body += '<p class="kill-dlg-note fail">일부 감사 기록 저장에 실패했습니다(서버 로그 확인).</p>';
+    }
+    return dbagentKillModal(title, body, [{ label: '닫기', cls: 'primary', value: true }]);
 }
 
 // 메뉴 화면이 지금 보이는지(2026-09-26 오케스트레이터 결정) - 보이지 않는 메뉴의 조회를 건너뛴다. 예전엔 대시보드만
@@ -1798,10 +1890,10 @@ let layoutHTML = "";
                 return;
             }
             
-            if (!confirm(`선택한 ${checkboxes.length}개의 세션을 Kill 하시겠습니까?`)) {
+            if (!await dbagentConfirmKill('세션 KILL', Array.from(checkboxes).map(dbagentKillRowInfo))) {
                 return;
             }
-            
+
             const sessions = Array.from(checkboxes).map(cb => ({
                 sid: cb.getAttribute('data-sid'),
                 serial: cb.getAttribute('data-serial')
@@ -1817,7 +1909,7 @@ let layoutHTML = "";
                 const data = await response.json();
                 if (data.error) throw new Error(data.error);
                 
-                alert(dbagentKillSummary('처리 결과', data.results));
+                await dbagentShowKillResult('세션 KILL 결과', data.results);
                 fetchTMLocks(); // refresh
             } catch (error) {
                 alert('세션 Kill 처리 중 오류가 발생했습니다: ' + error.message);
@@ -3881,10 +3973,10 @@ let layoutHTML = "";
             return;
         }
         
-        if (!confirm(`선택한 ${checkboxes.length}개의 세션을 Kill 하시겠습니까?`)) {
+        if (!await dbagentConfirmKill('세션 KILL', Array.from(checkboxes).map(dbagentKillRowInfo))) {
             return;
         }
-        
+
         const sessionsToKill = Array.from(checkboxes).map(cb => ({
             sid: cb.getAttribute('data-sid'),
             serial: cb.getAttribute('data-serial')
@@ -3905,7 +3997,7 @@ let layoutHTML = "";
                 // PL/SQL 호출 중이어서 ORA-00031(session marked for kill)이 나도 사용자에게는 성공으로
                 // 보였음. TM Lock 탭(tmlockKillBtn)/장애조치 버튼(dash-incident-action-btn)과 동일하게
                 // 성공/실패 건수를 세어서 보여주도록 통일.
-                alert(dbagentKillSummary('처리 결과', data.results));
+                await dbagentShowKillResult('세션 KILL 결과', data.results);
                 if (checkboxClass === 'session-checkbox') {
                     const btn = document.getElementById('session-refresh-btn');
                     if (btn) btn.click();
@@ -3943,7 +4035,11 @@ let layoutHTML = "";
                 return;
             }
 
-            if (!confirm(`Blocking 중인 TM Lock Holder 세션 ${holders.length}건을 즉시 Kill 하시겠습니까?`)) {
+            const holderRows = tmData
+                .filter(h => h.sid != null && h.serial != null && h.lock_type === 'TM')
+                .map(h => ({ sid: h.sid, serial: h.serial, user: h.username || h.user_name, program: h.program }));
+            if (!await dbagentConfirmKill('장애조치 - TM Lock Holder KILL', holderRows,
+                    `Blocking 중인 TM Lock Holder 세션 ${holders.length}건을 즉시 KILL합니다.`)) {
                 return;
             }
 
@@ -3958,7 +4054,7 @@ let layoutHTML = "";
                 return;
             }
 
-            alert(dbagentKillSummary('장애조치 완료', data.results));
+            await dbagentShowKillResult('장애조치 결과', data.results);
             fetchDashboard();
         } catch (e) {
             alert(`장애조치 처리 중 오류가 발생했습니다: ${e.message}`);

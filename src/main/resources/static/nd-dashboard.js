@@ -260,6 +260,10 @@
     // 카드 안 "그래프 말고 나머지" 높이를 매번 재서(고정 숫자 아님 - 장애 알림 바·통계 줄바꿈 반영) 두 그래프 모두
     // 150px 이상이 되게 최소 높이를 올린다. 1920×1080 100%(압축 상태 Lock 그래프 약 156px)에는 영향 없고, 확대했을 때만 스크롤.
     const CHART_MIN = 180, CHART_MIN_INCIDENT = 270, CHART_MAX = Infinity, COMPACT_HYST = 8, PLOT_MIN = 150;
+    // 압축을 푸는(Top 5행·점검 알림 전체) 기준 - 풀어도 차트 행이 이 높이 이상 남을 때만 푼다(2026-10-01 오케스트레이터 결정).
+    // 예전엔 "차트가 최소(180)만 넘으면 푼다"라 브라우저 90%(1920×1080에서 CSS 화면 약 2133×1059)에서 압축이 풀려 Top이 127px
+    // 커지고 차트는 100%(334)보다 오히려 작아졌다(324, 화면 기준 약 13% 축소). 생긴 공간은 차트에 먼저 주고, 큰 화면(2560×1440 등)만 5행.
+    const CHART_EXPAND_MIN = 360;
     const PLOT_IDS = ['nd-aas-plot', 'nd-lk-plot'];
     function plotOverhead() {
         let over = 0;
@@ -293,7 +297,7 @@
         const wasCompact = el.classList.contains('nd-compact');
         el.classList.remove('nd-compact');
         const normal = free();
-        const compact = normal < min + (wasCompact ? COMPACT_HYST : 0);
+        const compact = normal < Math.max(min, CHART_EXPAND_MIN) + (wasCompact ? COMPACT_HYST : 0);
         el.classList.toggle('nd-compact', compact);
         const h = Math.max(min, Math.min(CHART_MAX, compact ? free() : normal));
         if (row.style.height !== h + 'px') { row.style.height = h + 'px'; row.style.flexBasis = h + 'px'; }

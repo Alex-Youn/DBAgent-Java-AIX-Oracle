@@ -746,8 +746,13 @@ public class LockRealtimeService {
                         st.execute("ALTER SYSTEM KILL SESSION '" + sid + "," + serial + "' IMMEDIATE");
                         result = "SUCCESS";
                     } catch (SQLException e) {
-                        result = "FAILED";
+                        // ORA-00031(종료 표시)은 요청이 받아들여진 것이라 성공 + marked, ORA-00030(이미 없음)은 건너뜀으로 센다
+                        // (2026-10-01 - 예전엔 둘 다 실패였다. 분류 기준은 기존 KILL과 같이 MonitorService에 둔다).
                         err = e.getMessage();
+                        String status = MonitorService.killErrorStatus(e);
+                        result = "marked".equals(status) ? "SUCCESS" : "skipped".equals(status) ? "SKIPPED" : "FAILED";
+                        if ("marked".equals(status)) r.put("marked", true);
+                        r.put("message", MonitorService.killErrorMessage(e));
                     }
                 }
                 r.put("result", result);

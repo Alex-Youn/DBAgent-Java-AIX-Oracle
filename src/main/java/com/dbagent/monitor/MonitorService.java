@@ -1471,6 +1471,7 @@ public class MonitorService {
                     }
                     String status;
                     String message = null;
+                    String detail = null; // ORA 원문(화면 [상세]·감사 기록용)
                     if (type == null) {
                         status = "skipped";
                         message = "이미 종료됐거나 SERIAL#이 바뀐 세션입니다.";
@@ -1485,15 +1486,20 @@ public class MonitorService {
                             st.execute("ALTER SYSTEM KILL SESSION '" + sid + "," + serial + ",@" + instId + "' IMMEDIATE");
                             status = "killed";
                         } catch (SQLException e) {
-                            status = "error";
-                            message = e.getMessage();
+                            // ORA 코드별 분류(2026-10-01, 폐쇄망 피드백) - 예전엔 모든 예외를 실패로 보내, 실행 중 세션의
+                            // ORA-00031(종료 표시 - 정리가 끝나면 끊김, 사실상 성공)이 "실패 1건"과 ORA 원문·문서 URL로 보였다.
+                            detail = e.getMessage();
+                            status = killErrorStatus(e);
+                            message = killErrorMessage(e);
                         }
                     }
                     r.put("status", status);
                     if (message != null) r.put("message", message);
-                    String auditResult = "killed".equals(status) ? "SUCCESS" : "skipped".equals(status) ? "SKIPPED" : "FAILED";
+                    if (detail != null) r.put("detail", detail);
+                    String auditResult = "killed".equals(status) || "marked".equals(status) ? "SUCCESS"
+                            : "skipped".equals(status) ? "SKIPPED" : "FAILED";
                     if (!saveKillAudit(target, now, executedBy, sid, serial, instanceName, username, program, machine,
-                            lastCallEt, reason, auditResult, message)) {
+                            lastCallEt, reason, auditResult, detail != null ? detail : message)) {
                         r.put("auditWriteFailed", true);
                     }
                     results.add(r);
@@ -1501,6 +1507,34 @@ public class MonitorService {
             }
         }
         return results;
+    }
+
+    // ALTER SYSTEM KILL SESSION 예외 분류(2026-10-01) - 기존 KILL(kill_session)과 새 대시보드 장애 처리(LockRealtimeService)가 같이 쓴다.
+    /** ORA-00031 session marked for kill: 실행 중 작업(PL/SQL·롤백·원격 호출 등)을 정리한 뒤 끊긴다 - 요청은 받아들여진 것. */
+    static final int ORA_SESSION_MARKED = 31;
+    /** ORA-00030 user session ID does not exist: 사전 확인과 KILL 사이에 세션이 이미 끝났다. */
+    static final int ORA_SESSION_GONE = 30;
+
+    /** kill_session 응답 status: marked(종료 표시) / skipped(이미 종료) / error. */
+    static String killErrorStatus(SQLException e) {
+        if (e.getErrorCode() == ORA_SESSION_MARKED) return "marked";
+        if (e.getErrorCode() == ORA_SESSION_GONE) return "skipped";
+        return "error";
+    }
+
+    /** 화면에 보일 한국어 한 줄 - ORA 원문은 따로(detail) 내려 [상세]에서만 펼친다. */
+    static String killErrorMessage(SQLException e) {
+        if (e.getErrorCode() == ORA_SESSION_MARKED) return "진행 중인 작업을 정리한 뒤 종료됩니다(ORA-00031).";
+        if (e.getErrorCode() == ORA_SESSION_GONE) return "이미 종료된 세션입니다(ORA-00030).";
+        return "KILL 실패: " + oraFirstLine(e);
+    }
+
+    /** ORA 메시지 첫 줄 - 드라이버가 붙이는 줄바꿈과 문서 URL(https://docs.oracle.com/error-help/...)을 뗀다. */
+    static String oraFirstLine(SQLException e) {
+        String m = e.getMessage();
+        if (m == null || m.trim().isEmpty()) return "ORA-" + String.format("%05d", e.getErrorCode());
+        int nl = m.indexOf('\n');
+        return (nl >= 0 ? m.substring(0, nl) : m).trim();
     }
 
     /** 감사 기록 - 대상 DB와 감사 저장소가 달라 원자성이 없으므로 한 번 재시도하고, 실패하면 false(응답에 표시). */

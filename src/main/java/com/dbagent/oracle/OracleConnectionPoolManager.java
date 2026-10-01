@@ -190,6 +190,8 @@ public class OracleConnectionPoolManager {
         cfg.setMinimumIdle(target.poolMinIdle() != null ? target.poolMinIdle() : defaultPoolMinIdle);
         cfg.setMaximumPoolSize(target.poolMaxSize() != null ? target.poolMaxSize() : defaultPoolMaxSize);
         cfg.setPoolName("oracle-" + target.id());
+        // KILL 대상 세션의 ORA-00031(SQLSTATE 08006)로 우리 커넥션을 닫지 않게(2026-10-01, OracleSqlExceptionOverride 참고)
+        cfg.setExceptionOverrideClassName(OracleSqlExceptionOverride.class.getName());
         // Hikari's own wait-for-connection bound, used by every getConnection() call.
         cfg.setConnectionTimeout(connectTimeoutMs);
         // Negative = do NOT synchronously probe the DB (and retry with an internal ~1s backoff) while
