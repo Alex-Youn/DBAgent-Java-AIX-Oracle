@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DB InsightFlow 탭 아이콘: 사이드바 로고(lucide activity)와 같은 모양, 같은 색(style.css의 primary #3987e5).
+     index.html이 예전부터 이 파일을 가리켰는데 파일이 없어 404였다(2026-10-01 QA 지적, 오케스트레이터 지시로 추가).
+     밝은 탭과 어두운 탭 어디서나 보이게 어두운 둥근 사각 바탕(style.css의 bg-panel #1a1a19)을 깔았다.
+     주의: XML 주석 안에는 하이픈 두 개를 연달아 쓸 수 없다(쓰면 파일 전체가 깨진 이미지로 나온다). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#1a1a19"/>
+  <path transform="translate(4 4)" fill="none" stroke="#3987e5" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+        d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>
+</svg>
