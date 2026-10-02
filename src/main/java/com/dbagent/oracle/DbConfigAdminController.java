@@ -150,7 +150,8 @@ public class DbConfigAdminController {
                     }
                 }
             }
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
+            // 풀 생성 실패 등 RuntimeException이 500으로 새면 화면이 JSON 파싱에 실패해 원인을 못 보여 주므로 같이 받는다.
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("success", false);
             body.put("registered_cdb", registeredCdb);
