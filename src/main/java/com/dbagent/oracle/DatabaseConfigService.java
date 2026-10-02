@@ -80,13 +80,17 @@ public class DatabaseConfigService {
                 // (IV 12B + 태그 16B의 base64 + ENC(v1:k1:) 헤더). 기존 4000이면 계정 수가 많은
                 // 인스턴스에서 넘칠 수 있어 여유를 둔다. main(SQLite TEXT)은 길이 제한이 없어 해당 없음.
                 "accounts VARCHAR(8000)," +
-                "expected_instance_name VARCHAR(200)" +
+                "expected_instance_name VARCHAR(200)," +
+                // 1 = CDB 구조의 PDB에 접속(접속 방식은 service로 고정), 0 = Non-CDB(기존 등록 전부) - 2026-10-02
+                "oracle_cdb INT DEFAULT 0 NOT NULL" +
                 ")");
         // A dbconfig.mv.db created before 5단계 (expected_instance_name didn't exist yet) needs this
         // column added on top - H2 supports ADD COLUMN IF NOT EXISTS natively, unlike SQLite.
         jdbc.execute("ALTER TABLE db_instances ADD COLUMN IF NOT EXISTS expected_instance_name VARCHAR(200)");
         // 6단계 이전에 만들어진 dbconfig.mv.db는 accounts가 아직 VARCHAR(4000)이므로 같이 넓힌다.
         jdbc.execute("ALTER TABLE db_instances ALTER COLUMN accounts VARCHAR(8000)");
+        // CDB 방식 등록 구분(2026-10-02, 오케스트레이터 요청) - 기존 행은 전부 Non-CDB(0)로 붙는다.
+        jdbc.execute("ALTER TABLE db_instances ADD COLUMN IF NOT EXISTS oracle_cdb INT DEFAULT 0 NOT NULL");
         jdbc.execute("CREATE TABLE IF NOT EXISTS db_config_meta (" +
                 "id INTEGER PRIMARY KEY CHECK (id = 1)," +
                 "migrated_from_json INTEGER NOT NULL DEFAULT 0" +
@@ -554,6 +558,7 @@ public class DatabaseConfigService {
         if (!Strings.isBlank(expectedInstanceName)) {
             safe.put("expected_instance_name", expectedInstanceName);
         }
+        safe.put("oracle_cdb", isCdbFlag(row.get("oracle_cdb")));
         String sessionThresholdsJson = (String) row.get("session_thresholds");
         if (sessionThresholdsJson != null) {
             try {
@@ -604,7 +609,7 @@ public class DatabaseConfigService {
     public Map<String, Object> createInstance(String groupName, String id, String name, String dbType, String host,
             int port, String sid, String user, String password, String connectMode, String expectedInstanceName,
             Integer poolMinIdle, Integer poolMaxSize, List<Map<String, String>> accounts,
-            List<Integer> sessionThresholds) {
+            List<Integer> sessionThresholds, Boolean oracleCdb) {
         if (Strings.isBlank(id)) {
             return Maps.of("success", false, "message", "ID는 필수입니다.");
         }
@@ -619,6 +624,8 @@ public class DatabaseConfigService {
         if ("oracle".equals(resolvedDbType) && Strings.isBlank(host)) {
             return Maps.of("success", false, "message", "Host는 필수입니다.");
         }
+        boolean cdb = "oracle".equals(resolvedDbType) && Boolean.TRUE.equals(oracleCdb);
+        String resolvedConnectMode = resolveConnectMode(connectMode, cdb);
         synchronized (writeLock) {
             List<Map<String, Object>> existing = jdbc.queryForList("SELECT id FROM db_instances WHERE id = ?", id);
             if (!existing.isEmpty()) {
@@ -640,14 +647,15 @@ public class DatabaseConfigService {
             jdbc.update("INSERT INTO db_instances " +
                             "(id, group_name, group_order, instance_order, name, db_type, host, port, sid, db_user, " +
                             "password, connect_mode, pool_min_idle, pool_max_size, session_thresholds, accounts, " +
-                            "expected_instance_name) " +
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            "expected_instance_name, oracle_cdb) " +
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     id, groupName, groupOrder, instanceOrder,
                     name == null ? "" : name, resolvedDbType,
                     host == null ? "" : host, port, sid == null ? "" : sid, user == null ? "" : user,
-                    encodePassword(password), connectMode == null ? "" : connectMode, poolMinIdle, poolMaxSize,
+                    encodePassword(password), resolvedConnectMode, poolMinIdle, poolMaxSize,
                     buildSessionThresholdsJson(sessionThresholds), buildAccountsJson(accounts, null),
-                    Strings.isBlank(expectedInstanceName) ? null : expectedInstanceName);
+                    Strings.isBlank(expectedInstanceName) ? null : expectedInstanceName,
+                    cdb ? 1 : 0);
             return Maps.of("success", true, "message", "DB가 추가되었습니다.");
         }
     }
@@ -656,11 +664,13 @@ public class DatabaseConfigService {
     public Map<String, Object> updateInstance(String id, String name, String dbType, String host, int port,
             String sid, String user, String password, String connectMode, String expectedInstanceName,
             Integer poolMinIdle, Integer poolMaxSize, List<Map<String, String>> accounts,
-            List<Integer> sessionThresholds) {
+            List<Integer> sessionThresholds, Boolean oracleCdb) {
         String resolvedDbType = Strings.isBlank(dbType) ? "oracle" : dbType;
         if ("oracle".equals(resolvedDbType) && Strings.isBlank(host)) {
             return Maps.of("success", false, "message", "Host는 필수입니다.");
         }
+        boolean cdb = "oracle".equals(resolvedDbType) && Boolean.TRUE.equals(oracleCdb);
+        String resolvedConnectMode = resolveConnectMode(connectMode, cdb);
         synchronized (writeLock) {
             List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM db_instances WHERE id = ?", id);
             if (rows.isEmpty()) {
@@ -683,15 +693,34 @@ public class DatabaseConfigService {
                     ? encodePassword(password) : (String) existing.get("password");
             jdbc.update("UPDATE db_instances SET name=?, db_type=?, host=?, port=?, sid=?, db_user=?, password=?, " +
                             "connect_mode=?, pool_min_idle=?, pool_max_size=?, session_thresholds=?, accounts=?, " +
-                            "expected_instance_name=? WHERE id=?",
+                            "expected_instance_name=?, oracle_cdb=? WHERE id=?",
                     name == null ? "" : name, resolvedDbType,
                     host == null ? "" : host, port, sid == null ? "" : sid, user == null ? "" : user,
-                    newPassword, connectMode == null ? "" : connectMode, poolMinIdle, poolMaxSize,
+                    newPassword, resolvedConnectMode, poolMinIdle, poolMaxSize,
                     buildSessionThresholdsJson(sessionThresholds), buildAccountsJson(accounts, existingAccountsJson),
                     Strings.isBlank(expectedInstanceName) ? null : expectedInstanceName,
-                    id);
+                    cdb ? 1 : 0, id);
             return Maps.of("success", true, "message", "DB 정보가 수정되었습니다.");
         }
+    }
+
+    /**
+     * CDB 방식이면 접속 방식을 service로 고정한다 - PDB에는 SID가 없어서 host:port:SID로 붙으면 CDB 루트로
+     * 붙거나 실패한다. 화면에서도 막지만 API를 직접 호출해도 같은 규칙이 되도록 서버에서 한 번 더 정한다.
+     */
+    private static String resolveConnectMode(String connectMode, boolean cdb) {
+        if (cdb) return "service";
+        return connectMode == null ? "" : connectMode;
+    }
+
+    private static boolean isCdbFlag(Object value) {
+        return value instanceof Number && ((Number) value).intValue() == 1;
+    }
+
+    /** CDB 방식으로 등록했는지 - 저장 직후 자동 확인(DbConfigAdminController.cdbCheck)에서 실제 구조와 대조한다. */
+    public boolean isOracleCdb(String id) {
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT oracle_cdb FROM db_instances WHERE id = ?", id);
+        return !rows.isEmpty() && isCdbFlag(rows.get(0).get("oracle_cdb"));
     }
 
     /** Admin UI: remove an instance. No group bookkeeping needed - groups are derived from rows on read. */

@@ -32,6 +32,8 @@ public final class CreateDbInstanceRequest {
     // 5 ascending ints, or null/empty to not override the global default - see db_instances'
     // "session_thresholds" column and DatabaseConfigService.buildSessionThresholdsJson.
     private final List<Integer> sessionThresholds;
+    // true = CDB 구조의 PDB에 접속(connect_mode는 service로 고정), null/false = Non-CDB - Oracle 전용(2026-10-02).
+    private final Boolean oracleCdb;
 
     @JsonCreator
     public CreateDbInstanceRequest(
@@ -50,7 +52,8 @@ public final class CreateDbInstanceRequest {
             @JsonProperty("pool_min_idle") Integer poolMinIdle,
             @JsonProperty("pool_max_size") Integer poolMaxSize,
             @JsonProperty("accounts") List<Map<String, String>> accounts,
-            @JsonProperty("session_thresholds") List<Integer> sessionThresholds) {
+            @JsonProperty("session_thresholds") List<Integer> sessionThresholds,
+            @JsonProperty("oracle_cdb") Boolean oracleCdb) {
         this.token = token;
         this.groupName = groupName;
         this.id = id;
@@ -67,6 +70,7 @@ public final class CreateDbInstanceRequest {
         this.poolMaxSize = poolMaxSize;
         this.accounts = accounts;
         this.sessionThresholds = sessionThresholds;
+        this.oracleCdb = oracleCdb;
     }
 
     public String token() {
@@ -131,5 +135,9 @@ public final class CreateDbInstanceRequest {
 
     public List<Integer> sessionThresholds() {
         return sessionThresholds;
+    }
+
+    public Boolean oracleCdb() {
+        return oracleCdb;
     }
 }

@@ -158,6 +158,12 @@
                         <input type="text" id="${prefix}-name" required autocomplete="off">
                     </div>
                 </div>
+                <div class="login-form-group" id="${prefix}-cdb-row" style="text-align:left;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:0;">
+                        <input type="checkbox" id="${prefix}-oracle-cdb" style="width:auto; margin:0;">
+                        CDB 방식 (PDB에 접속 - 접속 방식은 Service Name으로 고정)
+                    </label>
+                </div>
                 <div class="field-row">
                     <div class="login-form-group">
                         <label>Host (필수)</label>
@@ -252,6 +258,8 @@
                                 <button type="button" class="login-btn" id="create-db-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #3a3a37;">취소</button>
                             </div>
                             <div id="db-mgmt-error" class="login-error"></div>
+                            <div id="new-db-check-status" style="display:none; margin-top:12px; font-size:0.9rem;"></div>
+                            <div id="new-db-check-actions" style="display:none; gap:10px; margin-top:12px;"></div>
                         </form>
                     </div>
 
@@ -263,6 +271,8 @@
                             <button type="button" class="login-btn" id="edit-db-cancel-btn" style="margin-top: 0; width:auto; padding:12px 28px; background: #3a3a37;">취소</button>
                         </div>
                         <div id="edit-db-error" class="login-error"></div>
+                        <div id="edit-db-check-status" style="display:none; margin-top:12px; font-size:0.9rem;"></div>
+                        <div id="edit-db-check-actions" style="display:none; gap:10px; margin-top:12px;"></div>
                     </div>
                 </div>
             `;
@@ -294,16 +304,33 @@
             // value regardless of db_type. Default port also nudges to each engine's usual port when the
             // admin hasn't touched Port yet, to save a lookup.
             const DB_TYPE_DEFAULT_PORT = { oracle: 1521, mysql: 3306, mariadb: 3306, postgres: 5432, mssql: 1433, cubrid: 33000 };
+            const applyDbTypeFns = {}; // prefix -> applyDbType (수정 화면이 값을 채운 뒤 다시 적용)
             function wireDbTypeFields(prefix) {
                 const typeSelect = document.getElementById(`${prefix}-dbtype`);
                 const sidLabel = document.getElementById(`${prefix}-sid-label`);
                 const portInput = document.getElementById(`${prefix}-port`);
                 const connectModeRow = document.getElementById(`${prefix}-connect-mode-row`);
+                const connectModeSelect = document.getElementById(`${prefix}-connect-mode`);
+                const cdbRow = document.getElementById(`${prefix}-cdb-row`);
+                const cdbCheckbox = document.getElementById(`${prefix}-oracle-cdb`);
                 const applyDbType = () => {
-                    sidLabel.textContent = typeSelect.value === 'oracle' ? 'SID' : 'Database';
-                    // connect_mode(sid/service/descriptor)는 Oracle 전용 - 다른 엔진은 항상 host:port
+                    const isOracle = typeSelect.value === 'oracle';
+                    const cdb = isOracle && cdbCheckbox.checked;
+                    // CDB 방식은 PDB 서비스명으로만 붙는다(PDB에는 SID가 없음) - 접속 방식을 service로 고정하고
+                    // 입력 칸 이름도 바꿔 SID로 잘못 넣어 CDB 루트에 붙는 실수를 막는다(2026-10-02).
+                    sidLabel.textContent = !isOracle ? 'Database' : (cdb ? 'PDB 서비스명' : 'SID');
+                    if (cdb) {
+                        if (!connectModeSelect.disabled) connectModeSelect.dataset.prevMode = connectModeSelect.value;
+                        connectModeSelect.value = 'service';
+                        connectModeSelect.disabled = true;
+                    } else if (connectModeSelect.disabled) {
+                        connectModeSelect.value = connectModeSelect.dataset.prevMode || '';
+                        connectModeSelect.disabled = false;
+                    }
+                    // connect_mode(sid/service/descriptor)와 CDB 구분은 Oracle 전용 - 다른 엔진은 항상 host:port
                     // 형태라 이 필드 자체가 의미 없다.
-                    connectModeRow.style.display = typeSelect.value === 'oracle' ? '' : 'none';
+                    connectModeRow.style.display = isOracle ? '' : 'none';
+                    cdbRow.style.display = isOracle ? '' : 'none';
                 };
                 typeSelect.addEventListener('change', () => {
                     applyDbType();
@@ -312,7 +339,64 @@
                         portInput.value = defaultPort;
                     }
                 });
+                cdbCheckbox.addEventListener('change', applyDbType);
+                applyDbTypeFns[prefix] = applyDbType;
                 applyDbType();
+            }
+
+            function resetCdbCheck(prefix) {
+                const statusEl = document.getElementById(`${prefix}-check-status`);
+                const actionsEl = document.getElementById(`${prefix}-check-actions`);
+                statusEl.style.display = 'none';
+                statusEl.textContent = '';
+                actionsEl.style.display = 'none';
+                actionsEl.innerHTML = '';
+            }
+
+            // 저장 직후 자동 확인 - 등록한 CDB/Non-CDB 구분이 실제 접속 결과와 맞는지 본다(2026-10-02).
+            // 저장은 이미 끝난 상태라 결과는 알려 주기만 한다. 맞으면 잠깐 보여 주고 닫고, 어긋나거나 확인에
+            // 실패하면 창을 열어 둔 채 안내한다.
+            async function showCdbCheckAfterSave(dbId, statusEl, actionsEl, isCreate) {
+                statusEl.style.display = 'block';
+                statusEl.style.color = 'var(--text-muted)';
+                statusEl.textContent = '저장되었습니다. 접속 구조(CDB/Non-CDB)를 확인하는 중...';
+                let data = null;
+                try {
+                    const res = await fetch(`/api/db_configs/${encodeURIComponent(dbId)}/cdb_check?token=${encodeURIComponent(token)}`);
+                    data = await res.json();
+                } catch (e) {
+                    data = { success: false, message: '저장은 되었지만 접속 확인 요청에 실패했습니다.' };
+                }
+                if (data.success && data.ok) {
+                    statusEl.style.color = 'var(--success)';
+                    statusEl.textContent = `저장되었습니다. ${data.message}`;
+                    setTimeout(reloadOpenerAndClose, 1500);
+                    return;
+                }
+                statusEl.style.color = data.success ? 'var(--warning)' : 'var(--danger)';
+                statusEl.textContent = `저장되었습니다. 확인 필요: ${data.message || '알 수 없는 오류'}`;
+                actionsEl.innerHTML = '';
+                if (isCreate) {
+                    const editBtn = document.createElement('button');
+                    editBtn.type = 'button';
+                    editBtn.className = 'login-btn';
+                    editBtn.style.cssText = 'margin-top:0; width:auto; padding:12px 24px;';
+                    editBtn.textContent = '수정 화면으로';
+                    editBtn.addEventListener('click', async () => {
+                        await loadDbConfigList();
+                        const inst = instanceById[dbId];
+                        if (inst) showDbEditView(inst);
+                    });
+                    actionsEl.appendChild(editBtn);
+                }
+                const closeBtn = document.createElement('button');
+                closeBtn.type = 'button';
+                closeBtn.className = 'login-btn';
+                closeBtn.style.cssText = 'margin-top:0; width:auto; padding:12px 24px; background:#3a3a37;';
+                closeBtn.textContent = '닫기';
+                closeBtn.addEventListener('click', reloadOpenerAndClose);
+                actionsEl.appendChild(closeBtn);
+                actionsEl.style.display = 'flex';
             }
             wireDbTypeFields('new-db');
             wireDbTypeFields('edit-db');
@@ -353,8 +437,12 @@
             document.getElementById('db-mgmt-close-btn').addEventListener('click', () => window.close());
             document.getElementById('db-mgmt-create-open-btn').addEventListener('click', () => {
                 document.getElementById('create-db-form').reset();
+                document.getElementById('new-db-connect-mode').disabled = false;
+                applyDbTypeFns['new-db']();
                 renderAccountRows(document.getElementById('new-db-accounts'), []);
                 dbMgmtError.style.display = 'none';
+                resetCdbCheck('new-db');
+                document.querySelector('#create-db-form button[type="submit"]').disabled = false;
                 showView('db-mgmt-create-view');
             });
             document.getElementById('create-db-cancel-btn').addEventListener('click', () => showView('db-mgmt-main-view'));
@@ -407,6 +495,7 @@
                     user: document.getElementById('new-db-user').value.trim(),
                     password: document.getElementById('new-db-password').value,
                     connect_mode: document.getElementById('new-db-connect-mode').value,
+                    oracle_cdb: document.getElementById('new-db-dbtype').value === 'oracle' && document.getElementById('new-db-oracle-cdb').checked,
                     expected_instance_name: document.getElementById('new-db-expected-instance-name').value.trim(),
                     pool_min_idle: document.getElementById('new-db-pool-min').value ? parseInt(document.getElementById('new-db-pool-min').value, 10) : null,
                     pool_max_size: document.getElementById('new-db-pool-max').value ? parseInt(document.getElementById('new-db-pool-max').value, 10) : null,
@@ -421,7 +510,15 @@
                     });
                     const data = await res.json();
                     if (res.ok && data.success) {
-                        reloadOpenerAndClose();
+                        if (body.db_type === 'oracle') {
+                            // 같은 ID로 다시 추가되지 않게 막고, 저장된 DB로 구조 확인
+                            document.querySelector('#create-db-form button[type="submit"]').disabled = true;
+                            dbMgmtError.style.display = 'none';
+                            showCdbCheckAfterSave(body.id, document.getElementById('new-db-check-status'),
+                                document.getElementById('new-db-check-actions'), true);
+                        } else {
+                            reloadOpenerAndClose();
+                        }
                     } else {
                         dbMgmtError.textContent = data.message || 'DB 추가 실패';
                         dbMgmtError.style.display = 'block';
@@ -437,9 +534,11 @@
                 document.getElementById('edit-db-name').value = inst.name || '';
                 const dbType = inst.db_type || 'oracle';
                 document.getElementById('edit-db-dbtype').value = dbType;
-                document.getElementById('edit-db-sid-label').textContent = dbType === 'oracle' ? 'SID' : 'Database';
-                document.getElementById('edit-db-connect-mode-row').style.display = dbType === 'oracle' ? '' : 'none';
-                document.getElementById('edit-db-connect-mode').value = inst.connect_mode || '';
+                const editConnectMode = document.getElementById('edit-db-connect-mode');
+                editConnectMode.disabled = false;
+                editConnectMode.value = inst.connect_mode || '';
+                document.getElementById('edit-db-oracle-cdb').checked = !!inst.oracle_cdb;
+                applyDbTypeFns['edit-db']();
                 document.getElementById('edit-db-expected-instance-name').value = inst.expected_instance_name || '';
                 document.getElementById('edit-db-host').value = inst.host || '';
                 document.getElementById('edit-db-port').value = inst.port || 1521;
@@ -451,6 +550,7 @@
                 fillThresholds('edit-db', inst.session_thresholds);
                 renderAccountRows(document.getElementById('edit-db-accounts'), inst.accounts || []);
                 document.getElementById('edit-db-error').style.display = 'none';
+                resetCdbCheck('edit-db');
                 document.getElementById('edit-db-save-btn').dataset.dbId = inst.id;
                 showView('db-mgmt-edit-view');
             }
@@ -476,6 +576,7 @@
                     user: document.getElementById('edit-db-user').value.trim(),
                     password: document.getElementById('edit-db-password').value,
                     connect_mode: document.getElementById('edit-db-connect-mode').value,
+                    oracle_cdb: document.getElementById('edit-db-dbtype').value === 'oracle' && document.getElementById('edit-db-oracle-cdb').checked,
                     expected_instance_name: document.getElementById('edit-db-expected-instance-name').value.trim(),
                     pool_min_idle: document.getElementById('edit-db-pool-min').value ? parseInt(document.getElementById('edit-db-pool-min').value, 10) : null,
                     pool_max_size: document.getElementById('edit-db-pool-max').value ? parseInt(document.getElementById('edit-db-pool-max').value, 10) : null,
@@ -490,7 +591,14 @@
                     });
                     const data = await res.json();
                     if (res.ok && data.success) {
-                        reloadOpenerAndClose();
+                        if (body.db_type === 'oracle') {
+                            editDbError.style.display = 'none';
+                            resetCdbCheck('edit-db');
+                            showCdbCheckAfterSave(id, document.getElementById('edit-db-check-status'),
+                                document.getElementById('edit-db-check-actions'), false);
+                        } else {
+                            reloadOpenerAndClose();
+                        }
                     } else {
                         editDbError.textContent = data.message || '수정 실패';
                         editDbError.style.display = 'block';
