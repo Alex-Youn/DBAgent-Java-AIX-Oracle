@@ -172,7 +172,7 @@
                 <div class="login-form-group" id="${prefix}-cdb-row" style="text-align:left;">
                     <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:0;">
                         <input type="checkbox" id="${prefix}-oracle-cdb" style="width:auto; margin:0;">
-                        CDB 방식 (PDB에 접속 - 접속 방식은 Service Name으로 고정)
+                        CDB 방식 (PDB에 접속 - 접속 방식은 Service Name 또는 커넥트 디스크립터)
                     </label>
                 </div>
                 <div class="field-row">
@@ -327,16 +327,22 @@
                 const applyDbType = () => {
                     const isOracle = typeSelect.value === 'oracle';
                     const cdb = isOracle && cdbCheckbox.checked;
-                    // CDB 방식은 PDB 서비스명으로만 붙는다(PDB에는 SID가 없음) - 접속 방식을 service로 고정하고
+                    // CDB 방식은 PDB 서비스명으로만 붙는다(PDB에는 SID가 없음) - SID 방식(기본)은 막고 service로 바꾸며
                     // 입력 칸 이름도 바꿔 SID로 잘못 넣어 CDB 루트에 붙는 실수를 막는다(2026-10-02).
-                    sidLabel.textContent = !isOracle ? 'Database' : (cdb ? 'PDB 서비스명' : 'SID');
-                    if (cdb) {
-                        if (!connectModeSelect.disabled) connectModeSelect.dataset.prevMode = connectModeSelect.value;
+                    // 전체 커넥트 디스크립터는 서비스명이 디스크립터 안에 있으므로 CDB 체크와 함께 허용하고 그대로 유지한다
+                    // (2026-10-02 결정 - oracle_cdb는 접속 문자열이 아니라 저장 직후 구조 확인용 표시).
+                    const descriptor = cdb && connectModeSelect.value === 'descriptor';
+                    sidLabel.textContent = !isOracle ? 'Database'
+                        : (descriptor ? '커넥트 디스크립터' : (cdb ? 'PDB 서비스명' : 'SID'));
+                    connectModeSelect.querySelector('option[value=""]').disabled = cdb;
+                    if (cdb && connectModeSelect.value !== 'descriptor' && connectModeSelect.value !== 'service') {
+                        connectModeSelect.dataset.prevMode = connectModeSelect.value;
+                        connectModeSelect.dataset.forced = '1';
                         connectModeSelect.value = 'service';
-                        connectModeSelect.disabled = true;
-                    } else if (connectModeSelect.disabled) {
-                        connectModeSelect.value = connectModeSelect.dataset.prevMode || '';
-                        connectModeSelect.disabled = false;
+                    } else if (!cdb && connectModeSelect.dataset.forced === '1') {
+                        // CDB 체크가 service로 바꿔 둔 경우에만 체크 해제 때 원래 값으로 되돌린다
+                        if (connectModeSelect.value === 'service') connectModeSelect.value = connectModeSelect.dataset.prevMode || '';
+                        delete connectModeSelect.dataset.forced;
                     }
                     // connect_mode(sid/service/descriptor)와 CDB 구분은 Oracle 전용 - 다른 엔진은 항상 host:port
                     // 형태라 이 필드 자체가 의미 없다.
@@ -351,6 +357,11 @@
                     }
                 });
                 cdbCheckbox.addEventListener('change', applyDbType);
+                connectModeSelect.addEventListener('change', () => {
+                    // 사용자가 직접 접속 방식을 고르면 자동 복원 대상에서 뺀다
+                    delete connectModeSelect.dataset.forced;
+                    applyDbType();
+                });
                 applyDbTypeFns[prefix] = applyDbType;
                 applyDbType();
             }
@@ -448,8 +459,12 @@
 
             document.getElementById('db-mgmt-close-btn').addEventListener('click', () => window.close());
             document.getElementById('db-mgmt-create-open-btn').addEventListener('click', () => {
+                // 빈값 옵션이 CDB 체크로 비활성인 채 reset하면 브라우저가 service를 기본으로 골라 버리므로 먼저 풀어 둔다
+                document.getElementById('new-db-connect-mode').querySelector('option[value=""]').disabled = false;
                 document.getElementById('create-db-form').reset();
                 document.getElementById('new-db-connect-mode').disabled = false;
+                // 이전 화면의 CDB 자동 전환 기록이 남아 새 값을 되돌리지 않게 비운다
+                delete document.getElementById('new-db-connect-mode').dataset.forced;
                 applyDbTypeFns['new-db']();
                 renderAccountRows(document.getElementById('new-db-accounts'), []);
                 dbMgmtError.style.display = 'none';
@@ -548,6 +563,8 @@
                 document.getElementById('edit-db-dbtype').value = dbType;
                 const editConnectMode = document.getElementById('edit-db-connect-mode');
                 editConnectMode.disabled = false;
+                // 이전에 연 DB의 CDB 자동 전환 기록(forced)이 남아 있으면 아래 값 채우기 뒤 applyDbType이 엉뚱하게 되돌린다
+                delete editConnectMode.dataset.forced;
                 editConnectMode.value = inst.connect_mode || '';
                 document.getElementById('edit-db-oracle-cdb').checked = !!inst.oracle_cdb;
                 applyDbTypeFns['edit-db']();

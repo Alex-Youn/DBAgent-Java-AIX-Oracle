@@ -707,11 +707,12 @@ public class DatabaseConfigService {
     }
 
     /**
-     * CDB 방식이면 접속 방식을 service로 고정한다 - PDB에는 SID가 없어서 host:port:SID로 붙으면 CDB 루트로
+     * CDB 방식이면 접속 방식을 service로 고정한다(descriptor는 유지) - PDB에는 SID가 없어서 host:port:SID로 붙으면 CDB 루트로
      * 붙거나 실패한다. 화면에서도 막지만 API를 직접 호출해도 같은 규칙이 되도록 서버에서 한 번 더 정한다.
      */
     private static String resolveConnectMode(String connectMode, boolean cdb) {
-        if (cdb) return "service";
+        // 전체 커넥트 디스크립터는 서비스명이 디스크립터 안에 있으므로 CDB여도 그대로 둔다(2026-10-02 결정).
+        if (cdb) return "descriptor".equals(connectMode) ? "descriptor" : "service";
         return connectMode == null ? "" : connectMode;
     }
 
