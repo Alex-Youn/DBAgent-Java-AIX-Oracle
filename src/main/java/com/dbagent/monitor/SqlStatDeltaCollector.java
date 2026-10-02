@@ -32,6 +32,9 @@ import java.util.concurrent.Executors;
  *   <li>델타가 음수면(커서가 aged-out 후 다시 올라와 누적값이 리셋됨) 그 1분은 버리고 기준값만 갱신한다.</li>
  *   <li>델타가 전부 0이면 저장하지 않는다.</li>
  *   <li>조회 창 2분(샘플러 지연 흡수), 10분 동안 안 보인 키는 메모리에서 지운다.</li>
+ *   <li>SQL 원문은 저장하지 않는다 - 읽는 곳이 없는데 1분마다 SQL마다 최대 1000자를 반복 저장해 AIX metrics.mv.db가
+ *       4일 만에 15GB(이 테이블만 11GB, 행당 약 535바이트)까지 커졌다(2026-10-02 폐쇄망 실측, 오케스트레이터 결정).
+ *       드로어의 SQL 원문은 v$sqlstats.sql_fulltext에서 바로 읽는다(DashboardQueryService.sqlDetail).</li>
  * </ul>
  */
 @Service
@@ -93,7 +96,7 @@ public class SqlStatDeltaCollector {
             st.setQueryTimeout(queryTimeoutSeconds);
             try (ResultSet rs = st.executeQuery(
                     "SELECT sql_id, plan_hash_value, executions, elapsed_time, cpu_time, buffer_gets, disk_reads, " +
-                            "rows_processed, SUBSTR(sql_text, 1, 1000) AS sql_text " +
+                            "rows_processed " +
                             "FROM v$sqlstats WHERE last_active_time >= SYSDATE - 2/1440")) {
                 while (rs.next()) {
                     String sqlId = rs.getString(1);
@@ -111,7 +114,7 @@ public class SqlStatDeltaCollector {
                         if (d[i] != 0) allZero = false;
                     }
                     if (negative || allZero) continue; // 리셋된 1분은 버림 / 실행 안 된 1분은 저장 안 함
-                    rows.add(new Object[]{target.id(), now, sqlId, phv, d[0], d[1], d[2], d[3], d[4], d[5], rs.getString(9)});
+                    rows.add(new Object[]{target.id(), now, sqlId, phv, d[0], d[1], d[2], d[3], d[4], d[5]});
                 }
             }
         } catch (SQLException e) {

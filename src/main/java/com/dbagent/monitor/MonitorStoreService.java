@@ -114,12 +114,15 @@ public class MonitorStoreService {
 
     // ------------------------------------------------------------------ 쓰기
 
-    /** 행: {dbId, collectTs, sqlId, planHashValue, executionsD, elapsedUsD, cpuUsD, bufferGetsD, diskReadsD, rowsD, sqlText} */
+    /**
+     * 행: {dbId, collectTs, sqlId, planHashValue, executionsD, elapsedUsD, cpuUsD, bufferGetsD, diskReadsD, rowsD}.
+     * sql_text 컬럼은 기존 파일 호환으로 남겨 두지만 쓰지 않는다(NULL) - SqlStatDeltaCollector 주석 참고(2026-10-02).
+     */
     public void saveSqlstatDeltas(List<Object[]> rows) {
         if (rows == null || rows.isEmpty()) return;
         jdbc.batchUpdate(upsert("mon_sqlstat_delta",
-                "db_id, collect_ts, sql_id, plan_hash_value, executions_d, elapsed_us_d, cpu_us_d, buffer_gets_d, disk_reads_d, rows_d, sql_text",
-                "db_id, collect_ts, sql_id, plan_hash_value", 11), rows);
+                "db_id, collect_ts, sql_id, plan_hash_value, executions_d, elapsed_us_d, cpu_us_d, buffer_gets_d, disk_reads_d, rows_d",
+                "db_id, collect_ts, sql_id, plan_hash_value", 10), rows);
     }
 
     public void saveLockSample(String dbId, long collectTs, int txWaitMax, int tmWaitMax, int tmHolderOverMax, boolean incident) {
