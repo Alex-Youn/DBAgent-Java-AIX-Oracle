@@ -155,7 +155,7 @@ public class DbConfigAdminController {
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("success", false);
             body.put("registered_cdb", registeredCdb);
-            body.put("message", "저장은 되었지만 접속 확인에 실패했습니다: " + e.getMessage());
+            body.put("message", "접속 확인에 실패했습니다: " + oraReason(e));
             return ResponseEntity.ok(body);
         }
 
@@ -164,7 +164,7 @@ public class DbConfigAdminController {
         String message;
         if (registeredCdb && actualCdb && !atRoot) {
             ok = true;
-            message = "CDB 구조의 PDB(" + conName + ")에 접속되었습니다.";
+            message = "CDB 구조의 PDB" + pdbLabel(conName) + "에 접속되었습니다.";
         } else if (registeredCdb && atRoot) {
             ok = false;
             message = "CDB 루트(CDB$ROOT)에 접속되었습니다. 업무 DB를 보려면 PDB 서비스명으로 등록하세요.";
@@ -180,7 +180,7 @@ public class DbConfigAdminController {
                     + "PDB 서비스명으로 등록하세요.";
         } else {
             ok = false;
-            message = "CDB 구조의 PDB(" + conName + ")입니다. 'CDB 방식'을 체크해 등록하세요(접속은 지금도 정상입니다).";
+            message = "CDB 구조의 PDB" + pdbLabel(conName) + "입니다. 'CDB 방식'을 체크해 등록하세요(접속은 지금도 정상입니다).";
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("success", true);
@@ -190,6 +190,34 @@ public class DbConfigAdminController {
         body.put("con_name", conName);
         body.put("message", message);
         return ResponseEntity.ok(body);
+    }
+
+    /** CON_NAME을 못 얻은 경우 "PDB(null)"이 나오지 않게 이름이 있을 때만 괄호로 붙인다. */
+    private static String pdbLabel(String conName) {
+        return (conName == null || conName.trim().isEmpty()) ? "" : "(" + conName + ")";
+    }
+
+    /**
+     * 접속 실패 사유 - Hikari는 원인을 "Connection is not available..." 일반 문구로 감싸므로 원인 예외 사슬에서
+     * ORA- 로 시작하는 첫 줄을 꺼내 비밀번호(ORA-01017)·리스너(ORA-12541) 등을 구분해 보여 준다(2026-10-02).
+     */
+    private static String oraReason(Throwable e) {
+        for (Throwable t = e; t != null; t = (t.getCause() == t ? null : t.getCause())) {
+            String m = t.getMessage();
+            if (m == null) continue;
+            int i = m.indexOf("ORA-");
+            if (i >= 0) {
+                int nl = m.indexOf('\n', i);
+                return (nl < 0 ? m.substring(i) : m.substring(i, nl)).trim();
+            }
+        }
+        // 등록 직후 백그라운드 수집이 먼저 실패하면 풀에 10초 쿨다운이 걸려 ORA 사유 대신 이 문구가 나온다(2026-10-02 QA).
+        for (Throwable t = e; t != null; t = (t.getCause() == t ? null : t.getCause())) {
+            if (t.getMessage() != null && t.getMessage().contains("Waiting for cooldown")) {
+                return "직전 접속 실패 직후라 잠시(약 10초) 쉬는 중입니다. 잠시 후 다시 확인하세요";
+            }
+        }
+        return e.getMessage() == null ? "알 수 없는 오류" : e.getMessage();
     }
 
     @DeleteMapping("/api/db_configs/{id}")

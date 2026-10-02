@@ -82,6 +82,17 @@
                 `).join('');
             }
 
+            // 저장이 한 번이라도 성공했는지 - 저장 뒤 CDB 확인 경고에서 [취소]로 나가도 목록·뒤 화면을 갱신하려고 기억한다.
+            let savedSinceOpen = false;
+            function leaveFormView() {
+                if (savedSinceOpen) {
+                    savedSinceOpen = false;
+                    if (window.opener && !window.opener.closed) window.opener.location.reload();
+                    loadDbConfigList();
+                }
+                showView('db-mgmt-main-view');
+            }
+
             function reloadOpenerAndClose() {
                 if (window.opener && !window.opener.closed) window.opener.location.reload();
                 window.close();
@@ -357,6 +368,7 @@
             // 저장은 이미 끝난 상태라 결과는 알려 주기만 한다. 맞으면 잠깐 보여 주고 닫고, 어긋나거나 확인에
             // 실패하면 창을 열어 둔 채 안내한다.
             async function showCdbCheckAfterSave(dbId, statusEl, actionsEl, isCreate) {
+                savedSinceOpen = true;
                 statusEl.style.display = 'block';
                 statusEl.style.color = 'var(--text-muted)';
                 statusEl.textContent = '저장되었습니다. 접속 구조(CDB/Non-CDB)를 확인하는 중...';
@@ -365,7 +377,7 @@
                     const res = await fetch(`/api/db_configs/${encodeURIComponent(dbId)}/cdb_check?token=${encodeURIComponent(token)}`);
                     data = await res.json();
                 } catch (e) {
-                    data = { success: false, message: '저장은 되었지만 접속 확인 요청에 실패했습니다.' };
+                    data = { success: false, message: '접속 확인 요청에 실패했습니다.' };
                 }
                 if (data.success && data.ok) {
                     statusEl.style.color = 'var(--success)';
@@ -445,7 +457,7 @@
                 document.querySelector('#create-db-form button[type="submit"]').disabled = false;
                 showView('db-mgmt-create-view');
             });
-            document.getElementById('create-db-cancel-btn').addEventListener('click', () => showView('db-mgmt-main-view'));
+            document.getElementById('create-db-cancel-btn').addEventListener('click', leaveFormView);
 
             document.getElementById('db-mgmt-edit-open-btn').addEventListener('click', () => {
                 const inst = instanceById[dbSelect.value];
@@ -555,7 +567,7 @@
                 showView('db-mgmt-edit-view');
             }
 
-            document.getElementById('edit-db-cancel-btn').addEventListener('click', () => showView('db-mgmt-main-view'));
+            document.getElementById('edit-db-cancel-btn').addEventListener('click', leaveFormView);
 
             document.getElementById('edit-db-save-btn').addEventListener('click', async () => {
                 const id = document.getElementById('edit-db-save-btn').dataset.dbId;

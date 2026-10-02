@@ -669,14 +669,16 @@ public class DatabaseConfigService {
         if ("oracle".equals(resolvedDbType) && Strings.isBlank(host)) {
             return Maps.of("success", false, "message", "Host는 필수입니다.");
         }
-        boolean cdb = "oracle".equals(resolvedDbType) && Boolean.TRUE.equals(oracleCdb);
-        String resolvedConnectMode = resolveConnectMode(connectMode, cdb);
         synchronized (writeLock) {
             List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM db_instances WHERE id = ?", id);
             if (rows.isEmpty()) {
                 return Maps.of("success", false, "message", "존재하지 않는 DB입니다: " + id);
             }
             Map<String, Object> existing = rows.get(0);
+            // oracle_cdb를 생략(null)하면 기존 값 유지 - 비밀번호 생략 규칙과 같다(2026-10-02, API 직접 호출 시 조용히 Non-CDB로 바뀌던 문제).
+            boolean cdb = "oracle".equals(resolvedDbType)
+                    && (oracleCdb == null ? isCdbFlag(existing.get("oracle_cdb")) : oracleCdb);
+            String resolvedConnectMode = resolveConnectMode(connectMode, cdb);
             String existingAccountsJson = (String) existing.get("accounts");
 
             // A blank password on an existing account row keeps that account's stored password.
