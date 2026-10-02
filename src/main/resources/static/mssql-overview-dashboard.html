@@ -161,7 +161,7 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 0 16px;
+        padding: 0 6px;
         border-bottom: 1px solid var(--border);
     }
     /* 타이틀 전체가 인스턴스 전환 드롭다운의 트리거다. chevron은 원래 장식이었는데(핸들러 없음)
@@ -268,7 +268,7 @@
     .pmm-filterbar {
         height: 34px; flex: 0 0 34px;
         display: flex; align-items: center; gap: 22px;
-        padding: 0 16px;
+        padding: 0 6px;
         border-bottom: 1px solid var(--border);
     }
     .filter-group { display: flex; align-items: center; gap: 6px; }
@@ -315,7 +315,8 @@
     .live-error { color: #ef4444; font-size: 13px; }
 
     /* ---------- Content ---------- */
-    .pmm-content { padding: 14px 16px 40px; }
+    /* 메뉴 프레임 여백 6px(오라클 style.css --frame-gutter와 같은 값, 2026-10-02 오케스트레이터 지시: RDB도 좌우·위·아래 여백 축소) */
+    .pmm-content { padding: 6px; }
 
     /* ---------- KPI collapsible row ---------- */
     .kpi-toggle-row {
