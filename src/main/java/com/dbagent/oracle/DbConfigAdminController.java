@@ -21,8 +21,16 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Admin-only CRUD for db_instances rows (the "DB 관리" screen). Listing reuses the existing
@@ -34,6 +42,9 @@ public class DbConfigAdminController {
 
     /** CDB 확인 조회 타임아웃 - 딕셔너리가 아닌 v$database 1행이라 몇 초면 충분하다. */
     private static final int CDB_CHECK_TIMEOUT_SECONDS = 5;
+    /** 전체 CDB 확인: 동시에 확인하는 DB 수와 전체 제한 시간 - 접속 안 되는 DB가 섞여도 화면이 오래 멈추지 않게 한다. */
+    private static final int CDB_CHECK_ALL_PARALLEL = 4;
+    private static final int CDB_CHECK_ALL_TOTAL_SECONDS = 60;
 
     private final AuthService authService;
     private final DatabaseConfigService configService;
@@ -108,7 +119,8 @@ public class DbConfigAdminController {
      * (ok=false면 화면이 경고를 띄운다). 조회는 dual의 SYS_CONTEXT 1회(구버전만 v$database 1행)라 대상 DB 부담은 없다.
      */
     @GetMapping("/api/db_configs/{id}/cdb_check")
-    public ResponseEntity<Map<String, Object>> cdbCheck(@PathVariable String id, @RequestParam String token) {
+    public ResponseEntity<Map<String, Object>> cdbCheck(@PathVariable String id,
+            @RequestParam(required = false) String token) {
         if (!authService.isAdmin(token)) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Maps.of("success", false, "message", "관리자만 확인할 수 있습니다."));
@@ -121,6 +133,11 @@ public class DbConfigAdminController {
         if (!"oracle".equalsIgnoreCase(target.dbType())) {
             return ResponseEntity.ok(Maps.of("success", true, "ok", true, "message", "Oracle이 아니라 확인 대상이 아닙니다."));
         }
+        return ResponseEntity.ok(checkCdbStructure(id, target));
+    }
+
+    /** 등록된 구분(CDB/Non-CDB)과 실제 접속 결과를 대조한다 - 저장 직후 확인(cdbCheck)과 전체 확인이 함께 쓴다. */
+    private Map<String, Object> checkCdbStructure(String id, TargetDbConfig target) {
         boolean registeredCdb = configService.isOracleCdb(id);
         Boolean actualCdb;
         String conName = null;
@@ -156,7 +173,7 @@ public class DbConfigAdminController {
             body.put("success", false);
             body.put("registered_cdb", registeredCdb);
             body.put("message", "접속 확인에 실패했습니다: " + oraReason(e));
-            return ResponseEntity.ok(body);
+            return body;
         }
 
         boolean atRoot = "CDB$ROOT".equalsIgnoreCase(conName);
@@ -189,7 +206,77 @@ public class DbConfigAdminController {
         body.put("actual_cdb", actualCdb);
         body.put("con_name", conName);
         body.put("message", message);
+        return body;
+    }
+
+    /**
+     * 등록된 Oracle 전체의 CDB/Non-CDB 구분을 저장 없이 한 번에 판정한다(2026-10-02, 오케스트레이터 요청) - 예전에 SID로
+     * 등록해 CDB 루트에 붙어 있는 DB를 찾는 용도. 자동 확인은 저장할 때만 돌기 때문이다. 관리자가 누를 때만 도는 조회이고
+     * DB당 dual 1행이라 부담은 없지만, 풀이 없는 DB는 접속부터 하므로 몇 개씩만 동시에 돌리고 전체 제한 시간을 둔다.
+     */
+    @GetMapping("/api/db_configs/cdb_check_all")
+    public ResponseEntity<Map<String, Object>> cdbCheckAll(@RequestParam(required = false) String token) {
+        if (!authService.isAdmin(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Maps.of("success", false, "message", "관리자만 확인할 수 있습니다."));
+        }
+        List<TargetDbConfig> targets = new ArrayList<>();
+        for (TargetDbConfig t : configService.listAllInstances()) {
+            if ("oracle".equalsIgnoreCase(t.dbType())) targets.add(t);
+        }
+        List<Map<String, Object>> results = new ArrayList<>();
+        if (!targets.isEmpty()) {
+            ExecutorService pool = Executors.newFixedThreadPool(Math.min(CDB_CHECK_ALL_PARALLEL, targets.size()));
+            try {
+                List<Future<Map<String, Object>>> futures = new ArrayList<>();
+                for (TargetDbConfig t : targets) {
+                    futures.add(pool.submit(() -> checkCdbStructure(t.id(), t)));
+                }
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(CDB_CHECK_ALL_TOTAL_SECONDS);
+                for (int i = 0; i < targets.size(); i++) {
+                    TargetDbConfig t = targets.get(i);
+                    Map<String, Object> r;
+                    try {
+                        long leftMs = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
+                        r = futures.get(i).get(leftMs, TimeUnit.MILLISECONDS);
+                    } catch (TimeoutException e) {
+                        futures.get(i).cancel(true);
+                        r = checkFailure("확인 시간이 초과되었습니다(접속이 오래 걸리는 DB입니다)");
+                    } catch (ExecutionException e) {
+                        r = checkFailure("접속 확인에 실패했습니다: " + oraReason(e.getCause() != null ? e.getCause() : e));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        r = checkFailure("확인이 중단되었습니다");
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", t.id());
+                    row.put("name", t.name());
+                    row.putAll(r);
+                    results.add(row);
+                }
+            } finally {
+                pool.shutdownNow();
+            }
+        }
+        // 비밀번호를 풀 수 없어 목록에서 빠진 DB도 있다는 것을 알려 준다(DB 종류는 알 수 없음)
+        for (Map.Entry<String, String> e : configService.unreadableInstances().entrySet()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", e.getKey());
+            row.put("name", e.getKey());
+            row.putAll(checkFailure("비밀번호를 풀 수 없어 확인하지 못했습니다(DB 종류 확인 불가): " + e.getValue()));
+            results.add(row);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", true);
+        body.put("results", results);
         return ResponseEntity.ok(body);
+    }
+
+    private static Map<String, Object> checkFailure(String message) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", false);
+        body.put("message", message);
+        return body;
     }
 
     /** CON_NAME을 못 얻은 경우 "PDB(null)"이 나오지 않게 이름이 있을 때만 괄호로 붙인다. */

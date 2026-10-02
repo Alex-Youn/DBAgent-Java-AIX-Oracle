@@ -255,8 +255,10 @@
                         <hr style="border-color: var(--border-color); margin: 24px 0;">
                         <div style="display: flex; gap: 10px;">
                             <button type="button" class="login-btn" id="db-mgmt-create-open-btn" style="margin-top: 0; width:auto; padding:12px 24px;">+ 새 DB 추가</button>
+                            <button type="button" class="login-btn" id="db-mgmt-cdb-all-btn" style="margin-top: 0; width:auto; padding:12px 24px; background:#3a3a37;" title="등록된 Oracle 전체의 CDB/Non-CDB 구분이 실제 접속 결과와 맞는지 저장 없이 확인합니다">전체 CDB 확인</button>
                             <button type="button" class="login-btn" id="db-mgmt-close-btn" style="margin-top: 0; width:auto; padding:12px 24px; background: #3a3a37;">닫기</button>
                         </div>
+                        <div id="db-mgmt-cdb-all-result" style="display:none; margin-top:16px; font-size:0.9rem;"></div>
                         <div id="db-mgmt-main-error" class="login-error"></div>
                     </div>
 
@@ -457,6 +459,75 @@
                 }
             }
 
+            // 등록된 Oracle 전체의 CDB/Non-CDB 구분 판정(저장 없이) - 자동 확인은 저장할 때만 돌기 때문에 예전에 SID로 등록해
+            // CDB 루트에 붙어 있는 DB를 찾는 용도(2026-10-02). 결과 표의 [수정]으로 바로 고칠 수 있다.
+            function renderCdbAllResult(box, results) {
+                box.innerHTML = '';
+                let good = 0;
+                results.forEach(r => { if (r.success && r.ok) good++; });
+                const summary = document.createElement('div');
+                summary.style.cssText = 'margin-bottom:8px; font-weight:600;';
+                summary.textContent = results.length
+                    ? `Oracle ${results.length}개 중 일치 ${good}개, 확인 필요·실패 ${results.length - good}개`
+                    : '확인할 Oracle DB가 없습니다.';
+                box.appendChild(summary);
+                if (!results.length) return;
+                const table = document.createElement('table');
+                table.style.cssText = 'width:100%; border-collapse:collapse;';
+                results.forEach(r => {
+                    const tr = document.createElement('tr');
+                    tr.style.borderTop = '1px solid var(--border-color)';
+                    const name = document.createElement('td');
+                    name.style.cssText = 'padding:6px 8px; white-space:nowrap;';
+                    name.textContent = `${r.name || r.id} (${r.id})`;
+                    const state = document.createElement('td');
+                    state.style.cssText = 'padding:6px 8px; white-space:nowrap; font-weight:600;';
+                    if (r.success && r.ok) { state.textContent = '일치'; state.style.color = 'var(--success)'; }
+                    else if (r.success) { state.textContent = '확인 필요'; state.style.color = 'var(--warning)'; }
+                    else { state.textContent = '확인 실패'; state.style.color = 'var(--danger)'; }
+                    const msg = document.createElement('td');
+                    msg.style.cssText = 'padding:6px 8px; color:var(--text-muted);';
+                    msg.textContent = r.message || '';
+                    const act = document.createElement('td');
+                    act.style.cssText = 'padding:6px 8px; white-space:nowrap;';
+                    if (!(r.success && r.ok) && instanceById[r.id]) {
+                        const edit = document.createElement('button');
+                        edit.type = 'button';
+                        edit.className = 'login-btn';
+                        edit.style.cssText = 'margin-top:0; width:auto; padding:4px 12px;';
+                        edit.textContent = '수정';
+                        edit.addEventListener('click', () => showDbEditView(instanceById[r.id]));
+                        act.appendChild(edit);
+                    }
+                    [name, state, msg, act].forEach(td => tr.appendChild(td));
+                    table.appendChild(tr);
+                });
+                box.appendChild(table);
+            }
+            document.getElementById('db-mgmt-cdb-all-btn').addEventListener('click', async () => {
+                const btn = document.getElementById('db-mgmt-cdb-all-btn');
+                const box = document.getElementById('db-mgmt-cdb-all-result');
+                btn.disabled = true;
+                box.style.display = 'block';
+                box.style.color = 'var(--text-muted)';
+                box.textContent = '등록된 Oracle DB를 확인하는 중입니다(접속이 안 되는 DB가 있으면 최대 1분 걸릴 수 있습니다)...';
+                try {
+                    const res = await fetch(`/api/db_configs/cdb_check_all?token=${encodeURIComponent(token)}`);
+                    const data = await res.json();
+                    if (!res.ok || !data.success) {
+                        box.style.color = 'var(--danger)';
+                        box.textContent = data.message || '확인에 실패했습니다.';
+                    } else {
+                        box.style.color = '';
+                        renderCdbAllResult(box, data.results || []);
+                    }
+                } catch (e) {
+                    box.style.color = 'var(--danger)';
+                    box.textContent = '서버 오류';
+                } finally {
+                    btn.disabled = false;
+                }
+            });
             document.getElementById('db-mgmt-close-btn').addEventListener('click', () => window.close());
             document.getElementById('db-mgmt-create-open-btn').addEventListener('click', () => {
                 // 빈값 옵션이 CDB 체크로 비활성인 채 reset하면 브라우저가 service를 기본으로 골라 버리므로 먼저 풀어 둔다
