@@ -6,6 +6,7 @@ import org.springframework.boot.env.EnvironmentPostProcessor;
 import org.springframework.boot.logging.DeferredLogFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.MutablePropertySources;
 import org.springframework.core.env.PropertySource;
 
 import java.io.File;
@@ -43,13 +44,46 @@ public class BootstrapConfigPostProcessor implements EnvironmentPostProcessor, O
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
         checkConfFile(environment);
+        raiseConfAboveOtherFiles(environment);
         ensureSqliteDirs(environment);
     }
 
     // spring.config.import 처리(ConfigDataEnvironmentPostProcessor)보다 나중에 돌아야 로딩 결과를 볼 수 있다.
     @Override
     public int getOrder() {
-        return Ordered.LOWEST_PRECEDENCE;
+        return Ordered.LOWEST_PRECEDENCE - 20;
+    }
+
+    /**
+     * conf/dbagent.conf 를 다른 설정 파일(옛 외부 application.properties 등) 위로 올린다.
+     *
+     * <p>spring.config.import 를 번들 application.properties 안에 두면, 가져온 conf 는 "가져온 문서(번들)" 바로
+     * 앞에 놓인다. 그러면 jar 옆의 옛 외부 application.properties(file:./)가 conf 보다 위가 되어 설계의 우선순위
+     * (conf 가 옛 파일보다 우선)가 뒤집힌다 - 명령행으로 import 를 줬을 때는 안 보이다가 번들 import 로 바꾼 뒤에야
+     * 드러났다(로컬 실측 2026-10-04). 그래서 설정 파일 출처 중 conf 를 맨 앞으로 옮긴다.
+     */
+    private void raiseConfAboveOtherFiles(ConfigurableEnvironment environment) {
+        MutablePropertySources sources = environment.getPropertySources();
+        PropertySource<?> conf = null;
+        String firstOther = null;
+        for (PropertySource<?> source : sources) {
+            String name = source.getName();
+            if (!name.startsWith("Config resource")) {
+                continue;
+            }
+            if (name.contains("dbagent.conf")) {
+                conf = source;
+                break;
+            }
+            if (firstOther == null) {
+                firstOther = name;
+            }
+        }
+        if (conf != null && firstOther != null) {
+            sources.remove(conf.getName());
+            sources.addBefore(firstOther, conf);
+            log.info("conf/dbagent.conf 를 옛 외부 application.properties·번들보다 우선하도록 올렸습니다.");
+        }
     }
 
     private void checkConfFile(ConfigurableEnvironment environment) {

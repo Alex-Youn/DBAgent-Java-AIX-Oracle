@@ -8,10 +8,13 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.env.PropertySource;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,6 +46,10 @@ public class SettingsService {
     private final Environment environment;
     private final AppSettingStore store;
     private final Map<SettingKey, EnvHit> envHits = new EnumMap<SettingKey, EnvHit>(SettingKey.class);
+    /** 안전 모드(-Ddbagent.settings.ignore-db=true): DB 저장값을 읽지도 이관하지도 않는다. */
+    private volatile boolean ignoreDb;
+    /** 옛 외부 파일 값이 DB 값과 달라 DB 값이 적용 중인 키 (화면 경고용). */
+    private volatile List<FileDiff> staleFileValues = Collections.<FileDiff>emptyList();
     private volatile Snapshot snapshot = new Snapshot(Collections.<SettingKey, AppSettingStore.Row>emptyMap(),
             Collections.<String, Map<SettingKey, AppSettingStore.Row>>emptyMap());
 
@@ -54,7 +61,13 @@ public class SettingsService {
     @PostConstruct
     void init() {
         verifyRegistry();
+        ignoreDb = "true".equalsIgnoreCase(environment.getProperty(SettingsDbEnvironmentPostProcessor.IGNORE_DB_KEY, "false").trim());
         scanEnvironment();
+        if (ignoreDb) {
+            log.warn("안전 모드: DB 에 저장된 환경설정 값을 읽지도 이관하지도 않습니다 (파일·번들·기본값만 사용).");
+            return;
+        }
+        migrateFromOldFileIfNeeded();
         reload();
     }
 
@@ -167,6 +180,9 @@ public class SettingsService {
 
     /** DB 저장값을 다시 읽어 스냅샷을 교체한다. 저장·초기화 직후와 기동 때 부른다. */
     public synchronized void reload() {
+        if (ignoreDb) {
+            return;
+        }
         Map<SettingKey, AppSettingStore.Row> global = new EnumMap<SettingKey, AppSettingStore.Row>(SettingKey.class);
         for (AppSettingStore.Row r : store.loadGlobal().values()) {
             SettingKey k = acceptable(r, null);
@@ -193,6 +209,7 @@ public class SettingsService {
             perDbCount += m.size();
         }
         log.info("환경설정 스냅샷 갱신: DB 저장 전역 {}건, DB별 재정의 {}건 ({}개 DB)", global.size(), perDbCount, perDb.size());
+        refreshStaleFileValues();
     }
 
     /** 저장된 행이 쓸 수 있는 값이면 키를, 아니면 경고 후 null. */
@@ -214,6 +231,104 @@ public class SettingsService {
             return null;
         }
         return k;
+    }
+
+    // ───────────────────────── 옛 외부 파일 이관 · 불일치 점검 ─────────────────────────
+
+    /** 안전 모드 여부. */
+    public boolean isIgnoreDb() {
+        return ignoreDb;
+    }
+
+    /** 옛 외부 파일에 DB 와 다른 값이 남아 있는 키 목록. 파일 값은 무시되고 DB 값이 적용 중이다. */
+    public List<FileDiff> staleFileValues() {
+        return staleFileValues;
+    }
+
+    /** 파일 값과 DB 값이 다른 한 건. */
+    public static final class FileDiff {
+        private final SettingKey key;
+        private final String fileValue;
+        private final String dbValue;
+
+        FileDiff(SettingKey key, String fileValue, String dbValue) {
+            this.key = key;
+            this.fileValue = fileValue;
+            this.dbValue = dbValue;
+        }
+
+        public SettingKey key() { return key; }
+        public String fileValue() { return fileValue; }
+        public String dbValue() { return dbValue; }
+    }
+
+    /**
+     * 최초 1회: 옛 외부 application.properties 에서 온 값 중 기본값과 다른 것만 DB 로 옮긴다
+     * (app_setting_meta.migrated_from_properties 로 한 번만). 기본값과 같은 값은 옮기지 않는다 - 나중에 코드 기본값을
+     * 고쳐도 DB 에 옛 값이 굳지 않게 하려는 것. 파일은 건드리지 않는다(롤백 보험, 이름 변경은 운영자가 수동으로).
+     * 인자·conf 가 같은 키를 덮고 있으면(envHits 의 출처가 OLD_FILE 이 아님) 옛 파일 값은 가려져 있으므로 옮기지 않는다.
+     */
+    private void migrateFromOldFileIfNeeded() {
+        try {
+            if (store.isMigratedFromProperties()) {
+                return;
+            }
+            int moved = 0;
+            StringBuilder names = new StringBuilder();
+            for (Map.Entry<SettingKey, EnvHit> e : envHits.entrySet()) {
+                SettingKey k = e.getKey();
+                EnvHit hit = e.getValue();
+                if (hit.source != SettingSource.OLD_FILE || k.secret() || sameValue(k, hit.value, k.defaultValue())) {
+                    continue;
+                }
+                store.setGlobal(k.key(), hit.value.trim(), "system", "application.properties 최초 이관", "MIGRATE");
+                moved++;
+                names.append(names.length() == 0 ? "" : ", ").append(k.key());
+            }
+            store.markMigratedFromProperties();
+            log.info("옛 외부 application.properties 값 이관 완료: {}건{} (파일은 그대로 둡니다)", moved,
+                    moved == 0 ? "" : " [" + names + "]");
+        } catch (RuntimeException ex) {
+            // 이관이 안 돼도 기동은 계속한다 - 파일 값이 그대로 쓰이고, 플래그를 안 올렸으므로 다음 기동에 다시 시도한다.
+            log.warn("옛 외부 파일 값 이관에 실패했습니다 (다음 기동에 다시 시도): {}", ex.toString());
+        }
+    }
+
+    /** 옛 파일 값과 DB 값이 달라진 키를 찾아 경고한다 (DB 값이 이기므로 파일을 고쳐도 반영되지 않는다). */
+    private void refreshStaleFileValues() {
+        Snapshot s = snapshot;
+        List<FileDiff> out = new ArrayList<FileDiff>();
+        for (Map.Entry<SettingKey, EnvHit> e : envHits.entrySet()) {
+            EnvHit hit = e.getValue();
+            AppSettingStore.Row row = s.global.get(e.getKey());
+            if (hit.source == SettingSource.OLD_FILE && row != null && !sameValue(e.getKey(), hit.value, row.value())) {
+                out.add(new FileDiff(e.getKey(), hit.value, row.value()));
+                log.warn("옛 외부 파일 값과 DB 값이 달라 DB 값을 적용 중입니다: {} (파일 {}, DB {})", e.getKey().key(), hit.value, row.value());
+            }
+        }
+        staleFileValues = Collections.unmodifiableList(out);
+    }
+
+    /** 종류에 맞게 값이 같은지 본다 (정수·소수는 수치 비교, 불리언은 대소문자 무시). */
+    static boolean sameValue(SettingKey k, String a, String b) {
+        String x = a == null ? "" : a.trim();
+        String y = b == null ? "" : b.trim();
+        if (x.equals(y)) {
+            return true;
+        }
+        switch (k.type()) {
+            case INT:
+            case DECIMAL:
+                try {
+                    return new BigDecimal(x).compareTo(new BigDecimal(y)) == 0;
+                } catch (NumberFormatException e) {
+                    return false;
+                }
+            case BOOL:
+                return x.equalsIgnoreCase(y);
+            default:
+                return false;
+        }
     }
 
     // ───────────────────────── 환경(Environment) 훑기 ─────────────────────────
