@@ -44,16 +44,12 @@ public class MonitorService {
     // 코드 리뷰 지적(2026-09-14): 이 값은 SqlQueryService.timeoutSeconds/ExecutionPlanService.timeoutSeconds
     // 처럼 이 코드베이스가 이미 쓰는 관례대로 application.properties로 외부화 - 환경별로(v$lock이 특히
     // 느린 인스턴스 등) 재빌드 없이 조정 가능해야 한다.
-    @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
-    private int lockQueryTimeoutSeconds;
 
     // getHealth()의 "Busy" 안전장치(원본 DBAgent-Java에서 포팅, 2026-09-28): waiting>0 휴리스틱은 폴링
     // 동시성이 자기 자신을 오판하게 만들 수 있어(같은 tick에 여러 위젯이 동시에 죽은 풀을 두드리면 매번
     // self-inflicted로 잡혀 Not Alive로 전환이 몇 분씩 밀리는 걸 오케스트레이터가 실측) - Busy가 이
     // 시간 이상 끊기지 않고 지속되면 더는 "일시적 경합"으로 보지 않고 강제로 Not Alive 처리한다.
     // target별 마지막 Busy 시작 시각은 busySince에 둔다.
-    @Value("${dbagent.monitor.health-busy-max-seconds:30}")
-    private int healthBusyMaxSeconds;
 
     private final Map<String, Instant> busySince = new ConcurrentHashMap<>();
 
@@ -66,35 +62,25 @@ public class MonitorService {
 
     // ASH 시간대별 집계(getAshActivity)는 v$lock류보다 스캔 범위가 넓어(최근 N분 전체 샘플) lock-query-
     // timeout-seconds(3초, 락 조회 전용값)보다 여유를 둔다 - 별도 프로퍼티로 분리.
-    @Value("${dbagent.monitor.ash-activity-query-timeout-seconds:10}")
-    private int ashActivityQueryTimeoutSeconds;
 
     // 화면 조회(Current Session 세션 리스트·서브탭, 테이블 스페이스, Table 관계·정보, 세션 상세 SQL) 공통 타임아웃(초).
     // 이 조회들에만 setQueryTimeout이 빠져 있어, DB가 느려지면 커넥션을 무한정 붙잡을 수 있었다(2026-09-30 QA 낮음 항목).
     // 실패하면 화면이 오류/빈 목록으로 끝나고 다음 폴링에서 다시 시도한다.
-    @Value("${dbagent.monitor.screen-query-timeout-seconds:10}")
-    private int screenQueryTimeoutSeconds;
 
     // Current Session 서브탭(session_extra) 조회 실패가 이어질 때 같은 DB·탭·사유의 warn 로그를 다시 남기는 간격(분).
     // 처음 실패·사유 변경·복구는 간격과 상관없이 바로 남긴다. 0이면 이어지는 실패는 다시 남기지 않는다(logExtraTab 참고).
-    @Value("${dbagent.monitor.session-extra-fail-log-minutes:10}")
-    private int sessionExtraFailLogMinutes;
 
     /** try-with-resources 헤더 안에서 Statement에 화면 조회 타임아웃을 건다(ResultSet을 같은 헤더에서 여는 곳용). */
     private <T extends Statement> T timed(T st) throws SQLException {
-        st.setQueryTimeout(screenQueryTimeoutSeconds);
+        st.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
         return st;
     }
 
     // D2(2026-09-25): 선택 구간이 ASH 인메모리 보관 범위를 벗어나면 dba_hist_active_sess_history(AWR)로 보충.
     // Diagnostics Pack이 없는 사이트는 false로 끈다(설계 대시보드 UI 개선 7장 ash.awrFallback).
-    @Value("${dbagent.monitor.ash-awr-fallback:true}")
-    private boolean ashAwrFallback;
 
     // AWR이 섞인 구간 조회는 디스크의 dba_hist_active_sess_history를 읽어 인메모리 ASH보다 훨씬 느리다 -
     // 최대 24시간 구간을 10초(ash-activity-query-timeout-seconds)에 끝내기 어렵다(query-performance-reviewer 검토).
-    @Value("${dbagent.monitor.ash-awr-query-timeout-seconds:60}")
-    private int ashAwrQueryTimeoutSeconds;
 
     // TM Lock 장애 판정 기준(초)은 이제 환경설정(SettingsService, DB별 재정의 가능)에서 읽는다 (환경설정 DB화 P3-1, 2026-10-04).
     // 예전 프로퍼티화 경위(2026-09-25): 하드코딩 60초를 dbagent.monitor.tm-holder-last-call-et-seconds 로 뺐고, 새 대시보드 Lock 실시간
@@ -172,7 +158,7 @@ public class MonitorService {
                 String in = String.join(",", Collections.nCopies(localHolders.size(), "?"));
                 try (PreparedStatement ps = conn.prepareStatement(
                         "SELECT sid, type, lmode, ctime, id1 FROM v$lock WHERE block > 0 AND sid IN (" + in + ")")) {
-                    ps.setQueryTimeout(lockQueryTimeoutSeconds);
+                    ps.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
                     int i = 1;
                     for (Integer sid : localHolders) ps.setInt(i++, sid);
                     try (ResultSet rs = ps.executeQuery()) {
@@ -260,7 +246,7 @@ public class MonitorService {
                 "TO_CHAR(s.logon_time, 'YYYY-MM-DD HH24:MI:SS') AS login, s.status, s.program, s.machine, s.osuser " +
                 "FROM v$session s LEFT JOIN v$process p ON s.paddr = p.addr WHERE " + where;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setQueryTimeout(lockQueryTimeoutSeconds);
+            ps.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             if (sids != null) {
                 int i = 1;
                 for (Integer sid : sids) ps.setInt(i++, sid);
@@ -343,7 +329,7 @@ public class MonitorService {
             String in = String.join(",", Collections.nCopies(unknown.size(), "?"));
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT object_id, owner || '.' || object_name FROM dba_objects WHERE object_id IN (" + in + ")")) {
-                ps.setQueryTimeout(lockQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
                 int i = 1;
                 for (Long id : unknown) ps.setLong(i++, id);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -519,7 +505,7 @@ public class MonitorService {
                 from = LocalDateTime.parse(bucketLabels.get(0));
                 to = null;
             }
-            window = AshRange.resolve(conn, from, to, ashAwrFallback);
+            window = AshRange.resolve(conn, from, to, settings.getBool(SettingKey.ASH_AWR_FALLBACK));
             if (bucketLabels == null) {
                 bucketLabels = generateAshBucketLabels(window.from, window.to, stepMinutes);
             }
@@ -536,7 +522,7 @@ public class MonitorService {
                     "GROUP BY bucket_time, category " +
                     "ORDER BY bucket_time";
             try (PreparedStatement ps = conn.prepareStatement(query)) {
-                ps.setQueryTimeout(window.useAwr ? ashAwrQueryTimeoutSeconds : ashActivityQueryTimeoutSeconds);
+                ps.setQueryTimeout(window.useAwr ? settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS) : settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 ps.setInt(1, stepMinutes);
                 ps.setInt(2, stepMinutes);
                 AshRange.bind(ps, 3, window, filter == null || filter.isEmpty() ? null : filter::bind);
@@ -607,7 +593,7 @@ public class MonitorService {
                     "GROUP BY h.sql_id ORDER BY cnt DESC" +
                     ") WHERE ROWNUM <= 5";
             try (PreparedStatement ps = conn.prepareStatement(topSqlQuery)) {
-                ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 ps.setInt(1, rangeMinutes);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -648,7 +634,7 @@ public class MonitorService {
                         "ELSE NULL END" +
                         ") WHERE category IS NOT NULL ORDER BY sql_id, cnt DESC";
                 try (PreparedStatement ps = conn.prepareStatement(categoryQuery)) {
-                    ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                    ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                     int idx = 1;
                     ps.setInt(idx++, rangeMinutes);
                     for (String sqlId : sqlIds) ps.setString(idx++, sqlId);
@@ -706,7 +692,7 @@ public class MonitorService {
 
                 Map<String, Map<String, Long>> raw = new LinkedHashMap<>();
                 try (PreparedStatement ps = conn.prepareStatement(seriesQuery)) {
-                    ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                    ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                     int idx = 1;
                     ps.setInt(idx++, stepMinutes);
                     ps.setInt(idx++, stepMinutes);
@@ -787,7 +773,7 @@ public class MonitorService {
         long distinctCount = 0;
         try (Connection conn = poolManager.getConnection(target)) {
             try (PreparedStatement ps = conn.prepareStatement(query)) {
-                ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 int idx = 1;
                 ps.setString(idx++, startTime);
                 ps.setString(idx++, endTime);
@@ -835,7 +821,7 @@ public class MonitorService {
                         "ELSE NULL END" +
                         ") WHERE category IS NOT NULL ORDER BY sql_id, cnt DESC";
                 try (PreparedStatement ps = conn.prepareStatement(categoryQuery)) {
-                    ps.setQueryTimeout(ashActivityQueryTimeoutSeconds);
+                    ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                     int idx = 1;
                     ps.setString(idx++, startTime);
                     ps.setString(idx++, endTime);
@@ -970,7 +956,7 @@ public class MonitorService {
 
         List<Map<String, Object>> sessions = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target)) {
-            AshRange.Window window = AshRange.resolve(conn, start, end.plusMinutes(1), ashAwrFallback);
+            AshRange.Window window = AshRange.resolve(conn, start, end.plusMinutes(1), settings.getBool(SettingKey.ASH_AWR_FALLBACK));
             // getHistorySessions()와 동일한 NVL(sql_exec_start, sample_time)/sample_time 기준 경과시간 계산 -
             // "SYSDATE 기준으로 계산하면 과거 구간의 경과시간이 부풀려진다"는 결함을 피한다(design-advisor, 2026-09-22).
             // 사용자명은 SID당 최신 1건만 남긴 뒤 dba_users에서 붙인다(행마다 JOIN하지 않음).
@@ -991,7 +977,7 @@ public class MonitorService {
                     ") a) b LEFT JOIN dba_users u ON b.user_id = u.user_id " +
                     "WHERE b.rn = 1 ORDER BY b.sample_time DESC";
             try (PreparedStatement ps = conn.prepareStatement(query)) {
-                ps.setQueryTimeout(window.useAwr ? ashAwrQueryTimeoutSeconds : ashActivityQueryTimeoutSeconds);
+                ps.setQueryTimeout(window.useAwr ? settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS) : settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 AshRange.bind(ps, 1, window, (stmt, idx) -> {
                     for (String v : binds) stmt.setString(idx++, v);
                     return idx;
@@ -1131,8 +1117,8 @@ public class MonitorService {
                 return fresh;
             }
             st.suppressed++;
-            if (!privilege && sessionExtraFailLogMinutes > 0
-                    && now - st.lastLoggedAt >= sessionExtraFailLogMinutes * 60000L) {
+            if (!privilege && settings.getInt(SettingKey.SESSION_EXTRA_FAIL_LOG_MINUTES) > 0
+                    && now - st.lastLoggedAt >= settings.getInt(SettingKey.SESSION_EXTRA_FAIL_LOG_MINUTES) * 60000L) {
                 log.warn("session_extra {} still failing for {} ({}, {} more since last log): {}",
                         key, dbId, r.failReason, st.suppressed, r.detail);
                 st.lastLoggedAt = now;
@@ -1312,7 +1298,7 @@ public class MonitorService {
         List<Object> txSids = new ArrayList<>();
         List<Object> tmSids = new ArrayList<>();
         try (Statement st = conn.createStatement()) {
-            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             // v$lock request>0 대신 v$session 대기 이벤트로 찾는다(2026-09-29): 앱 계정(dbagent_user, DBA 롤)으로 보면 v$lock에서
             // 대기 요청 행이 일부 빠져 TM 대기 세션이 누락됐다(로컬 XE 실측 3개 중 2개 누락, SYS로는 보임). 세션당 1행이라 DISTINCT 불필요.
             try (ResultSet rs = st.executeQuery(
@@ -1418,7 +1404,7 @@ public class MonitorService {
         List<Map<String, Object>> datafiles = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
              PreparedStatement ps = conn.prepareStatement(query)) {
-            ps.setQueryTimeout(screenQueryTimeoutSeconds);
+            ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
             ps.setString(1, tablespaceName);
             ps.setString(2, tablespaceName);
             try (ResultSet rs = ps.executeQuery()) {
@@ -1643,7 +1629,7 @@ public class MonitorService {
         String sql = "SELECT owner FROM dba_tables WHERE table_name = ?" + (owner != null ? " AND owner = ?" : "") + " ORDER BY owner";
         List<String> owners = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setQueryTimeout(screenQueryTimeoutSeconds);
+            ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
             ps.setString(1, tableName);
             if (owner != null) ps.setString(2, owner);
             try (ResultSet rs = ps.executeQuery()) {
@@ -1692,7 +1678,7 @@ public class MonitorService {
             }
             String resolvedOwner = owners.get(0);
             try (PreparedStatement ps = conn.prepareStatement(query)) {
-                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
                 ps.setString(1, resolvedOwner);
                 ps.setString(2, tableName);
                 if (!uni) {
@@ -1750,7 +1736,7 @@ public class MonitorService {
                         "s.status, s.module, TO_CHAR(s.logon_time, 'YYYY-MM-DD HH24:MI:SS') AS logon_time " +
                         "FROM v$session s LEFT JOIN v$process p ON p.addr = s.paddr WHERE s.sid = ?" + (haveSerial ? " AND s.serial# = ?" : "");
                 try (PreparedStatement ps = conn.prepareStatement(sessionSql)) {
-                    ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                    ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
                     ps.setString(1, sidVal);
                     if (haveSerial) ps.setString(2, serialVal);
                     try (ResultSet rs = ps.executeQuery()) {
@@ -1792,7 +1778,7 @@ public class MonitorService {
                                     "WHERE a.session_id = ?" + (haveSerial ? " AND a.session_serial# = ?" : "") +
                                     " AND a.sql_id IS NOT NULL ORDER BY a.sample_time DESC) WHERE ROWNUM = 1";
                             try (PreparedStatement ashPs = conn.prepareStatement(ashSql)) {
-                                ashPs.setQueryTimeout(screenQueryTimeoutSeconds);
+                                ashPs.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
                                 ashPs.setString(1, sidVal);
                                 if (haveSerial) ashPs.setString(2, serialVal);
                                 try (ResultSet ashRs = ashPs.executeQuery()) {
@@ -1834,7 +1820,7 @@ public class MonitorService {
 
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT sql_fulltext, hash_value, child_number FROM v$sql WHERE sql_id = ? AND ROWNUM = 1")) {
-                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
                 ps.setString(1, sSqlId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
@@ -1862,7 +1848,7 @@ public class MonitorService {
                         ? "SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(?, ?, 'TYPICAL'))"
                         : "SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(?, NULL, 'TYPICAL'))";
                 try (PreparedStatement ps = conn.prepareStatement(planSql)) {
-                    ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                    ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
                     ps.setString(1, sSqlId);
                     if (sChildNumber != null) ps.setInt(2, sChildNumber);
                     StringBuilder sb = new StringBuilder();
@@ -1884,7 +1870,7 @@ public class MonitorService {
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT name, position, datatype_string, value_string, TO_CHAR(last_captured, 'YYYY-MM-DD HH24:MI:SS') " +
                             "FROM v$sql_bind_capture WHERE sql_id = ? ORDER BY position")) {
-                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
                 ps.setString(1, sSqlId);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -1935,7 +1921,7 @@ public class MonitorService {
             String resolvedOwner = owners.get(0);
             String tableComment = "";
             try (PreparedStatement ps = conn.prepareStatement("SELECT comments FROM dba_tab_comments WHERE owner = ? AND table_name = ?")) {
-                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
                 ps.setString(1, resolvedOwner);
                 ps.setString(2, tableName);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -1949,7 +1935,7 @@ public class MonitorService {
                     "LEFT JOIN dba_col_comments cm ON c.owner = cm.owner AND c.table_name = cm.table_name AND c.column_name = cm.column_name " +
                     "WHERE c.owner = ? AND c.table_name = ? ORDER BY c.column_id";
             try (PreparedStatement ps = conn.prepareStatement(colQuery)) {
-                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
                 ps.setString(1, resolvedOwner);
                 ps.setString(2, tableName);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -1975,7 +1961,7 @@ public class MonitorService {
                     "LEFT JOIN dba_constraints c ON c.owner = i.table_owner AND c.table_name = i.table_name AND c.index_name = i.index_name " +
                     "WHERE i.table_owner = ? AND i.table_name = ? GROUP BY i.owner, i.index_name ORDER BY i.index_name";
             try (PreparedStatement ps = conn.prepareStatement(idxQuery)) {
-                ps.setQueryTimeout(screenQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
                 ps.setString(1, resolvedOwner);
                 ps.setString(2, tableName);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -2019,7 +2005,7 @@ public class MonitorService {
             // 예전 getActiveAlerts()(2026-09-30 삭제)의 v$lock 조인과 같은 이유로 타임아웃을 건다(사용자 실측: 이 환경 일부
             // 인스턴스에서 v$lock 스캔 자체가 49초까지 걸릴 수 있음) - 이 쿼리도 같은 조인 패턴인데
             // 빠져 있었다(오케스트레이터 지적, 2026-09-18).
-            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             int count;
             try (ResultSet rs = st.executeQuery(query)) {
                 count = rs.next() ? rs.getInt(1) : 0;
@@ -2123,7 +2109,7 @@ public class MonitorService {
 
         if ("Busy".equals(instanceStatus)) {
             Instant since = busySince.computeIfAbsent(target.id(), k -> Instant.now());
-            if (Duration.between(since, Instant.now()).getSeconds() >= healthBusyMaxSeconds) {
+            if (Duration.between(since, Instant.now()).getSeconds() >= settings.getInt(SettingKey.HEALTH_BUSY_MAX_SECONDS)) {
                 // Busy로만 계속 남아있기엔 근거(경합 해소 기대)가 이미 무너진 상태 - Not Alive로 확정.
                 instanceStatus = "Not Alive";
                 listenerStatus = "Not Alive";
@@ -2469,7 +2455,7 @@ public class MonitorService {
                 "ORDER BY u.username";
         List<String> users = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
-            st.setQueryTimeout(ashAwrQueryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS));
             try (ResultSet rs = st.executeQuery(query)) {
                 while (rs.next()) users.add(rs.getString(1));
             }
@@ -2493,7 +2479,7 @@ public class MonitorService {
                 "ORDER BY h.machine";
         List<String> machines = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
-            st.setQueryTimeout(ashAwrQueryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS));
             try (ResultSet rs = st.executeQuery(query)) {
                 while (rs.next()) machines.add(rs.getString(1));
             }

@@ -84,8 +84,6 @@ public class LockRealtimeService {
     private final InstanceMetricHistoryService historyService;
     private final SettingsService settings;
 
-    @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
-    private int lockQueryTimeoutSeconds;
 
 
 
@@ -280,7 +278,7 @@ public class LockRealtimeService {
             int longRunningSeconds = settings.getInt(SettingKey.LONG_RUNNING_QUERY_SECONDS, target.id());
             String txCond = settings.getBool(SettingKey.LOCK_TX_ROW_LOCK_ONLY) ? "event = 'enq: TX - row lock contention'" : "event LIKE 'enq: TX%'";
             try (Statement st = conn.createStatement()) {
-                st.setQueryTimeout(lockQueryTimeoutSeconds);
+                st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
                 try (ResultSet rs = st.executeQuery(
                         "SELECT COUNT(CASE WHEN " + txCond + " THEN 1 END) AS tx_cnt, " +
                                 "COUNT(CASE WHEN event LIKE 'enq: TM%' THEN 1 END) AS tm_cnt " +
@@ -299,7 +297,7 @@ public class LockRealtimeService {
             // 항상 잡혀 카드가 영원히 떠 있지 않게(2026-09-30 정밀 점검 반영). 정수 설정값만 문자열에 넣는다.
             String longCond = "last_call_et >= " + longRunningSeconds + " AND NOT (state = 'WAITING' AND wait_class = 'Idle')";
             try (Statement st = conn.createStatement()) {
-                st.setQueryTimeout(lockQueryTimeoutSeconds);
+                st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
                 try (ResultSet rs = st.executeQuery("SELECT COUNT(*), " +
                         (longRunningSeconds > 0 ? "COUNT(CASE WHEN " + longCond + " THEN 1 END) " : "0 ") + userSessions)) {
                     if (rs.next()) {
@@ -335,7 +333,7 @@ public class LockRealtimeService {
             return cached[1];
         }
         try (Statement st = conn.createStatement()) {
-            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             double sga = 0;
             double pga = 0;
             double total = 0;
@@ -372,7 +370,7 @@ public class LockRealtimeService {
             return cached;
         }
         try (Statement st = conn.createStatement()) {
-            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             Double tps = null;
             Double hit = null;
             try (ResultSet rs = st.executeQuery("SELECT metric_name, value FROM v$sysmetric WHERE group_id = 2 " +
@@ -412,7 +410,7 @@ public class LockRealtimeService {
 
     private List<Map<String, Object>> queryLongRunningTop(Connection conn, String where) {
         try (Statement st = conn.createStatement()) {
-            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             List<Map<String, Object>> rows = new ArrayList<>();
             try (ResultSet rs = st.executeQuery("SELECT * FROM (SELECT sid, serial#, username, sql_id, last_call_et, event, program " +
                     where + " ORDER BY last_call_et DESC) WHERE ROWNUM <= 5")) {
@@ -439,7 +437,7 @@ public class LockRealtimeService {
     List<Map<String, Object>> queryHolders(Connection conn) throws SQLException {
         List<Map<String, Object>> rows = new ArrayList<>();
         try (Statement st = conn.createStatement()) {
-            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             try (ResultSet rs = st.executeQuery(
                     // /*+ rule */은 getFailureProb()가 폐쇄망에서 검증한 방식 그대로(v$lock 조인이 느린 환경 대응).
                     "SELECT /*+ rule */ s.sid, s.serial#, MAX(s.type) AS session_type, MAX(s.username) AS username, " +
@@ -487,7 +485,7 @@ public class LockRealtimeService {
             String in = String.join(",", Collections.nCopies(unknown.size(), "?"));
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT object_id, owner || '.' || object_name AS name FROM dba_objects WHERE object_id IN (" + in + ")")) {
-                ps.setQueryTimeout(lockQueryTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
                 int i = 1;
                 for (Long id : unknown) ps.setLong(i++, id);
                 try (ResultSet rs = ps.executeQuery()) {

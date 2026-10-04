@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
 import org.springframework.beans.factory.annotation.Value;
@@ -36,6 +39,10 @@ import java.util.Set;
 @Service
 public class PerfAnalysisService {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     static final int EVENT_LIMIT = 20;
     static final int SESSION_LIMIT = 200;
     private static final DateTimeFormatter ISO = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
@@ -47,12 +54,6 @@ public class PerfAnalysisService {
     private final InstanceMetricSamplerService sampler;
     private final InstanceMetricHistoryService history;
 
-    @Value("${dbagent.monitor.ash-activity-query-timeout-seconds:10}")
-    private int ashTimeoutSeconds;
-    @Value("${dbagent.monitor.ash-awr-query-timeout-seconds:60}")
-    private int awrTimeoutSeconds;
-    @Value("${dbagent.monitor.ash-awr-fallback:true}")
-    private boolean awrFallback;
 
     public PerfAnalysisService(OracleConnectionPoolManager poolManager, PerfStoreService store,
                                InstanceMetricSamplerService sampler, InstanceMetricHistoryService history) {
@@ -300,7 +301,7 @@ public class PerfAnalysisService {
     /** 선택 구간의 event별 합계(상위 EVENT_LIMIT개) + 구간 전체 합계. */
     public Map<String, Object> events(TargetDbConfig target, LocalDateTime from, LocalDateTime to, AshRange.Filter filter) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
-            AshRange.Window w = AshRange.resolve(conn, from, to, awrFallback);
+            AshRange.Window w = AshRange.resolve(conn, from, to, settings.getBool(SettingKey.ASH_AWR_FALLBACK));
             String columns = "h.sample_time, " + EVENT_EXPR + " AS event_name, " + AshCategories.CASE7 + " AS category";
             String query = "SELECT event_name, category, SUM(w) AS cnt, SUM(SUM(w)) OVER () AS total " +
                     "FROM (" + AshRange.baseSql(w, columns, filter.sql()) + ") b WHERE category IS NOT NULL " +
@@ -308,7 +309,7 @@ public class PerfAnalysisService {
             List<Map<String, Object>> events = new ArrayList<>();
             double total = 0;
             try (PreparedStatement ps = conn.prepareStatement(query)) {
-                ps.setQueryTimeout(w.useAwr ? awrTimeoutSeconds : ashTimeoutSeconds);
+                ps.setQueryTimeout(w.useAwr ? settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS) : settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 ps.setMaxRows(EVENT_LIMIT);
                 AshRange.bind(ps, 1, w, filter.isEmpty() ? null : filter::bind);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -338,7 +339,7 @@ public class PerfAnalysisService {
     public Map<String, Object> eventSessions(TargetDbConfig target, String event, LocalDateTime from, LocalDateTime to,
                                              AshRange.Filter filter) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
-            AshRange.Window w = AshRange.resolve(conn, from, to, awrFallback);
+            AshRange.Window w = AshRange.resolve(conn, from, to, settings.getBool(SettingKey.ASH_AWR_FALLBACK));
             String columns = "h.sample_time, h.session_id AS sid, h.session_serial# AS serial_no, h.user_id, h.program, " +
                     "h.machine, h.module, h.sql_id, h.sql_plan_hash_value AS phv, h.sql_opcode";
             String extra = "AND " + EVENT_EXPR + " = ? " + filter.sql();
@@ -355,7 +356,7 @@ public class PerfAnalysisService {
             Set<Integer> opcodes = new LinkedHashSet<>();
             Set<String> sqlIds = new LinkedHashSet<>();
             try (PreparedStatement ps = conn.prepareStatement(query)) {
-                ps.setQueryTimeout(w.useAwr ? awrTimeoutSeconds : ashTimeoutSeconds);
+                ps.setQueryTimeout(w.useAwr ? settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS) : settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 AshRange.bind(ps, 1, w, (stmt, i) -> {
                     stmt.setString(i++, event);
                     return filter.bind(stmt, i);

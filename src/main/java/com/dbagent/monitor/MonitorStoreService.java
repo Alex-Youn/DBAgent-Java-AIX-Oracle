@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import javax.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +39,10 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class MonitorStoreService {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     private static final Logger log = LoggerFactory.getLogger(MonitorStoreService.class);
 
     /** 분할 삭제 한 번에 지우는 행 수 - 한 번에 다 지우면 긴 쓰기 락으로 60초 샘플러 쓰기가 막힌다. */
@@ -43,11 +50,7 @@ public class MonitorStoreService {
 
     private final JdbcTemplate jdbc;
 
-    @Value("${dbagent.monitor.store-retention-days:30}")
-    private int retentionDays;
 
-    @Value("${dbagent.monitor.kill-audit-retention-days:365}")
-    private int killAuditRetentionDays;
 
     public MonitorStoreService(@Qualifier("metricsJdbcTemplate") JdbcTemplate jdbc) {
         this.jdbc = jdbc;
@@ -280,14 +283,14 @@ public class MonitorStoreService {
     @Scheduled(cron = "0 50 3 * * *")
     void cleanupOldRows() {
         long now = System.currentTimeMillis();
-        long cutoff = now - TimeUnit.DAYS.toMillis(retentionDays);
+        long cutoff = now - TimeUnit.DAYS.toMillis(settings.getInt(SettingKey.STORE_RETENTION_DAYS));
         purge("mon_sqlstat_delta", "collect_ts", cutoff);
         purge("mon_lock_sample", "collect_ts", cutoff);
         purge("mon_check_result", "check_ts", cutoff);
         purge("mon_segment_size", "snap_date", cutoff);
         // 숨김도 보관 기간이 지나면 지운다 - 같은 상태로 한 달 넘게 남은 알림은 한 번 다시 보여 주는 편이 안전하다
         purge("mon_check_ack", "ack_ts", cutoff);
-        purge("mon_kill_audit", "kill_ts", now - TimeUnit.DAYS.toMillis(killAuditRetentionDays));
+        purge("mon_kill_audit", "kill_ts", now - TimeUnit.DAYS.toMillis(settings.getInt(SettingKey.KILL_AUDIT_RETENTION_DAYS)));
     }
 
     /** 분할 삭제 - 덩어리 사이에 잠깐 쉬어 다른 쓰기(샘플러)가 끼어들 수 있게 한다. */

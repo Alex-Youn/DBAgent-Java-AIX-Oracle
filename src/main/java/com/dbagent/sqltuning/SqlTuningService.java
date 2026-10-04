@@ -1,5 +1,8 @@
 package com.dbagent.sqltuning;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,20 +33,20 @@ import java.util.Map;
 @Service
 public class SqlTuningService {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     // 기본값을 반드시 둘 것. 이 속성은 application.properties 에만 있는데 그 파일은 환경마다 값이 달라
     // 커밋 대상에서 빠져 있다(2026-09-04 결정). 기본값이 없으면 속성이 없는 환경에서 플레이스홀더 해석에
     // 실패해 SQL 튜닝 기능만이 아니라 **앱 전체가 기동하지 못한다**.
-    @Value("${sqltuning.api.url:http://localhost:8010}")
-    private String apiUrl;
 
-    @Value("${sqltuning.api.timeout-ms:180000}")
-    private int timeoutMs;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** 연결 실패 안내에 대상 주소를 함께 보여주려고 컨트롤러가 읽는다. */
     public String apiUrl() {
-        return apiUrl;
+        return settings.getString(SettingKey.SQLTUNING_API_URL);
     }
 
     public String analyze(String prompt) {
@@ -52,7 +55,7 @@ public class SqlTuningService {
 
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(10000);
-        factory.setReadTimeout(timeoutMs);
+        factory.setReadTimeout(settings.getInt(SettingKey.SQLTUNING_API_TIMEOUT_MS));
         RestTemplate restTemplate = new RestTemplate(factory);
 
         HttpHeaders headers = new HttpHeaders();
@@ -61,7 +64,7 @@ public class SqlTuningService {
 
         String raw;
         try {
-            raw = restTemplate.postForObject(apiUrl + "/generate", entity, String.class);
+            raw = restTemplate.postForObject(settings.getString(SettingKey.SQLTUNING_API_URL) + "/generate", entity, String.class);
         } catch (HttpStatusCodeException e) {
             HttpStatus status = e.getStatusCode();
             throw new IllegalStateException("SQL 튜닝 모델 서버가 HTTP " + status.value() + "를 반환했습니다.", e);

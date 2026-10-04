@@ -1,5 +1,8 @@
 package com.dbagent.auth;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.util.Lists;
 import com.dbagent.util.Maps;
 import com.dbagent.util.Strings;
@@ -23,6 +26,10 @@ import java.util.concurrent.TimeUnit;
 
 @Service
 public class AuthService {
+
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
 
     public static final class AuthSession {
         private final String username;
@@ -82,8 +89,6 @@ public class AuthService {
     // 세션 테이블이 로그아웃 없이는 무제한으로 쌓이는 문제(사용자 피드백, 2026-08-29) 대응 - 이 기간이
     // 지난 세션은 로그인 상태가 자동 만료됨. 계정당 멀티세션 지원(여러 기기 동시 로그인) 자체는 그대로
     // 유지하면서, 오래 방치된 토큰만 정리한다.
-    @Value("${dbagent.auth.session-ttl-days:30}")
-    private int sessionTtlDays;
 
     public AuthService(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
@@ -307,7 +312,7 @@ public class AuthService {
     }
 
     private long sessionExpiryCutoffMs() {
-        return System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sessionTtlDays);
+        return System.currentTimeMillis() - TimeUnit.DAYS.toMillis(settings.getInt(SettingKey.AUTH_SESSION_TTL_DAYS));
     }
 
     // 매일 새벽 3시에 TTL 지난 세션을 정리 - sessionForToken()/changePassword()의 조회 시점 필터링과
@@ -317,7 +322,7 @@ public class AuthService {
         int deleted = jdbc.update("DELETE FROM sessions WHERE created_at < ?",
                 sessionExpiryCutoffMs());
         if (deleted > 0) {
-            log.info("Cleaned up {} expired session(s) older than {} day(s)", deleted, sessionTtlDays);
+            log.info("Cleaned up {} expired session(s) older than {} day(s)", deleted, settings.getInt(SettingKey.AUTH_SESSION_TTL_DAYS));
         }
     }
 }

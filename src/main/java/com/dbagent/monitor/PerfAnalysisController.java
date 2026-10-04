@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.auth.AuthService;
 import com.dbagent.oracle.DatabaseConfigService;
 import com.dbagent.oracle.TargetDbConfig;
@@ -23,12 +26,13 @@ import java.util.Collections;
 @RequestMapping("/api/perf")
 public class PerfAnalysisController {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 보존 기간을 SettingsService 에서 읽는다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     private final AuthService authService;
     private final DatabaseConfigService configService;
     private final PerfAnalysisService perfService;
-
-    @org.springframework.beans.factory.annotation.Value("${dbagent.monitor.perf-retention-days:15}")
-    private int perfRetentionDays;
 
     public PerfAnalysisController(AuthService authService, DatabaseConfigService configService, PerfAnalysisService perfService) {
         this.authService = authService;
@@ -83,7 +87,7 @@ public class PerfAnalysisController {
             return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
         }
         try {
-            return ResponseEntity.ok(perfService.storeFilters(target, perfRetentionDays));
+            return ResponseEntity.ok(perfService.storeFilters(target, settings.getInt(SettingKey.PERF_RETENTION_DAYS)));
         } catch (SQLException e) {
             return error(HttpStatus.INTERNAL_SERVER_ERROR, "조회 중 DB 오류: " + e.getMessage());
         }

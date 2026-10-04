@@ -1,5 +1,8 @@
 package com.dbagent.sqltuneadvisor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,26 +31,25 @@ import java.util.Map;
 @Service
 public class SqlTuneAdvisorService {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
+    /** 서버 주소 - 스킴(http://)이 없으면 붙인다(예전 @PostConstruct 정규화와 같은 규칙). 설정이 바뀌면 다음 호출부터 새 주소를 쓴다. */
+    private String apiBase() {
+        String u = settings.getString(SettingKey.AIDBA_RESTAPI_URL);
+        return (u != null && !u.contains("://")) ? "http://" + u : u;
+    }
+
     // 2026-09-14: aidba.ollama.url + sqltuneadvisor.api.url 는 결국 같은 sqlrestapi 서버를 가리키므로
     // aidba.restapi.url 하나로 통합했다. 스킴을 빠뜨려도 되게 normalizeUrl()에서 http://를 보정한다.
-    @Value("${aidba.restapi.url:http://localhost:9300}")
-    private String apiUrl;
 
-    @Value("${sqltuneadvisor.api.timeout-ms:180000}")
-    private int timeoutMs;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @PostConstruct
-    private void normalizeUrl() {
-        if (apiUrl != null && !apiUrl.contains("://")) {
-            apiUrl = "http://" + apiUrl;
-        }
-    }
-
     /** 연결 실패 안내에 대상 주소를 함께 보여주려고 컨트롤러가 읽는다. */
     public String apiUrl() {
-        return apiUrl;
+        return apiBase();
     }
 
     public Map<String, Object> query(String query) {
@@ -57,7 +59,7 @@ public class SqlTuneAdvisorService {
 
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(10000);
-        factory.setReadTimeout(timeoutMs);
+        factory.setReadTimeout(settings.getInt(SettingKey.SQLTUNEADVISOR_API_TIMEOUT_MS));
         RestTemplate restTemplate = new RestTemplate(factory);
 
         HttpHeaders headers = new HttpHeaders();
@@ -66,7 +68,7 @@ public class SqlTuneAdvisorService {
 
         String raw;
         try {
-            raw = restTemplate.postForObject(apiUrl + "/api/query", entity, String.class);
+            raw = restTemplate.postForObject(apiBase() + "/api/query", entity, String.class);
         } catch (HttpStatusCodeException e) {
             HttpStatus status = e.getStatusCode();
             throw new IllegalStateException("SQL Tune Advisor 서버가 HTTP " + status.value() + "를 반환했습니다.", e);

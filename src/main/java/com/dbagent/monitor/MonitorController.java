@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.auth.AuthService;
 import com.dbagent.util.Lists;
 import com.dbagent.util.Maps;
@@ -43,6 +46,10 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api")
 public class MonitorController {
+
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
 
     private static final Logger log = LoggerFactory.getLogger(MonitorController.class);
 
@@ -352,8 +359,6 @@ public class MonitorController {
     // socket connect even starts, for one - 사용자가 겪은 ORA-17002 사례에서, 막힌 DB 하나가 전체
     // fleet_status 응답을 계속 물고 있는 것처럼 보였던 문제). Past this bound the instance just
     // reports "down" instead of holding up every other instance's already-ready result.
-    @Value("${dbagent.fleet-status.timeout-seconds:5}")
-    private long fleetStatusTimeoutSeconds;
 
     // Java 8 has no CompletableFuture.orTimeout() (added in 9) - this is the manual equivalent: race
     // a *derived view* of the source future against a scheduled failure, whichever completes first
@@ -430,7 +435,7 @@ public class MonitorController {
         }
         List<CompletableFuture<Map<String, Object>>> futures = configService.listAllInstances().stream()
                 .filter(inst -> authService.canAccessDb(token, inst.id()))
-                .map(inst -> withTimeout(fleetStatusFor(inst), fleetStatusTimeoutSeconds, TimeUnit.SECONDS)
+                .map(inst -> withTimeout(fleetStatusFor(inst), settings.getLong(SettingKey.FLEET_STATUS_TIMEOUT_SECONDS), TimeUnit.SECONDS)
                         .exceptionally(ex -> {
                             // withTimeout()의 view는 직접 completeExceptionally()로 완료되므로 보통 원본
                             // 예외를 그대로 받지만, source 쪽 체인 상황에 따라 CompletionException으로
@@ -441,7 +446,7 @@ public class MonitorController {
                             boolean isTimeout = cause instanceof TimeoutException;
                             if (isTimeout) {
                                 log.warn("fleet_status timed out after {}s for db_id={}: {}",
-                                        fleetStatusTimeoutSeconds, inst.id(), cause.toString());
+                                        settings.getLong(SettingKey.FLEET_STATUS_TIMEOUT_SECONDS), inst.id(), cause.toString());
                             } else {
                                 log.warn("fleet_status failed for db_id={}: {}", inst.id(), cause.toString());
                             }
@@ -489,8 +494,6 @@ public class MonitorController {
 
     // failure_prob 호출 대기 한도(초) - 원래 두 번째 대시보드(v2)의 active_alerts와 같이 쓰던 값. v2 삭제(2026-09-30,
     // 오케스트레이터 결정)로 instance_overview·active_alerts API는 없어졌고 이 값은 failure_prob만 쓴다(키 이름은 호환 위해 유지).
-    @Value("${dbagent.monitor.active-alerts-timeout-seconds:5}")
-    private long activeAlertsTimeoutSeconds;
 
     private static final int MAX_KILL_SESSIONS = 200;
 
@@ -654,7 +657,7 @@ public class MonitorController {
         }
         try {
             Map<String, Object> result =
-                    withTimeout(failureProbFor(target), activeAlertsTimeoutSeconds, TimeUnit.SECONDS).join();
+                    withTimeout(failureProbFor(target), settings.getLong(SettingKey.ACTIVE_ALERTS_TIMEOUT_SECONDS), TimeUnit.SECONDS).join();
             return ResponseEntity.ok(result);
         } catch (CompletionException ex) {
             Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
@@ -662,7 +665,7 @@ public class MonitorController {
                 // 장애조치 버튼은 "이상 없음"보다 "판단 보류"가 안전하다 - count=0으로 응답하면 실제
                 // 장애가 있어도 버튼이 숨어 놓친 것처럼 보인다. !res.ok 경로(app.js fetchIncidentGateV2)를
                 // 타게 해서 버튼을 숨기고 다음 폴링에서 다시 시도하게 한다.
-                log.warn("failure_prob timed out after {}s for db_id={}", activeAlertsTimeoutSeconds, db_id);
+                log.warn("failure_prob timed out after {}s for db_id={}", settings.getLong(SettingKey.ACTIVE_ALERTS_TIMEOUT_SECONDS), db_id);
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Maps.of("error", "조회 시간 초과"));
             }
             if (cause instanceof SQLException) {

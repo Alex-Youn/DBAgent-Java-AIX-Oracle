@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.oracle.DatabaseConfigService;
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
@@ -44,6 +47,10 @@ import java.util.stream.Collectors;
 @Service
 public class CheckCollector {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     private static final Logger log = LoggerFactory.getLogger(CheckCollector.class);
     // 4개: 무거운 1일 점검(딕셔너리 풀스캔)이 다른 DB의 10분 점검을 오래 막지 않게(query-performance-reviewer 검토, 2026-09-26)
     private static final ExecutorService CHECK_EXECUTOR = Executors.newFixedThreadPool(4, r -> {
@@ -60,42 +67,16 @@ public class CheckCollector {
     private final OracleConnectionPoolManager poolManager;
     private final MonitorStoreService storeService;
 
-    @Value("${dbagent.monitor.check-query-timeout-seconds:30}")
-    private int queryTimeoutSeconds;
-    @Value("${dbagent.monitor.check-daily-query-timeout-seconds:120}")
-    private int dailyTimeoutSeconds;
     // 커넥션 읽기 타임아웃(전역) - 쿼리 타임아웃이 이보다 길면 실제로는 이 값에서 네트워크 오류로 끊겨 "DB 접속 실패"처럼 보인다.
     // 전역 값은 건드리지 않고 1일 점검 타임아웃을 이보다 5초 짧게 맞춘다(더 길게 필요하면 두 값을 같이 올린다).
     @Value("${dbagent.oracle.read-timeout-ms:60000}")
     private long readTimeoutMs;
     // 잡 실패 점검은 dba_scheduler_job_run_details가 날짜 인덱스 없이 항상 전체를 읽어 10분보다 드물게(기본 30분)
-    @Value("${dbagent.monitor.check-job-interval-minutes:30}")
-    private int jobIntervalMinutes;
     private final Map<String, Long> lastJobCheck = new java.util.concurrent.ConcurrentHashMap<>();
-    @Value("${dbagent.monitor.check-tablespace-warn-pct:97}")
-    private double tsWarn;
-    @Value("${dbagent.monitor.check-tablespace-crit-pct:98}")
-    private double tsCrit;
-    @Value("${dbagent.monitor.check-segment-snapshot-min-gb:1}")
-    private double snapshotMinGb;
-    @Value("${dbagent.monitor.check-fra-warn-pct:80}")
-    private double fraWarn;
-    @Value("${dbagent.monitor.check-fra-crit-pct:90}")
-    private double fraCrit;
-    @Value("${dbagent.monitor.check-temp-warn-pct:75}")
-    private double tempWarn;
-    @Value("${dbagent.monitor.check-temp-crit-pct:90}")
-    private double tempCrit;
-    @Value("${dbagent.monitor.check-exclude-owners:SYS,SYSTEM,AUDSYS,XDB,MDSYS,CTXSYS}")
-    private String excludeOwners;
     // 잡 실패 점검 이름 패턴(쉼표 구분, LIKE처럼 % = 아무 글자, 대소문자 무시, JOB_NAME 또는 OWNER.JOB_NAME과 비교, 2026-09-29).
     // downgrade: '주의/위험' 대신 '확인'으로 표시. 기본 ORA$AT_% = Oracle 자동 유지보수 작업(Segment Advisor·통계 수집 등) -
     // 실행마다 이름 뒤 번호가 바뀌어 숨김으로는 계속 새로 뜨고, 대개 급하지 않다(통계 수집 실패는 보이게 남겨 둔다).
     // exclude: 점검에서 아예 뺀다(기본 없음).
-    @Value("${dbagent.monitor.job-fail-downgrade:ORA$AT_%}")
-    private String jobFailDowngrade;
-    @Value("${dbagent.monitor.job-fail-exclude:}")
-    private String jobFailExclude;
 
     public CheckCollector(DatabaseConfigService configService, OracleConnectionPoolManager poolManager,
                           MonitorStoreService storeService) {
@@ -164,7 +145,7 @@ public class CheckCollector {
             run(rows, target, ts, "FRA", () -> checkFra(conn, target, ts, rows));
             run(rows, target, ts, "TEMP", () -> checkTemp(conn, target, ts, rows));
             Long lastJob = lastJobCheck.get(target.id());
-            if (lastJob == null || ts - lastJob >= jobIntervalMinutes * 60000L - 5000L) {
+            if (lastJob == null || ts - lastJob >= settings.getInt(SettingKey.CHECK_JOB_INTERVAL_MINUTES) * 60000L - 5000L) {
                 lastJobCheck.put(target.id(), ts);
                 run(rows, target, ts, "JOB_FAIL", () -> checkJobs(conn, target, ts, rows));
             }
@@ -177,7 +158,7 @@ public class CheckCollector {
     /** 1일 점검 쿼리 타임아웃 - 커넥션 읽기 타임아웃보다 5초 짧게(최소 10초). */
     int dailyTimeout() {
         int cap = (int) Math.max(10, readTimeoutMs / 1000 - 5);
-        return Math.min(dailyTimeoutSeconds, cap);
+        return Math.min(settings.getInt(SettingKey.CHECK_DAILY_QUERY_TIMEOUT_SECONDS), cap);
     }
 
     void checkDaily(TargetDbConfig target) {
@@ -225,8 +206,8 @@ public class CheckCollector {
                         "ROUND(m.tablespace_size * t.block_size / POWER(1024,3), 1) AS max_gb, ROUND(m.used_percent, 1) AS used_pct " +
                         "FROM dba_tablespace_usage_metrics m JOIN dba_tablespaces t ON t.tablespace_name = m.tablespace_name " +
                         "WHERE m.used_percent >= ? ORDER BY m.used_percent DESC")) {
-            ps.setQueryTimeout(queryTimeoutSeconds);
-            ps.setDouble(1, tsWarn);
+            ps.setQueryTimeout(settings.getInt(SettingKey.CHECK_QUERY_TIMEOUT_SECONDS));
+            ps.setDouble(1, settings.getDouble(SettingKey.CHECK_TABLESPACE_WARN_PCT));
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     double pct = rs.getDouble("used_pct");
@@ -235,7 +216,7 @@ public class CheckCollector {
                     d.put("usedGb", used);
                     d.put("maxGb", max);
                     d.put("freeGb", Math.round((max - used) * 10) / 10.0);
-                    rows.add(row(target, ts, "TABLESPACE", rs.getString(1), pct >= tsCrit ? "CRIT" : "WARN", pct, pct >= tsCrit ? tsCrit : tsWarn, d));
+                    rows.add(row(target, ts, "TABLESPACE", rs.getString(1), pct >= settings.getDouble(SettingKey.CHECK_TABLESPACE_CRIT_PCT) ? "CRIT" : "WARN", pct, pct >= settings.getDouble(SettingKey.CHECK_TABLESPACE_CRIT_PCT) ? settings.getDouble(SettingKey.CHECK_TABLESPACE_CRIT_PCT) : settings.getDouble(SettingKey.CHECK_TABLESPACE_WARN_PCT), d));
                 }
             }
         }
@@ -243,7 +224,7 @@ public class CheckCollector {
 
     private void checkFra(Connection conn, TargetDbConfig target, long ts, List<Object[]> rows) throws SQLException {
         try (Statement st = conn.createStatement()) {
-            st.setQueryTimeout(queryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.CHECK_QUERY_TIMEOUT_SECONDS));
             // FRA를 설정하지 않은 DB는 space_limit = 0 → 제외(0으로 나누기 방지, 미설정을 오류·위험으로 보지 않음)
             try (ResultSet rs = st.executeQuery(
                     "SELECT name, ROUND(space_limit / POWER(1024,3), 1) AS limit_gb, ROUND(space_used / POWER(1024,3), 1) AS used_gb, " +
@@ -252,12 +233,12 @@ public class CheckCollector {
                             "FROM v$recovery_file_dest WHERE space_limit > 0")) {
                 while (rs.next()) {
                     double pct = rs.getDouble("used_pct");
-                    if (pct < fraWarn) continue;
+                    if (pct < settings.getDouble(SettingKey.CHECK_FRA_WARN_PCT)) continue;
                     Map<String, Object> d = new LinkedHashMap<>();
                     d.put("limitGb", rs.getDouble("limit_gb"));
                     d.put("usedGb", rs.getDouble("used_gb"));
                     d.put("reclaimableGb", rs.getDouble("reclaim_gb"));
-                    rows.add(row(target, ts, "FRA", rs.getString("name"), pct >= fraCrit ? "CRIT" : "WARN", pct, pct >= fraCrit ? fraCrit : fraWarn, d));
+                    rows.add(row(target, ts, "FRA", rs.getString("name"), pct >= settings.getDouble(SettingKey.CHECK_FRA_CRIT_PCT) ? "CRIT" : "WARN", pct, pct >= settings.getDouble(SettingKey.CHECK_FRA_CRIT_PCT) ? settings.getDouble(SettingKey.CHECK_FRA_CRIT_PCT) : settings.getDouble(SettingKey.CHECK_FRA_WARN_PCT), d));
                 }
             }
         }
@@ -265,7 +246,7 @@ public class CheckCollector {
 
     private void checkTemp(Connection conn, TargetDbConfig target, long ts, List<Object[]> rows) throws SQLException {
         try (Statement st = conn.createStatement()) {
-            st.setQueryTimeout(queryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.CHECK_QUERY_TIMEOUT_SECONDS));
             try (ResultSet rs = st.executeQuery(
                     "SELECT f.tablespace_name, ROUND((f.tablespace_size - f.free_space) / POWER(1024,3), 1) AS used_gb, " +
                             "ROUND(m.max_bytes / POWER(1024,3), 1) AS max_gb, " +
@@ -275,11 +256,11 @@ public class CheckCollector {
                             "FROM dba_temp_files GROUP BY tablespace_name) m ON m.tablespace_name = f.tablespace_name")) {
                 while (rs.next()) {
                     double pct = rs.getDouble("used_pct");
-                    if (pct < tempWarn) continue;
+                    if (pct < settings.getDouble(SettingKey.CHECK_TEMP_WARN_PCT)) continue;
                     Map<String, Object> d = new LinkedHashMap<>();
                     d.put("usedGb", rs.getDouble("used_gb"));
                     d.put("maxGb", rs.getDouble("max_gb"));
-                    rows.add(row(target, ts, "TEMP", rs.getString(1), pct >= tempCrit ? "CRIT" : "WARN", pct, pct >= tempCrit ? tempCrit : tempWarn, d));
+                    rows.add(row(target, ts, "TEMP", rs.getString(1), pct >= settings.getDouble(SettingKey.CHECK_TEMP_CRIT_PCT) ? "CRIT" : "WARN", pct, pct >= settings.getDouble(SettingKey.CHECK_TEMP_CRIT_PCT) ? settings.getDouble(SettingKey.CHECK_TEMP_CRIT_PCT) : settings.getDouble(SettingKey.CHECK_TEMP_WARN_PCT), d));
                 }
             }
         }
@@ -288,7 +269,7 @@ public class CheckCollector {
     /** 최근 24시간 실패가 있는 잡 - 최근 2회 실행이 모두 실패면 위험(2회 연속), 아니면 주의. */
     private void checkJobs(Connection conn, TargetDbConfig target, long ts, List<Object[]> rows) throws SQLException {
         try (Statement st = conn.createStatement()) {
-            st.setQueryTimeout(queryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.CHECK_QUERY_TIMEOUT_SECONDS));
             try (ResultSet rs = st.executeQuery(
                     "SELECT owner, job_name, fail_cnt, last1, last2, last_err, last_info, TO_CHAR(last_fail, 'YYYY-MM-DD HH24:MI:SS') AS last_fail FROM (" +
                             "SELECT owner, job_name, " +
@@ -299,8 +280,8 @@ public class CheckCollector {
                             "ROW_NUMBER() OVER (PARTITION BY owner, job_name ORDER BY log_date DESC) AS rn " +
                             "FROM dba_scheduler_job_run_details WHERE log_date > SYSDATE - 1" +
                             ") WHERE rn = 1 AND fail_cnt > 0 ORDER BY fail_cnt DESC")) {
-                List<java.util.regex.Pattern> exclude = likePatterns(jobFailExclude);
-                List<java.util.regex.Pattern> downgrade = likePatterns(jobFailDowngrade);
+                List<java.util.regex.Pattern> exclude = likePatterns(settings.getString(SettingKey.JOB_FAIL_EXCLUDE));
+                List<java.util.regex.Pattern> downgrade = likePatterns(settings.getString(SettingKey.JOB_FAIL_DOWNGRADE));
                 while (rs.next()) {
                     String owner = rs.getString("owner"), job = rs.getString("job_name");
                     if (matchesJob(exclude, owner, job)) continue;
@@ -349,7 +330,7 @@ public class CheckCollector {
     // ================================================================== 무거운 항목 (1일)
 
     private String ownerNotIn() {
-        String list = Arrays.stream(excludeOwners.split(",")).map(String::trim).filter(s -> s.matches("[A-Za-z0-9_$#]+"))
+        String list = Arrays.stream(settings.getString(SettingKey.CHECK_EXCLUDE_OWNERS).split(",")).map(String::trim).filter(s -> s.matches("[A-Za-z0-9_$#]+"))
                 .map(s -> "'" + s.toUpperCase() + "'").collect(Collectors.joining(","));
         return list.isEmpty() ? "" : " AND owner NOT IN (" + list + ") ";
     }
@@ -367,7 +348,7 @@ public class CheckCollector {
                         "WHERE segment_type IN ('TABLE','TABLE PARTITION','TABLE SUBPARTITION')" + ownerNotIn() +
                         "GROUP BY owner, segment_name HAVING SUM(bytes) >= ? * POWER(1024,3) ORDER BY size_bytes DESC")) {
             ps.setQueryTimeout(dailyTimeout());
-            ps.setDouble(1, snapshotMinGb);
+            ps.setDouble(1, settings.getDouble(SettingKey.CHECK_SEGMENT_SNAPSHOT_MIN_GB));
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     snap.add(new Object[]{target.id(), snapDate, rs.getString(1), rs.getString(2), rs.getLong(3)});

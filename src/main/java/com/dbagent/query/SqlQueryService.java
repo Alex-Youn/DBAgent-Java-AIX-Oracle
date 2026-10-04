@@ -1,5 +1,8 @@
 package com.dbagent.query;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
 import com.dbagent.util.Strings;
@@ -24,6 +27,10 @@ import java.util.regex.Pattern;
 @Service
 public class SqlQueryService {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     private final OracleConnectionPoolManager poolManager;
 
     // Caps both how long a query may run and how many rows come back to the browser grid, since
@@ -31,14 +38,8 @@ public class SqlQueryService {
     // maxRows is the default when the caller doesn't ask for a specific row count; maxRowsLimit is
     // the hard ceiling a caller-supplied value is clamped to, so the grid/DB can't be asked for more
     // than that no matter what the UI sends.
-    @Value("${dbagent.sql-runner.max-rows:500}")
-    private int maxRows;
 
-    @Value("${dbagent.sql-runner.max-rows-limit:5000}")
-    private int maxRowsLimit;
 
-    @Value("${dbagent.sql-runner.timeout-seconds:30}")
-    private int timeoutSeconds;
 
     // Kept short (not the full CLOB) so one huge column can't blow up the JSON response.
     private static final int CLOB_PREVIEW_CHARS = 4000;
@@ -50,15 +51,10 @@ public class SqlQueryService {
     //  2) 실행 전 SET TRANSACTION READ ONLY, 끝나면 롤백 - 조회문 안에 숨은 변경 시도도 DB가 거부한다.
     // 기본 true. 필요할 때만 application.properties에서 false로 끈다(값이 "false"가 아니면 켜진 것으로 본다 -
     // 오타로 안전장치가 풀리지 않게, 그리고 잘못된 값으로 기동이 실패하지 않게 문자열로 받는다).
-    private boolean readOnly = true;
-
-    @Value("${dbagent.sql-runner.read-only:true}")
-    void setReadOnly(String value) {
-        this.readOnly = !"false".equalsIgnoreCase(value == null ? "" : value.trim());
-    }
+    // 읽기 전용 여부는 SettingsService 에서 읽는다(값이 true/false 로 검증되고 기본 true) (환경설정 DB화 P3-2).
 
     public boolean isReadOnly() {
-        return readOnly;
+        return settings.getBool(SettingKey.SQL_RUNNER_READ_ONLY);
     }
 
     private static final Pattern LEADING_NOISE =
@@ -98,9 +94,9 @@ public class SqlQueryService {
     public Map<String, Object> execute(TargetDbConfig target, String rawSql, Integer requestedMaxRows) throws SQLException {
         String sql = stripTrailingSemicolon(Strings.strip(rawSql));
         int effectiveMaxRows = (requestedMaxRows != null && requestedMaxRows > 0)
-                ? Math.min(requestedMaxRows, maxRowsLimit)
-                : maxRows;
-        if (readOnly) {
+                ? Math.min(requestedMaxRows, settings.getInt(SettingKey.SQL_RUNNER_MAX_ROWS_LIMIT))
+                : settings.getInt(SettingKey.SQL_RUNNER_MAX_ROWS);
+        if (isReadOnly()) {
             String violation = readOnlyViolation(sql);
             if (violation != null) {
                 Map<String, Object> rejected = new LinkedHashMap<>();
@@ -116,14 +112,14 @@ public class SqlQueryService {
              Statement st = conn.createStatement()) {
           boolean readOnlyTx = false;
           try {
-            if (readOnly) {
+            if (isReadOnly()) {
                 conn.setAutoCommit(false);
                 readOnlyTx = true;
                 try (Statement tx = conn.createStatement()) {
                     tx.execute("SET TRANSACTION READ ONLY");
                 }
             }
-            st.setQueryTimeout(timeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.SQL_RUNNER_TIMEOUT_SECONDS));
             st.setMaxRows(effectiveMaxRows);
 
             boolean hasResultSet = st.execute(sql);

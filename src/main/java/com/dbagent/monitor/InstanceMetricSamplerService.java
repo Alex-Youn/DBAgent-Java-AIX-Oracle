@@ -103,8 +103,6 @@ public class InstanceMetricSamplerService {
 
     // MonitorService.lockQueryTimeoutSeconds와 같은 값 - 이 환경 일부 인스턴스에서 v$lock 스캔이
     // 49초까지 걸리는 걸 실측했으므로, 여기서도 동일하게 짧게 캡을 건다.
-    @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
-    private int lockQueryTimeoutSeconds;
 
     // TX 대기 기준(lock-tx-row-lock-only)은 대시보드 Lock 실시간(LockRealtimeService)과 같은 설정을 환경설정(SettingsService)에서 읽는다 -
     // 이 값이 차트 빈 구간(fill)을 채우므로 두 선이 같은 정의여야 한다 (환경설정 DB화 P3-1, 2026-10-04).
@@ -303,7 +301,7 @@ public class InstanceMetricSamplerService {
 
             int tmLockWaiting = 0;
             int txLockWaiting = 0;
-            st.setQueryTimeout(lockQueryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             // v$lock request>0 대신 v$session 대기 이벤트로 센다(2026-09-29): 앱 계정(dbagent_user, DBA 롤)으로 보면 v$lock에서
             // 대기 요청 행이 일부 빠져 TM 대기 3개가 1개로 기록됐다(로컬 XE 실측, SYS로는 3개). 대시보드 Lock 실시간과 같은 정의라
             // 차트 점선 구간(fill)과 실시간 선이 어긋나지 않고, 느린 v$lock 스캔(폐쇄망 49초 전례)도 이 경로에서 빠진다.
@@ -398,7 +396,7 @@ public class InstanceMetricSamplerService {
                         "AND h.session_type = 'FOREGROUND' " +
                         EXCLUDE_SELF_SQL +
                         ") WHERE cat7 IS NOT NULL OR cat8 IS NOT NULL GROUP BY cat7, cat8")) {
-            ps.setQueryTimeout(lockQueryTimeoutSeconds);
+            ps.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             if (byId) {
                 ps.setLong(1, last);
                 ps.setLong(2, latest);
@@ -531,7 +529,7 @@ public class InstanceMetricSamplerService {
             return m;
         });
         try (PreparedStatement ps = conn.prepareStatement("SELECT sql_text FROM v$sqlstats WHERE sql_id = ? AND ROWNUM = 1")) {
-            ps.setQueryTimeout(lockQueryTimeoutSeconds);
+            ps.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
             for (String id : sqlIds) {
                 if (out.size() >= SQL_TEXT_PER_CYCLE) break;
                 Long seen = known.get(id);

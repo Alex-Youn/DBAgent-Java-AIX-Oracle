@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.oracle.DatabaseConfigService;
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
@@ -40,6 +43,10 @@ import java.util.concurrent.Executors;
 @Service
 public class SqlStatDeltaCollector {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     private static final Logger log = LoggerFactory.getLogger(SqlStatDeltaCollector.class);
 
     /** 샘플러와 같은 이유로 전용 스레드 - 공용 @Scheduled 스레드를 오래 잡지 않게. */
@@ -55,8 +62,6 @@ public class SqlStatDeltaCollector {
     private final OracleConnectionPoolManager poolManager;
     private final MonitorStoreService storeService;
 
-    @Value("${dbagent.monitor.sqlstat-query-timeout-seconds:15}")
-    private int queryTimeoutSeconds;
 
     /** db_id → (sql_id|phv → {executions, elapsed, cpu, buffer_gets, disk_reads, rows, lastSeenMs}) */
     private final Map<String, Map<String, long[]>> previous = new ConcurrentHashMap<>();
@@ -93,7 +98,7 @@ public class SqlStatDeltaCollector {
         Map<String, long[]> prev = previous.computeIfAbsent(target.id(), k -> new ConcurrentHashMap<>());
         List<Object[]> rows = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
-            st.setQueryTimeout(queryTimeoutSeconds);
+            st.setQueryTimeout(settings.getInt(SettingKey.SQLSTAT_QUERY_TIMEOUT_SECONDS));
             try (ResultSet rs = st.executeQuery(
                     "SELECT sql_id, plan_hash_value, executions, elapsed_time, cpu_time, buffer_gets, disk_reads, " +
                             "rows_processed " +

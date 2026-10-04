@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import javax.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +33,10 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class InstanceMetricHistoryService {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     private static final Logger log = LoggerFactory.getLogger(InstanceMetricHistoryService.class);
 
     private final JdbcTemplate jdbc;
@@ -38,8 +45,6 @@ public class InstanceMetricHistoryService {
     // AuthService.sessionTtlDays와 같은 이유로 설정값화 - 운영 중 보존 기간을 재빌드 없이 바꿀 수 있어야 함
     // (2026-09-15 agent 백로그 논의에서 정한 원칙을 이 테이블에도 그대로 적용).
     // 2026-09-26 오케스트레이터 결정: 30일 → 15일(성능 분석 수집 저장소 perf-retention-days와 같은 기간).
-    @Value("${dbagent.monitor.metric-retention-days:15}")
-    private int retentionDays;
 
     public InstanceMetricHistoryService(@Qualifier("metricsJdbcTemplate") JdbcTemplate jdbc,
                                          @Qualifier("jdbcTemplate") JdbcTemplate legacyUsersJdbc) {
@@ -129,10 +134,10 @@ public class InstanceMetricHistoryService {
 
     @Scheduled(cron = "0 45 3 * * *")
     void cleanupOldSamples() {
-        long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays);
+        long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(settings.getInt(SettingKey.METRIC_RETENTION_DAYS));
         int deleted = jdbc.update("DELETE FROM instance_metric_history WHERE sampled_at < ?", cutoff);
         if (deleted > 0) {
-            log.info("Cleaned up {} instance metric sample(s) older than {} day(s)", deleted, retentionDays);
+            log.info("Cleaned up {} instance metric sample(s) older than {} day(s)", deleted, settings.getInt(SettingKey.METRIC_RETENTION_DAYS));
         }
     }
 }

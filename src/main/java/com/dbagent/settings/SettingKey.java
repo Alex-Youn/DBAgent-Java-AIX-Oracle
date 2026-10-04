@@ -31,13 +31,13 @@ public enum SettingKey {
             "대시보드가 서버에서 값을 다시 가져오는 간격입니다.").unit("ms").range(1000, 60000)
             .detail("낮추면 화면은 빨라지지만 서버와 대상 DB 조회가 늘어납니다. 1000ms 는 여러 위젯·탭이 동시에 조회하면 "
                     + "커넥션 풀이 고갈되어 정상 DB 를 접속 불가로 오인한 적이 있어 2000~5000 을 권장합니다. "
-                    + "탭이 보이지 않으면 갱신을 멈춥니다.")),
+                    + "탭이 보이지 않으면 갱신을 멈춥니다. 화면은 로드할 때 이 값을 한 번 읽으므로, 저장 후 이미 열려 있는 화면은 새로고침해야 새 값을 씁니다.")),
     FLEET_OVERVIEW_POLLING_INTERVAL_MS(d("dbagent.fleet-overview.polling-interval-ms", INT, "3000", UI, "전체 현황 갱신 주기",
             "전체 DB 현황 화면의 갱신 간격입니다.").unit("ms").range(1000, 60000)
-            .detail("탭이 보일 때만 동작합니다. 백그라운드 탭은 조회하지 않습니다.")),
+            .detail("탭이 보일 때만 동작합니다. 백그라운드 탭은 조회하지 않습니다. 화면을 로드할 때 이 값을 한 번 읽으므로, 저장 후 열려 있는 화면은 새로고침해야 새 값을 씁니다.")),
     UI_SESSION_REFRESH_SECONDS(d("dbagent.ui.session-refresh-seconds", INT, "3", UI, "세션 목록 갱신 주기",
             "Current Session 세션 목록(4개 탭)의 기본 갱신 주기입니다.").unit("초").range(1, 60)
-            .detail("화면의 '리프레쉬 주기' 입력칸 기본값입니다. 위쪽 두 그래프는 이 값과 무관하게 따로 갱신됩니다.")),
+            .detail("화면의 '리프레쉬 주기' 입력칸 기본값입니다. 위쪽 두 그래프는 이 값과 무관하게 따로 갱신됩니다. 화면을 로드할 때 한 번 읽으므로 저장 후 열려 있는 화면은 새로고침해야 반영됩니다.")),
     AUTH_SESSION_TTL_DAYS(d("dbagent.auth.session-ttl-days", INT, "30", UI, "로그인 유지 기간",
             "로그인 토큰이 유효한 기간입니다.").unit("일").range(1, 365)
             .detail("로그아웃을 누르지 않아도 이 기간이 지나면 토큰이 만료되고, 매일 새벽 3시 정리 작업이 행을 삭제합니다.")),
@@ -246,7 +246,24 @@ public enum SettingKey {
             TM_HOLDER_LAST_CALL_ET_SECONDS, TM_HOLDER_INCIDENT_COUNT, TM_HOLDER_WARN_COUNT,
             LOCK_TX_WAIT_WARN, LOCK_TX_WAIT_CRIT, LOCK_TM_WAIT_WARN, LOCK_TM_WAIT_CRIT,
             TM_HOLDER_KILL_BLOCKING_ONLY, TM_HOLDER_KILL_INACTIVE_ONLY, LOCK_TX_ROW_LOCK_ONLY,
-            LONG_RUNNING_QUERY_SECONDS, LOCK_CACHE_MILLIS));
+            LONG_RUNNING_QUERY_SECONDS, LOCK_CACHE_MILLIS,
+            // P3-2 화면 주기·인증
+            UI_POLLING_INTERVAL_MS, FLEET_OVERVIEW_POLLING_INTERVAL_MS, UI_SESSION_REFRESH_SECONDS, AUTH_SESSION_TTL_DAYS,
+            // P3-2 SQL 실행 (읽기 전용 포함)
+            SQL_RUNNER_MAX_ROWS, SQL_RUNNER_MAX_ROWS_LIMIT, SQL_RUNNER_TIMEOUT_SECONDS, SQL_RUNNER_READ_ONLY,
+            // P3-2 AI · 튜닝 (주소·응답 대기 시간)
+            AIDBA_RESTAPI_URL, AIDBA_OLLAMA_TIMEOUT_MS, SQLTUNING_API_URL, SQLTUNING_API_TIMEOUT_MS, SQLTUNEADVISOR_API_TIMEOUT_MS,
+            // P3-2 보존 기간
+            METRIC_RETENTION_DAYS, PERF_RETENTION_DAYS, STORE_RETENTION_DAYS, KILL_AUDIT_RETENTION_DAYS,
+            // P3-2 점검 알림 임계치 (수집 주기·시각은 스케줄러 기동 때 한 번 읽으므로 재시작 키로 남는다)
+            CHECK_QUERY_TIMEOUT_SECONDS, CHECK_DAILY_QUERY_TIMEOUT_SECONDS, CHECK_JOB_INTERVAL_MINUTES,
+            CHECK_TABLESPACE_WARN_PCT, CHECK_TABLESPACE_CRIT_PCT, CHECK_SEGMENT_SNAPSHOT_MIN_GB,
+            CHECK_FRA_WARN_PCT, CHECK_FRA_CRIT_PCT, CHECK_TEMP_WARN_PCT, CHECK_TEMP_CRIT_PCT,
+            CHECK_EXCLUDE_OWNERS, JOB_FAIL_DOWNGRADE, JOB_FAIL_EXCLUDE,
+            // P3-2 조회 타임아웃 (Oracle/RDB 접속·응답 대기는 풀을 만들 때 한 번 쓰이므로 재시작 키로 남는다)
+            LOCK_QUERY_TIMEOUT_SECONDS, SCREEN_QUERY_TIMEOUT_SECONDS, ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS,
+            ASH_AWR_QUERY_TIMEOUT_SECONDS, ASH_AWR_FALLBACK, SQLSTAT_QUERY_TIMEOUT_SECONDS, HEALTH_BUSY_MAX_SECONDS,
+            SESSION_EXTRA_FAIL_LOG_MINUTES, FLEET_STATUS_TIMEOUT_SECONDS, ACTIVE_ALERTS_TIMEOUT_SECONDS));
 
     private static final Pattern CSV_CHARS =Pattern.compile("[A-Za-z0-9_$#%.,\\- ]*");
 

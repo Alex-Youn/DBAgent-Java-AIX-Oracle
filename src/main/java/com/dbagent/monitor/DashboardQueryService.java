@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,6 +42,10 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class DashboardQueryService {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     private static final DateTimeFormatter ISO = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
     private static final int TOP_N = 5;
     private static final int LIST_LIMIT = 50;
@@ -47,14 +54,8 @@ public class DashboardQueryService {
     private final InstanceMetricSamplerService samplerService;
     private final MonitorStoreService storeService;
 
-    @Value("${dbagent.monitor.ash-activity-query-timeout-seconds:10}")
-    private int ashTimeoutSeconds;
 
-    @Value("${dbagent.monitor.ash-awr-query-timeout-seconds:60}")
-    private int awrTimeoutSeconds;
 
-    @Value("${dbagent.monitor.ash-awr-fallback:true}")
-    private boolean awrFallback;
 
     /** DB별 user_id → username (dba_users를 ASH 행마다 조인하지 않고 결과 행에만 붙인다). */
     private final Map<String, Map<Long, String>> usernames = new ConcurrentHashMap<>();
@@ -76,7 +77,7 @@ public class DashboardQueryService {
 
     public Map<String, Object> top(TargetDbConfig target, LocalDateTime from, LocalDateTime to) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
-            AshRange.Window w = AshRange.resolve(conn, from, to, awrFallback);
+            AshRange.Window w = AshRange.resolve(conn, from, to, settings.getBool(SettingKey.ASH_AWR_FALLBACK));
             int localInst = instanceNumber(conn);
             String query = "SELECT GROUPING(b.sql_id) AS g_sql, GROUPING(b.sid) AS g_sid, GROUPING(b.event_name) AS g_evt, " +
                     "b.sql_id, b.sid, b.serial_no, b.event_name, b.category, SUM(b.w) AS cnt, MAX(b.user_id) AS user_id, " +
@@ -88,7 +89,7 @@ public class DashboardQueryService {
             Map<String, Agg> events = new LinkedHashMap<>();
             double total = 0;
             try (PreparedStatement ps = conn.prepareStatement(query)) {
-                ps.setQueryTimeout(w.useAwr ? awrTimeoutSeconds : ashTimeoutSeconds);
+                ps.setQueryTimeout(w.useAwr ? settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS) : settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 AshRange.bind(ps, 1, w, null);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -167,7 +168,7 @@ public class DashboardQueryService {
 
     public Map<String, Object> sessionDetail(TargetDbConfig target, long sid, long serial, LocalDateTime from, LocalDateTime to) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
-            AshRange.Window w = AshRange.resolve(conn, from, to, awrFallback);
+            AshRange.Window w = AshRange.resolve(conn, from, to, settings.getBool(SettingKey.ASH_AWR_FALLBACK));
             int localInst = instanceNumber(conn);
             Map<String, Object> r = header(conn, w, localInst);
             r.put("sid", sid);
@@ -182,7 +183,7 @@ public class DashboardQueryService {
                     "WHERE s.sid = ? AND s.serial# = ?";
             Map<String, Object> cur = null;
             try (PreparedStatement ps = conn.prepareStatement(currentSql)) {
-                ps.setQueryTimeout(ashTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 ps.setLong(1, sid);
                 ps.setLong(2, serial);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -204,7 +205,7 @@ public class DashboardQueryService {
             String blockerSql = "SELECT sid, serial#, username, status, program, last_call_et FROM v$session WHERE sid = ?";
             if (cur != null && cur.get("blockingSession") != null && !Boolean.TRUE.equals(cur.get("blockerRemote"))) {
                 try (PreparedStatement ps = conn.prepareStatement(blockerSql)) {
-                    ps.setQueryTimeout(ashTimeoutSeconds);
+                    ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                     ps.setLong(1, (Long) cur.get("blockingSession"));
                     try (ResultSet rs = ps.executeQuery()) {
                         if (rs.next()) {
@@ -234,7 +235,7 @@ public class DashboardQueryService {
             String lastSample = null;
             double total = 0;
             try (PreparedStatement ps = conn.prepareStatement(actSql)) {
-                ps.setQueryTimeout(w.useAwr ? awrTimeoutSeconds : ashTimeoutSeconds);
+                ps.setQueryTimeout(w.useAwr ? settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS) : settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 ps.setLong(1, sid);
                 ps.setLong(2, serial);
                 ps.setLong(3, sid);
@@ -261,7 +262,7 @@ public class DashboardQueryService {
 
     public Map<String, Object> sqlDetail(TargetDbConfig target, String sqlId, LocalDateTime from, LocalDateTime to) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
-            AshRange.Window w = AshRange.resolve(conn, from, to, awrFallback);
+            AshRange.Window w = AshRange.resolve(conn, from, to, settings.getBool(SettingKey.ASH_AWR_FALLBACK));
             int localInst = instanceNumber(conn);
             Map<String, Object> r = header(conn, w, localInst);
             r.put("sqlId", sqlId);
@@ -277,7 +278,7 @@ public class DashboardQueryService {
             String textSql = "SELECT DBMS_LOB.SUBSTR(sql_fulltext, 2000, 1) FROM v$sqlstats WHERE sql_id = ?";
             String fullText = null;
             try (PreparedStatement ps = conn.prepareStatement(textSql)) {
-                ps.setQueryTimeout(ashTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 ps.setString(1, sqlId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) fullText = rs.getString(1);
@@ -307,7 +308,7 @@ public class DashboardQueryService {
 
     public Map<String, Object> eventDetail(TargetDbConfig target, String event, LocalDateTime from, LocalDateTime to) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
-            AshRange.Window w = AshRange.resolve(conn, from, to, awrFallback);
+            AshRange.Window w = AshRange.resolve(conn, from, to, settings.getBool(SettingKey.ASH_AWR_FALLBACK));
             int localInst = instanceNumber(conn);
             Map<String, Object> r = header(conn, w, localInst);
             r.put("event", event);
@@ -346,7 +347,7 @@ public class DashboardQueryService {
         List<Agg> aggs = new ArrayList<>();
         List<Map<String, Object>> out = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setQueryTimeout(w.useAwr ? awrTimeoutSeconds : ashTimeoutSeconds);
+            ps.setQueryTimeout(w.useAwr ? settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS) : settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
             AshRange.bind(ps, 1, w, binder);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -390,7 +391,7 @@ public class DashboardQueryService {
     private double activityWithTotal(Connection conn, AshRange.Window w, String sql, FirstBinder first, Agg act) throws SQLException {
         double total = 0;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setQueryTimeout(w.useAwr ? awrTimeoutSeconds : ashTimeoutSeconds);
+            ps.setQueryTimeout(w.useAwr ? settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS) : settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
             first.bind(ps);
             AshRange.bind(ps, 2, w, null);
             try (ResultSet rs = ps.executeQuery()) {
@@ -437,7 +438,7 @@ public class DashboardQueryService {
         if (!unknown.isEmpty()) {
             String in = String.join(",", Collections.nCopies(unknown.size(), "?"));
             try (PreparedStatement ps = conn.prepareStatement("SELECT user_id, username FROM dba_users WHERE user_id IN (" + in + ")")) {
-                ps.setQueryTimeout(ashTimeoutSeconds);
+                ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 int i = 1;
                 for (Long id : unknown) ps.setLong(i++, id);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -463,7 +464,7 @@ public class DashboardQueryService {
             q.append("SELECT sql_id, SUBSTR(sql_text, 1, 300) FROM v$sqlstats WHERE sql_id = ?");
         }
         try (PreparedStatement ps = conn.prepareStatement(q.toString())) {
-            ps.setQueryTimeout(ashTimeoutSeconds);
+            ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
             int i = 1;
             for (String id : sqlIds) ps.setString(i++, id);
             try (ResultSet rs = ps.executeQuery()) {

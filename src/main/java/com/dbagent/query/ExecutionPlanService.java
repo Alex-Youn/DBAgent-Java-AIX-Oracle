@@ -1,5 +1,8 @@
 package com.dbagent.query;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
 import com.dbagent.util.Strings;
@@ -29,15 +32,15 @@ import java.util.regex.Pattern;
 @Service
 public class ExecutionPlanService {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     private final OracleConnectionPoolManager poolManager;
 
     // Reuses the SQL Runner's existing safety bounds (same properties) since this mode - unlike
     // explain() - actually executes the user's query for real.
-    @Value("${dbagent.sql-runner.max-rows-limit:5000}")
-    private int maxRowsLimit;
 
-    @Value("${dbagent.sql-runner.timeout-seconds:30}")
-    private int timeoutSeconds;
 
     public ExecutionPlanService(OracleConnectionPoolManager poolManager) {
         this.poolManager = poolManager;
@@ -109,8 +112,8 @@ public class ExecutionPlanService {
                 // Oracle's driver collapses repeated occurrences of the same :name/:n bind into a
                 // single JDBC parameter, indexed by order of first appearance - matching extractBindNames.
                 try (PreparedStatement ps = conn.prepareStatement(query)) {
-                    ps.setQueryTimeout(timeoutSeconds);
-                    ps.setMaxRows(maxRowsLimit);
+                    ps.setQueryTimeout(settings.getInt(SettingKey.SQL_RUNNER_TIMEOUT_SECONDS));
+                    ps.setMaxRows(settings.getInt(SettingKey.SQL_RUNNER_MAX_ROWS_LIMIT));
                     for (int i = 0; i < bindNames.size(); i++) {
                         String name = bindNames.get(i);
                         // A bind variable can legitimately have no value entered (e.g. an optional

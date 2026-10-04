@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,13 +40,15 @@ import java.util.Set;
 @Service
 public class PerfStoreService implements InitializingBean {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
     private static final Logger log = LoggerFactory.getLogger(PerfStoreService.class);
 
     private final JdbcTemplate jdbc;
     private final boolean h2;
 
-    @Value("${dbagent.monitor.perf-retention-days:15}")
-    private int retentionDays;
 
     // DB별 "이 분(minute_key) 앞까지는 수집이 끝났다" - 샘플러가 저장할 때마다 올린다(2026-09-30 QA). 성능 분석 차트가 아직 수집
     // 안 된 최근 1~2분을 0으로 그려 부하가 꺼진 것처럼 보이던 문제를 막는다. 메모리 값이라 앱 기동 직후 첫 샘플 전에는 없다(null).
@@ -208,7 +213,7 @@ public class PerfStoreService implements InitializingBean {
 
     @Scheduled(cron = "0 15 4 * * *")
     void purge() {
-        long cutoff = minuteKey(LocalDateTime.now(ZoneOffset.UTC)) - retentionDays * 1440L;
+        long cutoff = minuteKey(LocalDateTime.now(ZoneOffset.UTC)) - settings.getInt(SettingKey.PERF_RETENTION_DAYS) * 1440L;
         Long oldest = jdbc.queryForObject("SELECT MIN(minute_key) FROM perf_ash_min", Long.class);
         int total = 0;
         if (oldest != null) {
@@ -219,7 +224,7 @@ public class PerfStoreService implements InitializingBean {
         }
         int texts = jdbc.update("DELETE FROM perf_sql_text WHERE captured_key < ?", cutoff);
         if (total > 0 || texts > 0) {
-            log.info("perf store purge: {} row(s), {} sql text(s) older than {} day(s)", total, texts, retentionDays);
+            log.info("perf store purge: {} row(s), {} sql text(s) older than {} day(s)", total, texts, settings.getInt(SettingKey.PERF_RETENTION_DAYS));
         }
     }
 }

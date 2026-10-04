@@ -1,5 +1,8 @@
 package com.dbagent.monitor;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -28,6 +31,10 @@ import java.util.TreeMap;
  */
 @Service
 public class CheckDetailService {
+
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long DAY_MS = 24 * 60 * 60 * 1000L;
@@ -60,8 +67,6 @@ public class CheckDetailService {
     private final MonitorStoreService storeService;
     private final OracleConnectionPoolManager poolManager;
 
-    @Value("${dbagent.monitor.check-query-timeout-seconds:30}")
-    private int queryTimeoutSeconds;
     @Value("${dbagent.monitor.check-interval-minutes:10}")
     private int intervalMinutes;
     @Value("${dbagent.monitor.check-daily-hour:3}")
@@ -251,7 +256,7 @@ public class CheckDetailService {
     private List<Map<String, Object>> query(Connection conn, String sql, String... binds) throws SQLException {
         List<Map<String, Object>> rows = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setQueryTimeout(queryTimeoutSeconds);
+            ps.setQueryTimeout(settings.getInt(SettingKey.CHECK_QUERY_TIMEOUT_SECONDS));
             for (int i = 0; i < binds.length; i++) ps.setString(i + 1, binds[i]);
             try (ResultSet rs = ps.executeQuery()) {
                 ResultSetMetaData md = rs.getMetaData();

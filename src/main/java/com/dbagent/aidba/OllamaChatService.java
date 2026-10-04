@@ -1,5 +1,8 @@
 package com.dbagent.aidba;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.util.Strings;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,6 +41,16 @@ import java.util.Map;
 @Service
 public class OllamaChatService {
 
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
+
+    /** 서버 주소 - 스킴(http://)이 없으면 붙인다(예전 @PostConstruct 정규화와 같은 규칙). 설정이 바뀌면 다음 호출부터 새 주소를 쓴다. */
+    private String apiBase() {
+        String u = settings.getString(SettingKey.AIDBA_RESTAPI_URL);
+        return (u != null && !u.contains("://")) ? "http://" + u : u;
+    }
+
     private static final Logger log = LoggerFactory.getLogger(OllamaChatService.class);
 
     private static final String PROMPT_ID = "chatbot";
@@ -49,22 +62,11 @@ public class OllamaChatService {
 
     // 2026-09-14: aidba.ollama.url + sqltuneadvisor.api.url 는 결국 같은 sqlrestapi 서버를 가리키므로
     // aidba.restapi.url 하나로 통합했다. 스킴을 빠뜨려도 되게 normalizeUrl()에서 http://를 보정한다.
-    @Value("${aidba.restapi.url:http://localhost:9300}")
-    private String ollamaUrl;
 
-    @Value("${aidba.ollama.timeout-ms:300000}")
-    private int timeoutMs;
-
-    @PostConstruct
-    private void normalizeUrl() {
-        if (ollamaUrl != null && !ollamaUrl.contains("://")) {
-            ollamaUrl = "http://" + ollamaUrl;
-        }
-    }
 
     /** 연결 실패 안내에 대상 주소를 함께 보여주려고 컨트롤러가 읽는다(SqlTuningService.apiUrl()과 같은 용도). */
     public String apiUrl() {
-        return ollamaUrl;
+        return apiBase();
     }
 
     /**
@@ -80,8 +82,8 @@ public class OllamaChatService {
             cause = cause.getCause();
         }
         if (cause != null) {
-            log.warn("sqlrestapi 연결 실패 (url={}): {}", ollamaUrl, e.toString());
-            return "AI 서버(" + ollamaUrl + ")에 연결할 수 없습니다. "
+            log.warn("sqlrestapi 연결 실패 (url={}): {}", apiBase(), e.toString());
+            return "AI 서버(" + apiBase() + ")에 연결할 수 없습니다. "
                     + "서버가 켜져 있는지, 이 호스트에서 도달 가능한 주소인지 확인해주세요.";
         }
         log.warn("sqlrestapi {} 실패", what, e);
@@ -121,7 +123,7 @@ public class OllamaChatService {
      * 타임아웃(5초)을 걸어 화면이 멈추지 않게 한다 - 실패하면 호출자가 표시를 생략한다.
      */
     public Map<String, Object> health() {
-        JsonNode root = getForJson(ollamaUrl + "/health", 5000);
+        JsonNode root = getForJson(apiBase() + "/health", 5000);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("llm_model", root.path("llm_model").asText(""));
         result.put("vector_db", root.path("vector_db").asText(""));
@@ -133,7 +135,7 @@ public class OllamaChatService {
         body.put("promptId", promptId);
         body.put("prompt", prompt);
 
-        JsonNode root = postForJson(ollamaUrl + "/api/chat", body);
+        JsonNode root = postForJson(apiBase() + "/api/chat", body);
         JsonNode answer = root.path("answer");
         return answer.isMissingNode() ? "" : answer.asText();
     }
@@ -150,7 +152,7 @@ public class OllamaChatService {
         body.put("query", userMessage);
         body.put("n_results", 3);
 
-        JsonNode root = postForJson(ollamaUrl + "/api/query", body);
+        JsonNode root = postForJson(apiBase() + "/api/query", body);
         String answer = root.path("answer").asText("");
 
         List<Map<String, String>> references = new ArrayList<>();
@@ -183,8 +185,8 @@ public class OllamaChatService {
 
     private JsonNode postForJson(String url, Object body) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(timeoutMs);
-        factory.setReadTimeout(timeoutMs);
+        factory.setConnectTimeout(settings.getInt(SettingKey.AIDBA_OLLAMA_TIMEOUT_MS));
+        factory.setReadTimeout(settings.getInt(SettingKey.AIDBA_OLLAMA_TIMEOUT_MS));
         RestTemplate restTemplate = new RestTemplate(factory);
 
         HttpHeaders headers = new HttpHeaders();
