@@ -52,7 +52,7 @@ public class OllamaChatService {
     @Value("${aidba.restapi.url:http://localhost:9300}")
     private String ollamaUrl;
 
-    @Value("${aidba.ollama.timeout-ms:30000}")
+    @Value("${aidba.ollama.timeout-ms:300000}")
     private int timeoutMs;
 
     @PostConstruct
