@@ -98,12 +98,8 @@ public class LockRealtimeService {
     // A안 - 최근 본 DB 백그라운드 수집(2026-09-28, 설계문서 `Lock실시간차트_빈구간_A+B_전환계획_2026-09-28.md` 4.1).
     // 마지막으로 본 뒤 keepaliveMinutes 동안은 화면이 없어도 3초마다 조회해 history를 이어 붙인다. 그보다 오래 비운
     // 구간은 지금처럼 B(fill)로 채운다. 0이면 A 비활성(= B만) - 운영 DB 부하 실측 전까지 기본값은 0.
-    @Value("${dbagent.monitor.lock-keepalive-minutes:0}")
-    private int keepaliveMinutes;
 
     /** 동시에 백그라운드 수집하는 DB 수 상한 - 넘으면 가장 오래 전에 본 DB부터 제외. 0 이하면 상한 없음. */
-    @Value("${dbagent.monitor.lock-keepalive-max-dbs:5}")
-    private int keepaliveMaxDbs;
 
     private static final long KEEPALIVE_INTERVAL_MS = 3000L;
     // 화면 폴링(3초)이 방금 조회했으면 건너뛴다 - 화면이 열려 있는 동안 원본 DB 조회가 주기당 1회를 넘지 않게.
@@ -152,7 +148,7 @@ public class LockRealtimeService {
     public Map<String, Object> realtime(TargetDbConfig target) {
         Snapshot cached = cache.get(target.id());
         long now = System.currentTimeMillis();
-        if (keepaliveMinutes > 0) {
+        if (settings.getInt(SettingKey.LOCK_KEEPALIVE_MINUTES) > 0) {
             viewed.compute(target.id(), (id, v) -> {
                 Viewed n = v != null ? v : new Viewed();
                 n.target = target; // 설정이 바뀌었으면 다음 백그라운드 조회부터 새 값으로
@@ -221,7 +217,8 @@ public class LockRealtimeService {
      */
     @PostConstruct
     void startKeepalive() {
-        if (keepaliveMinutes <= 0) return;
+        // 환경설정 DB화 P5(2026-10-04): 예전엔 기동 때 분이 0이면 스케줄 자체를 만들지 않아 켜려면 재시작이 필요했다.
+        // 이제 3초 주기 작업은 항상 돌고(꺼져 있으면 keepaliveCollect 가 바로 끝난다) 매 주기 설정을 읽는다.
         KEEPALIVE_SCHEDULER.scheduleAtFixedRate(() -> {
             try {
                 keepaliveCollect();
@@ -229,8 +226,23 @@ public class LockRealtimeService {
                 log.debug("lock keepalive cycle failed: {}", e.toString()); // 예외가 새면 이후 주기가 모두 멈춘다
             }
         }, KEEPALIVE_INTERVAL_MS, KEEPALIVE_INTERVAL_MS, TimeUnit.MILLISECONDS);
-        log.info("lock keepalive enabled: {} min after last view, max {} DBs", keepaliveMinutes,
-                keepaliveMaxDbs > 0 ? keepaliveMaxDbs : "unlimited");
+        logKeepaliveState();
+    }
+
+    private volatile boolean keepaliveWasOn;
+
+    /** 켜짐/꺼짐이 바뀔 때(기동 포함) 한 번만 알린다. */
+    private void logKeepaliveState() {
+        int minutes = settings.getInt(SettingKey.LOCK_KEEPALIVE_MINUTES);
+        boolean on = minutes > 0;
+        if (on == keepaliveWasOn && !on) return;
+        if (on && !keepaliveWasOn) {
+            int max = settings.getInt(SettingKey.LOCK_KEEPALIVE_MAX_DBS);
+            log.info("lock keepalive enabled: {} min after last view, max {} DBs", minutes, max > 0 ? String.valueOf(max) : "unlimited");
+        } else if (!on) {
+            log.info("lock keepalive disabled");
+        }
+        keepaliveWasOn = on;
     }
 
     /**
@@ -239,13 +251,18 @@ public class LockRealtimeService {
      * 않는다(비동기) - 느린 DB가 다른 DB의 수집을 막지 않게.
      */
     void keepaliveCollect() {
+        logKeepaliveState();
+        if (settings.getInt(SettingKey.LOCK_KEEPALIVE_MINUTES) <= 0) {
+            viewed.clear();
+            return;
+        }
         long now = System.currentTimeMillis();
-        long keepaliveMs = keepaliveMinutes * 60000L;
+        long keepaliveMs = settings.getInt(SettingKey.LOCK_KEEPALIVE_MINUTES) * 60000L;
         viewed.entrySet().removeIf(e -> now - e.getValue().lastViewedAt >= keepaliveMs);
         List<Map.Entry<String, Viewed>> targets = new ArrayList<>(viewed.entrySet());
         targets.sort((a, b) -> Long.compare(b.getValue().lastViewedAt, a.getValue().lastViewedAt)); // 최근 본 순
-        if (keepaliveMaxDbs > 0 && targets.size() > keepaliveMaxDbs) {
-            targets = targets.subList(0, keepaliveMaxDbs);
+        if (settings.getInt(SettingKey.LOCK_KEEPALIVE_MAX_DBS) > 0 && targets.size() > settings.getInt(SettingKey.LOCK_KEEPALIVE_MAX_DBS)) {
+            targets = targets.subList(0, settings.getInt(SettingKey.LOCK_KEEPALIVE_MAX_DBS));
         }
         for (Map.Entry<String, Viewed> e : targets) {
             String id = e.getKey();

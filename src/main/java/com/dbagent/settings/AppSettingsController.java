@@ -190,6 +190,69 @@ public class AppSettingsController {
         return toResponse(settings.reset(scope, keys, usernameOf(token), asString(body.get("reason"))));
     }
 
+    /** body: {token, from_db_id, to_db_ids:[...], reason?} - 한 DB 의 재정의를 다른 DB 들에 복사한다. */
+    @PostMapping("/api/app_settings/copy")
+    public ResponseEntity<Map<String, Object>> copy(@RequestBody Map<String, Object> body) {
+        String token = asString(body.get("token"));
+        ResponseEntity<Map<String, Object>> denied = requireAdmin(token);
+        if (denied != null) {
+            return denied;
+        }
+        String from = blankToNull(asString(body.get("from_db_id")));
+        if (from == null) {
+            return error(HttpStatus.BAD_REQUEST, "복사할 원본 DB 를 지정하세요.");
+        }
+        List<Map<String, Object>> dbs = oracleDbs();
+        if (!containsId(dbs, from)) {
+            return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB 입니다: " + from);
+        }
+        List<String> targets = new ArrayList<String>();
+        Object rawTargets = body.get("to_db_ids");
+        if (rawTargets instanceof List) {
+            for (Object o : (List<?>) rawTargets) {
+                String id = String.valueOf(o);
+                if (!containsId(dbs, id)) {
+                    return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB 입니다: " + id);
+                }
+                if (!id.equals(from)) {
+                    targets.add(id);
+                }
+            }
+        }
+        if (targets.isEmpty()) {
+            return error(HttpStatus.BAD_REQUEST, "복사할 대상 DB 를 선택하세요.");
+        }
+        if (settings.overrideCount(from) == 0) {
+            return error(HttpStatus.BAD_REQUEST, "이 DB 에 재정의한 항목이 없어 복사할 것이 없습니다.");
+        }
+        Map<String, SettingsService.ApplyResult> results = settings.copyPerDb(from, targets, usernameOf(token), asString(body.get("reason")));
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+        boolean allOk = true;
+        for (Map.Entry<String, SettingsService.ApplyResult> e : results.entrySet()) {
+            SettingsService.ApplyResult r = e.getValue();
+            Map<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("db_id", e.getKey());
+            m.put("ok", Boolean.valueOf(r.ok()));
+            if (r.ok()) {
+                m.put("changed", r.changedKeys().size());
+                m.put("unchanged", r.unchanged());
+            } else {
+                allOk = false;
+                StringBuilder msg = new StringBuilder(r.error() == null ? "실패" : r.error());
+                for (Map.Entry<String, String> fe : r.fieldErrors().entrySet()) {
+                    SettingKey k = SettingKey.byKey(fe.getKey());
+                    msg.append(" / ").append(k == null ? fe.getKey() : k.label()).append(": ").append(fe.getValue());
+                }
+                m.put("error", msg.toString());
+            }
+            out.add(m);
+        }
+        Map<String, Object> resp = new LinkedHashMap<String, Object>();
+        resp.put("ok", Boolean.valueOf(allOk));
+        resp.put("results", out);
+        return allOk ? ResponseEntity.ok(resp) : ResponseEntity.status(HttpStatus.BAD_REQUEST).body(resp);
+    }
+
     // ───────────────────────── 이력 · 내보내기 ─────────────────────────
 
     @GetMapping("/api/app_settings/history")

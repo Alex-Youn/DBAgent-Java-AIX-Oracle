@@ -1,5 +1,8 @@
 package com.dbagent.oracle;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.util.Strings;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -24,7 +27,11 @@ import java.util.regex.Pattern;
  * created lazily, with a 10s cooldown after a failed connection attempt to avoid hammering a dead DB.
  */
 @Service
-public class OracleConnectionPoolManager {
+public class OracleConnectionPoolManager implements org.springframework.beans.factory.InitializingBean {
+
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
 
     private static final Logger log = LoggerFactory.getLogger(OracleConnectionPoolManager.class);
 
@@ -37,8 +44,6 @@ public class OracleConnectionPoolManager {
     // (dbagent.oracle.connect-timeout-ms) if a real-but-slow DB starts false-failing.
     // 코드 기본값을 jar 번들 값(3000)과 맞췄다(2026-10-04) - 설정 파일 없이 뜨는 환경에서도 실제 네트워크 지연에
     // 오탐으로 "접속 불가"가 나지 않게 하려는 것. 로컬 개발처럼 빨리 실패시키고 싶으면 500 등으로 내린다.
-    @Value("${dbagent.oracle.connect-timeout-ms:3000}")
-    private int connectTimeoutMs;
 
     // Separate from connectTimeoutMs on purpose (사용자 피드백: SQL 정합성/튜닝 매뉴가 폐쇄망에서
     // 전부 타임아웃) - oracle.net.READ_TIMEOUT bounds how long the driver waits for the NEXT byte of
@@ -47,21 +52,61 @@ public class OracleConnectionPoolManager {
     // (AWR/ASH history, SQL tuning analysis, or just a slower network) got killed as if the DB were
     // unreachable. Kept generous since a real query has no natural upper bound the way a TCP connect
     // does.
-    @Value("${dbagent.oracle.read-timeout-ms:60000}")
-    private int readTimeoutMs;
 
     // Global defaults, used when an instance in databases.json doesn't set its own pool_min_idle/pool_max_size.
-    @Value("${dbagent.oracle.pool.min-idle:2}")
-    private int defaultPoolMinIdle;
 
-    @Value("${dbagent.oracle.pool.max-size:10}")
-    private int defaultPoolMaxSize;
 
     private final Map<String, HikariDataSource> pools = new ConcurrentHashMap<>();
     private final Map<String, Instant> failedPools = new ConcurrentHashMap<>();
     // One lock per pool key, NOT a single shared lock: a hung/unreachable DB must never block
     // pool creation for any other, unrelated DB.
     private final Map<String, ReentrantLock> poolLocks = new ConcurrentHashMap<>();
+
+    // 환경설정 DB화 P5(2026-10-04): Oracle 접속·응답 대기 시간과 풀 크기 기본값을 저장 즉시 반영한다. 설정이 바뀌면 지금 쓰던
+    // 풀을 목록에서 빼 다음 조회부터 새 설정으로 풀을 다시 만들고, 쓰던 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫는다
+    // (바로 닫으면 실행 중인 조회가 끊긴다). 풀을 다시 만들 때 대상 DB 에 새 접속이 생기므로 해당 설정은 화면에서 '위험' 표시다.
+    private static final long POOL_RETIRE_DELAY_SECONDS = 60;
+    private static final java.util.concurrent.ScheduledExecutorService POOL_RETIRE =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "pool-retire");
+                t.setDaemon(true);
+                return t;
+            });
+    private static final org.slf4j.Logger poolLog = org.slf4j.LoggerFactory.getLogger(OracleConnectionPoolManager.class);
+    private volatile String poolSettingsSig;
+
+    @Override
+    public void afterPropertiesSet() {
+        poolSettingsSig = poolSettingsSignature();
+        settings.addChangeListener(this::onSettingsChanged);
+    }
+
+    private String poolSettingsSignature() {
+        return settings.getInt(SettingKey.ORACLE_CONNECT_TIMEOUT_MS) + "|" + settings.getInt(SettingKey.ORACLE_READ_TIMEOUT_MS) + "|" + settings.getInt(SettingKey.ORACLE_POOL_MIN_IDLE) + "|" + settings.getInt(SettingKey.ORACLE_POOL_MAX_SIZE);
+    }
+
+    private synchronized void onSettingsChanged() {
+        String sig = poolSettingsSignature();
+        if (sig.equals(poolSettingsSig)) {
+            return;
+        }
+        poolSettingsSig = sig;
+        java.util.List<HikariDataSource> old = new java.util.ArrayList<>(pools.values());
+        pools.clear();
+        failedPools.clear();
+        poolLog.info("Oracle 풀 설정이 바뀌어 기존 풀 {}개를 교체합니다 (다음 조회부터 새 설정, 기존 풀은 {}초 뒤 닫음): {}",
+                old.size(), POOL_RETIRE_DELAY_SECONDS, sig);
+        for (HikariDataSource ds : old) {
+            POOL_RETIRE.schedule(() -> {
+                try {
+                    ds.close();
+                } catch (RuntimeException e) {
+                    poolLog.warn("이전 풀을 닫지 못했습니다: {}", e.toString());
+                }
+            }, POOL_RETIRE_DELAY_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
 
     public Connection getConnection(TargetDbConfig target) throws SQLException {
         boolean sysdba = "SYS".equalsIgnoreCase(target.user());
@@ -189,13 +234,13 @@ public class OracleConnectionPoolManager {
         cfg.setUsername(target.user());
         cfg.setPassword(target.password());
         cfg.setDriverClassName("oracle.jdbc.OracleDriver");
-        cfg.setMinimumIdle(target.poolMinIdle() != null ? target.poolMinIdle() : defaultPoolMinIdle);
-        cfg.setMaximumPoolSize(target.poolMaxSize() != null ? target.poolMaxSize() : defaultPoolMaxSize);
+        cfg.setMinimumIdle(target.poolMinIdle() != null ? target.poolMinIdle() : settings.getInt(SettingKey.ORACLE_POOL_MIN_IDLE));
+        cfg.setMaximumPoolSize(target.poolMaxSize() != null ? target.poolMaxSize() : settings.getInt(SettingKey.ORACLE_POOL_MAX_SIZE));
         cfg.setPoolName("oracle-" + target.id());
         // KILL 대상 세션의 ORA-00031(SQLSTATE 08006)로 우리 커넥션을 닫지 않게(2026-10-01, OracleSqlExceptionOverride 참고)
         cfg.setExceptionOverrideClassName(OracleSqlExceptionOverride.class.getName());
         // Hikari's own wait-for-connection bound, used by every getConnection() call.
-        cfg.setConnectionTimeout(connectTimeoutMs);
+        cfg.setConnectionTimeout(settings.getInt(SettingKey.ORACLE_CONNECT_TIMEOUT_MS));
         // Negative = do NOT synchronously probe the DB (and retry with an internal ~1s backoff) while
         // constructing the pool; warm-up connections are created in the background instead. This is
         // what keeps pool creation itself instant - the single bounded attempt now happens only on
@@ -203,8 +248,8 @@ public class OracleConnectionPoolManager {
         cfg.setInitializationFailTimeout(-1);
         // Oracle-driver-level bounds: without these, a firewalled/black-holed host can hang far
         // longer than connectTimeoutMs on the raw TCP connect, ignoring Hikari's own timeout.
-        cfg.addDataSourceProperty("oracle.net.CONNECT_TIMEOUT", String.valueOf(connectTimeoutMs));
-        cfg.addDataSourceProperty("oracle.net.READ_TIMEOUT", String.valueOf(readTimeoutMs));
+        cfg.addDataSourceProperty("oracle.net.CONNECT_TIMEOUT", String.valueOf(settings.getInt(SettingKey.ORACLE_CONNECT_TIMEOUT_MS)));
+        cfg.addDataSourceProperty("oracle.net.READ_TIMEOUT", String.valueOf(settings.getInt(SettingKey.ORACLE_READ_TIMEOUT_MS)));
         if (sysdba) {
             // Thin-driver SYSDBA login, equivalent to oracledb.AUTH_MODE_SYSDBA in Python.
             cfg.addDataSourceProperty("internal_logon", "sysdba");

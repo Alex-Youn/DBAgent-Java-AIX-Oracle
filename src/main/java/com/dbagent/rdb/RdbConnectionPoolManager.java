@@ -1,5 +1,8 @@
 package com.dbagent.rdb;
 
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.oracle.TargetDbConfig;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -20,12 +23,14 @@ import java.util.concurrent.locks.ReentrantLock;
  * touched by this feature. Only the JDBC URL/driver selection differs by TargetDbConfig.dbType().
  */
 @Service
-public class RdbConnectionPoolManager {
+public class RdbConnectionPoolManager implements org.springframework.beans.factory.InitializingBean {
+
+    // 환경설정 DB화 P3-2(2026-10-04): 이 클래스가 쓰던 @Value 설정을 SettingsService 조회로 옮겼다(저장 즉시 반영).
+    @Autowired
+    private SettingsService settings;
 
     private static final Duration COOLDOWN = Duration.ofSeconds(10);
 
-    @Value("${dbagent.rdb.connect-timeout-ms:2000}")
-    private int connectTimeoutMs;
 
     // Mirrors OracleConnectionPoolManager's oracle.net.READ_TIMEOUT: bounds how long a query can block
     // once a connection is already checked out, not just how long acquiring one takes (that's
@@ -33,18 +38,58 @@ public class RdbConnectionPoolManager {
     // block a caller's thread and its checked-out connection forever - with the default pool size of 5,
     // as few as 5 such hangs against the same instance exhaust its whole pool permanently, even after
     // the DB recovers, since the stuck connections never get returned.
-    @Value("${dbagent.rdb.read-timeout-ms:60000}")
-    private int readTimeoutMs;
 
-    @Value("${dbagent.rdb.pool.min-idle:1}")
-    private int defaultPoolMinIdle;
 
-    @Value("${dbagent.rdb.pool.max-size:5}")
-    private int defaultPoolMaxSize;
 
     private final Map<String, HikariDataSource> pools = new ConcurrentHashMap<>();
     private final Map<String, Instant> failedPools = new ConcurrentHashMap<>();
     private final Map<String, ReentrantLock> poolLocks = new ConcurrentHashMap<>();
+
+    // 환경설정 DB화 P5(2026-10-04): RDB 접속·응답 대기 시간과 풀 크기 기본값을 저장 즉시 반영한다. 설정이 바뀌면 지금 쓰던
+    // 풀을 목록에서 빼 다음 조회부터 새 설정으로 풀을 다시 만들고, 쓰던 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫는다
+    // (바로 닫으면 실행 중인 조회가 끊긴다). 풀을 다시 만들 때 대상 DB 에 새 접속이 생기므로 해당 설정은 화면에서 '위험' 표시다.
+    private static final long POOL_RETIRE_DELAY_SECONDS = 60;
+    private static final java.util.concurrent.ScheduledExecutorService POOL_RETIRE =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "pool-retire");
+                t.setDaemon(true);
+                return t;
+            });
+    private static final org.slf4j.Logger poolLog = org.slf4j.LoggerFactory.getLogger(RdbConnectionPoolManager.class);
+    private volatile String poolSettingsSig;
+
+    @Override
+    public void afterPropertiesSet() {
+        poolSettingsSig = poolSettingsSignature();
+        settings.addChangeListener(this::onSettingsChanged);
+    }
+
+    private String poolSettingsSignature() {
+        return settings.getInt(SettingKey.RDB_CONNECT_TIMEOUT_MS) + "|" + settings.getInt(SettingKey.RDB_READ_TIMEOUT_MS) + "|" + settings.getInt(SettingKey.RDB_POOL_MIN_IDLE) + "|" + settings.getInt(SettingKey.RDB_POOL_MAX_SIZE);
+    }
+
+    private synchronized void onSettingsChanged() {
+        String sig = poolSettingsSignature();
+        if (sig.equals(poolSettingsSig)) {
+            return;
+        }
+        poolSettingsSig = sig;
+        java.util.List<HikariDataSource> old = new java.util.ArrayList<>(pools.values());
+        pools.clear();
+        failedPools.clear();
+        poolLog.info("RDB 풀 설정이 바뀌어 기존 풀 {}개를 교체합니다 (다음 조회부터 새 설정, 기존 풀은 {}초 뒤 닫음): {}",
+                old.size(), POOL_RETIRE_DELAY_SECONDS, sig);
+        for (HikariDataSource ds : old) {
+            POOL_RETIRE.schedule(() -> {
+                try {
+                    ds.close();
+                } catch (RuntimeException e) {
+                    poolLog.warn("이전 풀을 닫지 못했습니다: {}", e.toString());
+                }
+            }, POOL_RETIRE_DELAY_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
 
     public Connection getConnection(TargetDbConfig target) throws SQLException {
         String url = buildJdbcUrl(target);
@@ -114,11 +159,11 @@ public class RdbConnectionPoolManager {
                 // in milliseconds here and, like connectTimeoutMs, has no effect until it's actually
                 // reached - 0 (never set) means the driver blocks forever on a stalled read.
                 return "jdbc:mariadb://" + target.host() + ":" + target.port() + "/" + database
-                        + "?allowPublicKeyRetrieval=true&sslMode=disable&socketTimeout=" + readTimeoutMs;
+                        + "?allowPublicKeyRetrieval=true&sslMode=disable&socketTimeout=" + settings.getInt(SettingKey.RDB_READ_TIMEOUT_MS);
             case "postgres":
                 // pgjdbc's socketTimeout is whole seconds, not ms, and 0 means "no timeout" - floor it
                 // at 1 so a small readTimeoutMs can't silently round down to 0 and disable it entirely.
-                int socketTimeoutSeconds = Math.max(1, readTimeoutMs / 1000);
+                int socketTimeoutSeconds = Math.max(1, settings.getInt(SettingKey.RDB_READ_TIMEOUT_MS) / 1000);
                 return "jdbc:postgresql://" + target.host() + ":" + target.port() + "/" + database
                         + "?socketTimeout=" + socketTimeoutSeconds;
             case "mssql":
@@ -129,7 +174,7 @@ public class RdbConnectionPoolManager {
                 // mssql-jdbc's socketTimeout is milliseconds, like MySQL's.
                 return "jdbc:sqlserver://" + target.host() + ":" + target.port()
                         + ";databaseName=" + database + ";encrypt=false;trustServerCertificate=true"
-                        + ";socketTimeout=" + readTimeoutMs;
+                        + ";socketTimeout=" + settings.getInt(SettingKey.RDB_READ_TIMEOUT_MS);
             case "cubrid":
                 // CUBRID's URL packs db/user/password into the path itself
                 // (jdbc:CUBRID:host:port:db:user:password:?props) - the user/password segments are left
@@ -156,10 +201,10 @@ public class RdbConnectionPoolManager {
         cfg.setJdbcUrl(url);
         cfg.setUsername(target.user());
         cfg.setPassword(target.password());
-        cfg.setMinimumIdle(target.poolMinIdle() != null ? target.poolMinIdle() : defaultPoolMinIdle);
-        cfg.setMaximumPoolSize(target.poolMaxSize() != null ? target.poolMaxSize() : defaultPoolMaxSize);
+        cfg.setMinimumIdle(target.poolMinIdle() != null ? target.poolMinIdle() : settings.getInt(SettingKey.RDB_POOL_MIN_IDLE));
+        cfg.setMaximumPoolSize(target.poolMaxSize() != null ? target.poolMaxSize() : settings.getInt(SettingKey.RDB_POOL_MAX_SIZE));
         cfg.setPoolName("rdb-" + target.id());
-        cfg.setConnectionTimeout(connectTimeoutMs);
+        cfg.setConnectionTimeout(settings.getInt(SettingKey.RDB_CONNECT_TIMEOUT_MS));
         cfg.setInitializationFailTimeout(-1);
         return new HikariDataSource(cfg);
     }

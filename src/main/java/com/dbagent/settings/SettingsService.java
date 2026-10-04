@@ -462,6 +462,38 @@ public class SettingsService {
         return new ApplyResult(200, null, null, changed, unchanged);
     }
 
+    /**
+     * 한 DB 의 재정의(저장된 DB별 값)를 다른 DB 들에 그대로 복사한다 (환경설정 DB화 P5, 2026-10-04).
+     * 대상 DB 마다 apply() 를 거치므로 종류·범위·키 사이 관계·위험 키 사유 검증과 이력이 똑같이 적용되고,
+     * 복사한 값이 대상 DB 의 전역 유효값과 같으면 재정의를 만들지 않는다. 한 대상이 실패해도 다른 대상은 계속한다.
+     *
+     * @return 대상 DB id → 결과. 원본에 재정의가 없으면 빈 맵.
+     */
+    public synchronized Map<String, ApplyResult> copyPerDb(String fromDb, List<String> toDbs, String user, String reason) {
+        Map<String, ApplyResult> out = new LinkedHashMap<String, ApplyResult>();
+        Map<SettingKey, AppSettingStore.Row> src = snapshot.perDb.get(fromDb);
+        if (src == null || src.isEmpty() || toDbs == null) {
+            return out;
+        }
+        Map<String, String> changes = new LinkedHashMap<String, String>();
+        for (Map.Entry<SettingKey, AppSettingStore.Row> e : src.entrySet()) {
+            changes.put(e.getKey().key(), e.getValue().value());
+        }
+        for (String to : toDbs) {
+            if (to == null || to.equals(fromDb) || out.containsKey(to)) {
+                continue;
+            }
+            out.put(to, apply(to, changes, null, user, reason));
+        }
+        return out;
+    }
+
+    /** 이 DB 에 저장된 재정의 개수 (복사 화면 안내용). */
+    public int overrideCount(String dbId) {
+        Map<SettingKey, AppSettingStore.Row> m = snapshot.perDb.get(dbId);
+        return m == null ? 0 : m.size();
+    }
+
     /** 저장된 값을 지워 기본값(DB 별이면 전역값)으로 되돌린다. */
     public synchronized ApplyResult reset(String dbId, List<String> keys, String user, String reason) {
         if (ignoreDb) {

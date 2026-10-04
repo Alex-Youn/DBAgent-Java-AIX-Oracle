@@ -87,7 +87,7 @@ public enum SettingKey {
             .detail("화면이 여러 개여도 원본 DB 조회는 이 주기당 1회만 합니다. 낮추면 최신성은 올라가지만 대상 DB 부하가 늘어납니다.")),
     LOCK_KEEPALIVE_MINUTES(d("dbagent.monitor.lock-keepalive-minutes", INT, "0", LOCK, "최근 본 DB 백그라운드 수집 유지",
             "0 이면 끔. 양수이면 화면을 닫아도 최근 본 DB 의 Lock 을 이 시간(분) 동안 계속 수집합니다.").unit("분").range(0, 1440).danger()
-            .detail("Lock 차트의 빈 구간을 줄이려고 화면 없이도 3초마다 대상 DB 를 조회합니다. 기본 꺼짐.")
+            .detail("Lock 차트의 빈 구간을 줄이려고 화면 없이도 3초마다 대상 DB 를 조회합니다. 기본 꺼짐. 저장하면 재시작 없이 바로 켜지고 꺼집니다 (켜기 전에 본 DB 는 기억하지 않으므로, 켠 뒤 화면에서 본 DB 부터 수집합니다).")
             .warning("대상 DB 에 상시 조회 부하가 생깁니다. 켜기 전에 DB 부하 영향을 확인하세요.")),
     LOCK_KEEPALIVE_MAX_DBS(d("dbagent.monitor.lock-keepalive-max-dbs", INT, "5", LOCK, "백그라운드 수집 최대 DB 수",
             "백그라운드 수집을 동시에 유지할 DB 개수의 상한입니다.").unit("개").range(1, 50)
@@ -155,16 +155,21 @@ public enum SettingKey {
             "활성 알림 집계 조회의 최대 대기 시간입니다.").unit("초").range(1, 120)),
     ORACLE_CONNECT_TIMEOUT_MS(d("dbagent.oracle.connect-timeout-ms", INT, "3000", TIMEOUT, "Oracle 접속 제한 시간",
             "Oracle 새 커넥션을 수립하는 최대 시간입니다.").unit("ms").range(100, 60000)
-            .detail("새로 만드는 풀에만 반영되므로 변경 후 재시작이 필요합니다. 너무 짧으면 실제 네트워크 지연에 정상 DB 를 접속 불가로 오인합니다.")),
+            .danger().detail("저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음). 너무 짧으면 실제 네트워크 지연에 정상 DB 를 접속 불가로 오인합니다.")
+            .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 60초 뒤 닫습니다.")),
     ORACLE_READ_TIMEOUT_MS(d("dbagent.oracle.read-timeout-ms", INT, "60000", TIMEOUT, "Oracle 응답 대기 시간",
             "이미 연결된 커넥션에서 쿼리 응답을 기다리는 최대 시간입니다.").unit("ms").range(1000, 600000)
             .detail("접속 제한 시간과 목적이 다릅니다. 짧게 잡으면 AWR/ASH 조회처럼 원래 오래 걸리는 쿼리가 접속 불가로 오인됩니다. "
-                    + "새로 만드는 풀에만 반영됩니다.")),
+                    + "저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
+            .danger().warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 60초 뒤 닫습니다.")),
     RDB_CONNECT_TIMEOUT_MS(d("dbagent.rdb.connect-timeout-ms", INT, "2000", TIMEOUT, "RDB 접속 제한 시간",
-            "MySQL·PostgreSQL 등 새 커넥션을 수립하는 최대 시간입니다.").unit("ms").range(100, 60000)),
+            "MySQL·PostgreSQL 등 새 커넥션을 수립하는 최대 시간입니다.").unit("ms").range(100, 60000).danger()
+            .detail("저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
+            .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 60초 뒤 닫습니다.")),
     RDB_READ_TIMEOUT_MS(d("dbagent.rdb.read-timeout-ms", INT, "60000", TIMEOUT, "RDB 응답 대기 시간",
             "RDB 커넥션에서 쿼리 응답을 기다리는 최대 시간입니다.").unit("ms").range(1000, 600000)
-            .detail("이 값이 없으면 응답 없는 서버 하나가 커넥션을 영구히 붙잡아 풀이 고갈될 수 있습니다.")),
+            .danger().detail("이 값이 없으면 응답 없는 서버 하나가 커넥션을 영구히 붙잡아 풀이 고갈될 수 있습니다. 저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
+            .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 60초 뒤 닫습니다.")),
 
     // ───────────────────────── 보존 기간 ─────────────────────────
     METRIC_RETENTION_DAYS(d("dbagent.monitor.metric-retention-days", INT, "15", RETENTION, "추이 지표 보존 기간",
@@ -179,11 +184,11 @@ public enum SettingKey {
     // ───────────────────────── 커넥션 풀 ─────────────────────────
     ORACLE_POOL_MIN_IDLE(d("dbagent.oracle.pool.min-idle", INT, "2", POOL, "Oracle 풀 최소 유휴", "대상 Oracle DB 풀의 최소 유휴 커넥션 수 기본값입니다.")
             .unit("개").range(0, 100).danger()
-            .detail("DB 등록 시 인스턴스별로 따로 지정하면 그 값이 항상 우선합니다. 새로 만드는 풀에만 반영됩니다.")
+            .detail("DB 등록 시 인스턴스별로 따로 지정하면 그 값이 항상 우선합니다. 저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
             .warning("대상 DB 세션 수에 직접 영향을 줍니다.")),
     ORACLE_POOL_MAX_SIZE(d("dbagent.oracle.pool.max-size", INT, "10", POOL, "Oracle 풀 최대 크기", "대상 Oracle DB 풀의 최대 커넥션 수 기본값입니다.")
             .unit("개").range(1, 200).danger()
-            .detail("DB 등록 시 인스턴스별 값이 우선합니다. 새로 만드는 풀에만 반영됩니다.")
+            .detail("DB 등록 시 인스턴스별 값이 우선합니다. 저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
             .warning("대상 DB 세션 수에 직접 영향을 줍니다.")),
     RDB_POOL_MIN_IDLE(d("dbagent.rdb.pool.min-idle", INT, "1", POOL, "RDB 풀 최소 유휴", "MySQL·PostgreSQL 등 풀의 최소 유휴 커넥션 수 기본값입니다.")
             .unit("개").range(0, 100).danger()
@@ -263,7 +268,11 @@ public enum SettingKey {
             // P3-2 조회 타임아웃 (Oracle/RDB 접속·응답 대기는 풀을 만들 때 한 번 쓰이므로 재시작 키로 남는다)
             LOCK_QUERY_TIMEOUT_SECONDS, SCREEN_QUERY_TIMEOUT_SECONDS, ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS,
             ASH_AWR_QUERY_TIMEOUT_SECONDS, ASH_AWR_FALLBACK, SQLSTAT_QUERY_TIMEOUT_SECONDS, HEALTH_BUSY_MAX_SECONDS,
-            SESSION_EXTRA_FAIL_LOG_MINUTES, FLEET_STATUS_TIMEOUT_SECONDS, ACTIVE_ALERTS_TIMEOUT_SECONDS));
+            SESSION_EXTRA_FAIL_LOG_MINUTES, FLEET_STATUS_TIMEOUT_SECONDS, ACTIVE_ALERTS_TIMEOUT_SECONDS,
+            // P5 Lock 백그라운드 수집 켜기/끄기·상한, 접속/응답 대기와 풀 크기(저장하면 풀을 다시 만든다)
+            LOCK_KEEPALIVE_MINUTES, LOCK_KEEPALIVE_MAX_DBS,
+            ORACLE_CONNECT_TIMEOUT_MS, ORACLE_READ_TIMEOUT_MS, ORACLE_POOL_MIN_IDLE, ORACLE_POOL_MAX_SIZE,
+            RDB_CONNECT_TIMEOUT_MS, RDB_READ_TIMEOUT_MS, RDB_POOL_MIN_IDLE, RDB_POOL_MAX_SIZE));
 
     private static final Pattern CSV_CHARS =Pattern.compile("[A-Za-z0-9_$#%.,\\- ]*");
 
@@ -320,7 +329,7 @@ public enum SettingKey {
     public boolean perDb() { return perDb; }
     /** true 이면 저장 즉시 적용, false 이면 재시작 후 적용. */
     public boolean live() { return live || LIVE.contains(this); }
-    public boolean requiresRestart() { return !live; }
+    public boolean requiresRestart() { return !live(); }
     /** 운영에 영향이 커서 변경 사유를 필수로 받는 키. */
     public boolean danger() { return danger; }
     /** 화면에 노출하지 않는 키. */
