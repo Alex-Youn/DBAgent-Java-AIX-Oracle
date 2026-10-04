@@ -99,6 +99,11 @@ public class BootstrapConfigPostProcessor implements EnvironmentPostProcessor, O
                 break;
             }
         }
+        if (!loaded && !hasEffectiveLines(conf)) {
+            // 샘플을 복사만 하고 줄을 풀지 않았거나 빈 파일이면 속성 출처 자체가 만들어지지 않는다 - 무시된 것이 아니다.
+            log.info("부트스트랩 설정 파일이 비어 있습니다(주석뿐) - jar 번들 기본값으로 기동합니다: " + conf.getAbsolutePath());
+            return;
+        }
         if (loaded) {
             log.info("부트스트랩 설정 파일 로드됨: " + conf.getAbsolutePath());
         } else {
@@ -106,6 +111,21 @@ public class BootstrapConfigPostProcessor implements EnvironmentPostProcessor, O
                     + " - 번들 application.properties의 spring.config.import에 [.properties] 확장자 힌트가 있는지,"
                     + " 작업 디렉터리(" + new File(".").getAbsolutePath() + ")가 맞는지 확인하세요."
                     + " 지금은 파일 값 없이 번들 기본값(포트 등)으로 기동합니다.");
+        }
+    }
+
+    /** 주석(#, !)과 빈 줄을 뺀 설정 줄이 하나라도 있는지. 읽지 못하면 있는 것으로 본다(경고 쪽으로 기운다). */
+    private static boolean hasEffectiveLines(File f) {
+        try {
+            for (String line : java.nio.file.Files.readAllLines(f.toPath(), java.nio.charset.StandardCharsets.UTF_8)) {
+                String t = line.trim();
+                if (!t.isEmpty() && !t.startsWith("#") && !t.startsWith("!")) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (java.io.IOException | RuntimeException e) {
+            return true;
         }
     }
 

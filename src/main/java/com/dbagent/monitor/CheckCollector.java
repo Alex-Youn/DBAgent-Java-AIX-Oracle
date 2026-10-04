@@ -69,8 +69,7 @@ public class CheckCollector {
 
     // 커넥션 읽기 타임아웃(전역) - 쿼리 타임아웃이 이보다 길면 실제로는 이 값에서 네트워크 오류로 끊겨 "DB 접속 실패"처럼 보인다.
     // 전역 값은 건드리지 않고 1일 점검 타임아웃을 이보다 5초 짧게 맞춘다(더 길게 필요하면 두 값을 같이 올린다).
-    @Value("${dbagent.oracle.read-timeout-ms:60000}")
-    private long readTimeoutMs;
+    // (2026-10-04 환경설정 DB화 점검) 읽기 타임아웃은 이제 저장 즉시 반영되는 설정이라 @Value 로 기동 때 굳히지 않고 dailyTimeout() 에서 매번 읽는다.
     // 잡 실패 점검은 dba_scheduler_job_run_details가 날짜 인덱스 없이 항상 전체를 읽어 10분보다 드물게(기본 30분)
     private final Map<String, Long> lastJobCheck = new java.util.concurrent.ConcurrentHashMap<>();
     // 잡 실패 점검 이름 패턴(쉼표 구분, LIKE처럼 % = 아무 글자, 대소문자 무시, JOB_NAME 또는 OWNER.JOB_NAME과 비교, 2026-09-29).
@@ -157,7 +156,7 @@ public class CheckCollector {
 
     /** 1일 점검 쿼리 타임아웃 - 커넥션 읽기 타임아웃보다 5초 짧게(최소 10초). */
     int dailyTimeout() {
-        int cap = (int) Math.max(10, readTimeoutMs / 1000 - 5);
+        int cap = (int) Math.max(10, settings.getLong(SettingKey.ORACLE_READ_TIMEOUT_MS) / 1000 - 5);
         return Math.min(settings.getInt(SettingKey.CHECK_DAILY_QUERY_TIMEOUT_SECONDS), cap);
     }
 

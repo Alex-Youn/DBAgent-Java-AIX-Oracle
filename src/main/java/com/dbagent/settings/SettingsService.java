@@ -351,6 +351,15 @@ public class SettingsService {
         return sb.toString();
     }
 
+    /** [기본값 복원] 으로 DB 저장값을 지웠을 때 돌아가는 값과 그 출처 (옛 파일·번들 값, 없으면 코드 기본값). 화면 표시용. */
+    public EnvValue restoreValue(SettingKey key) {
+        EnvHit hit = envHits.get(key);
+        if (hit != null && !hit.source.locksOverDb()) {
+            return new EnvValue(hit.value, hit.source);
+        }
+        return new EnvValue(key.defaultValue(), SettingSource.CODE_DEFAULT);
+    }
+
     /** DB 값을 걷어냈을 때 돌아가는 값 (옛 파일·번들 값, 없으면 코드 기본값). */
     private String baseValue(SettingKey key) {
         EnvHit hit = envHits.get(key);
@@ -404,6 +413,9 @@ public class SettingsService {
                 errors.put(field, r.message + " (적용될 값: " + lo + " / " + hi + ")");
             }
         }
+        if (reason != null && reason.trim().length() > 1000) {
+            return new ApplyResult(400, "변경 사유는 1000자 이내로 입력하세요.", null, null, 0);
+        }
         // 위험 키는 사유 필수
         String dangerKey = null;
         for (Map.Entry<SettingKey, String> e : parsed.entrySet()) {
@@ -434,31 +446,35 @@ public class SettingsService {
         int unchanged = 0;
         String who = user == null ? "unknown" : user;
         String why = (reason == null || reason.trim().isEmpty()) ? null : reason.trim();
-        for (Map.Entry<SettingKey, String> e : parsed.entrySet()) {
-            SettingKey k = e.getKey();
-            String v = e.getValue();
-            if (sameValue(k, v, resolve(k, dbId).value())) {
-                unchanged++;
-                continue;
-            }
-            String base = dbId == null ? baseValue(k) : resolve(k, null).value();
-            boolean backToBase = sameValue(k, v, base);
-            if (dbId == null) {
-                if (backToBase) {
-                    store.resetGlobal(k.key(), who, why);
-                } else {
-                    store.setGlobal(k.key(), v, who, why, "SET");
+        try {
+            for (Map.Entry<SettingKey, String> e : parsed.entrySet()) {
+                SettingKey k = e.getKey();
+                String v = e.getValue();
+                if (sameValue(k, v, resolve(k, dbId).value())) {
+                    unchanged++;
+                    continue;
                 }
-            } else {
-                if (backToBase) {
-                    store.resetPerDb(dbId, k.key(), who, why);
+                String base = dbId == null ? baseValue(k) : resolve(k, null).value();
+                boolean backToBase = sameValue(k, v, base);
+                if (dbId == null) {
+                    if (backToBase) {
+                        store.resetGlobal(k.key(), who, why);
+                    } else {
+                        store.setGlobal(k.key(), v, who, why, "SET");
+                    }
                 } else {
-                    store.setPerDb(dbId, k.key(), v, who, why);
+                    if (backToBase) {
+                        store.resetPerDb(dbId, k.key(), who, why);
+                    } else {
+                        store.setPerDb(dbId, k.key(), v, who, why);
+                    }
                 }
+                changed.add(k.key());
             }
-            changed.add(k.key());
+        } finally {
+            // 중간에 저장이 실패해도 이미 커밋된 항목은 스냅샷에 반영한다 (안 그러면 DB 와 동작 값이 어긋난다).
+            reload();
         }
-        reload();
         return new ApplyResult(200, null, null, changed, unchanged);
     }
 
@@ -527,15 +543,18 @@ public class SettingsService {
         int unchanged = 0;
         String who = user == null ? "unknown" : user;
         String why = (reason == null || reason.trim().isEmpty()) ? null : reason.trim();
-        for (SettingKey k : targets) {
-            boolean removed = dbId == null ? store.resetGlobal(k.key(), who, why) : store.resetPerDb(dbId, k.key(), who, why);
-            if (removed) {
-                changed.add(k.key());
-            } else {
-                unchanged++;
+        try {
+            for (SettingKey k : targets) {
+                boolean removed = dbId == null ? store.resetGlobal(k.key(), who, why) : store.resetPerDb(dbId, k.key(), who, why);
+                if (removed) {
+                    changed.add(k.key());
+                } else {
+                    unchanged++;
+                }
             }
+        } finally {
+            reload();
         }
-        reload();
         return new ApplyResult(200, null, null, changed, unchanged);
     }
 
@@ -630,7 +649,7 @@ public class SettingsService {
     }
 
     /** DB 를 삭제할 때 그 DB 의 재정의를 모두 지우고 스냅샷을 갱신한다. 실패해도 DB 삭제 자체는 막지 않는다. */
-    public void clearDbOverrides(String dbId, String user) {
+    public synchronized void clearDbOverrides(String dbId, String user) {
         if (dbId == null || dbId.isEmpty()) {
             return;
         }

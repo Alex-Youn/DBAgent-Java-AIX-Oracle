@@ -155,21 +155,21 @@ public enum SettingKey {
             "활성 알림 집계 조회의 최대 대기 시간입니다.").unit("초").range(1, 120)),
     ORACLE_CONNECT_TIMEOUT_MS(d("dbagent.oracle.connect-timeout-ms", INT, "3000", TIMEOUT, "Oracle 접속 제한 시간",
             "Oracle 새 커넥션을 수립하는 최대 시간입니다.").unit("ms").range(100, 60000)
-            .danger().detail("저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음). 너무 짧으면 실제 네트워크 지연에 정상 DB 를 접속 불가로 오인합니다.")
-            .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 60초 뒤 닫습니다.")),
+            .danger().detail("저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫음). 너무 짧으면 실제 네트워크 지연에 정상 DB 를 접속 불가로 오인합니다.")
+            .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 진행 중인 조회가 끝나도록 응답 대기 시간+30초(최소 60초) 뒤에 닫습니다.")),
     ORACLE_READ_TIMEOUT_MS(d("dbagent.oracle.read-timeout-ms", INT, "60000", TIMEOUT, "Oracle 응답 대기 시간",
             "이미 연결된 커넥션에서 쿼리 응답을 기다리는 최대 시간입니다.").unit("ms").range(1000, 600000)
             .detail("접속 제한 시간과 목적이 다릅니다. 짧게 잡으면 AWR/ASH 조회처럼 원래 오래 걸리는 쿼리가 접속 불가로 오인됩니다. "
-                    + "저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
-            .danger().warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 60초 뒤 닫습니다.")),
+                    + "저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫음).")
+            .danger().warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 진행 중인 조회가 끝나도록 응답 대기 시간+30초(최소 60초) 뒤에 닫습니다.")),
     RDB_CONNECT_TIMEOUT_MS(d("dbagent.rdb.connect-timeout-ms", INT, "2000", TIMEOUT, "RDB 접속 제한 시간",
             "MySQL·PostgreSQL 등 새 커넥션을 수립하는 최대 시간입니다.").unit("ms").range(100, 60000).danger()
-            .detail("저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
-            .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 60초 뒤 닫습니다.")),
+            .detail("저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫음).")
+            .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 진행 중인 조회가 끝나도록 응답 대기 시간+30초(최소 60초) 뒤에 닫습니다.")),
     RDB_READ_TIMEOUT_MS(d("dbagent.rdb.read-timeout-ms", INT, "60000", TIMEOUT, "RDB 응답 대기 시간",
             "RDB 커넥션에서 쿼리 응답을 기다리는 최대 시간입니다.").unit("ms").range(1000, 600000)
-            .danger().detail("이 값이 없으면 응답 없는 서버 하나가 커넥션을 영구히 붙잡아 풀이 고갈될 수 있습니다. 저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
-            .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 60초 뒤 닫습니다.")),
+            .danger().detail("이 값이 없으면 응답 없는 서버 하나가 커넥션을 영구히 붙잡아 풀이 고갈될 수 있습니다. 저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫음).")
+            .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 진행 중인 조회가 끝나도록 응답 대기 시간+30초(최소 60초) 뒤에 닫습니다.")),
 
     // ───────────────────────── 보존 기간 ─────────────────────────
     METRIC_RETENTION_DAYS(d("dbagent.monitor.metric-retention-days", INT, "15", RETENTION, "추이 지표 보존 기간",
@@ -184,11 +184,11 @@ public enum SettingKey {
     // ───────────────────────── 커넥션 풀 ─────────────────────────
     ORACLE_POOL_MIN_IDLE(d("dbagent.oracle.pool.min-idle", INT, "2", POOL, "Oracle 풀 최소 유휴", "대상 Oracle DB 풀의 최소 유휴 커넥션 수 기본값입니다.")
             .unit("개").range(0, 100).danger()
-            .detail("DB 등록 시 인스턴스별로 따로 지정하면 그 값이 항상 우선합니다. 저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
+            .detail("DB 등록 시 인스턴스별로 따로 지정하면 그 값이 항상 우선합니다. 저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫음).")
             .warning("대상 DB 세션 수에 직접 영향을 줍니다.")),
     ORACLE_POOL_MAX_SIZE(d("dbagent.oracle.pool.max-size", INT, "10", POOL, "Oracle 풀 최대 크기", "대상 Oracle DB 풀의 최대 커넥션 수 기본값입니다.")
             .unit("개").range(1, 200).danger()
-            .detail("DB 등록 시 인스턴스별 값이 우선합니다. 저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 60초 뒤 닫음).")
+            .detail("DB 등록 시 인스턴스별 값이 우선합니다. 저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫음).")
             .warning("대상 DB 세션 수에 직접 영향을 줍니다.")),
     RDB_POOL_MIN_IDLE(d("dbagent.rdb.pool.min-idle", INT, "1", POOL, "RDB 풀 최소 유휴", "MySQL·PostgreSQL 등 풀의 최소 유휴 커넥션 수 기본값입니다.")
             .unit("개").range(0, 100).danger()
@@ -351,6 +351,10 @@ public enum SettingKey {
         if (v.isEmpty()) {
             return emptyAllowed ? null : "값을 입력하세요.";
         }
+        if (v.length() > 1000) {
+            // 저장소 컬럼(VARCHAR 4000)·H2 오류를 막고 비정상 입력을 걸러내는 상한
+            return "값이 너무 깁니다 (최대 1000자).";
+        }
         switch (type) {
             case INT: {
                 long n;
@@ -380,6 +384,15 @@ public enum SettingKey {
                 // 스킴은 생략 가능(서비스가 normalizeUrl 에서 http:// 를 붙인다). 공백·제어문자만 막는다.
                 return v.matches("\\S+") ? null : "공백 없는 서버 주소를 입력하세요. 예) http://서버IP:9300";
             case CSV:
+                if (this == CHECK_EXCLUDE_OWNERS) {
+                    // CheckCollector 가 항목마다 [A-Za-z0-9_$#]+ 만 SQL 에 넣고 나머지는 조용히 빼므로, 저장 때부터 같은 규칙으로 막는다.
+                    for (String item : v.split(",", -1)) {
+                        if (!item.trim().matches("[A-Za-z0-9_$#]+")) {
+                            return "소유자 이름은 영문·숫자와 _ $ # 만 쓸 수 있고 쉼표로 구분합니다: '" + item.trim() + "'";
+                        }
+                    }
+                    return null;
+                }
                 return CSV_CHARS.matcher(v).matches() ? null : "영문·숫자와 _ $ # % . , - 만 쓸 수 있습니다.";
             case STRING:
             default:

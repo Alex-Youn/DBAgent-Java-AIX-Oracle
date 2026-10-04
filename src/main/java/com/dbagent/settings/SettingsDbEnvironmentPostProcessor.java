@@ -139,6 +139,9 @@ public class SettingsDbEnvironmentPostProcessor implements EnvironmentPostProces
             } else {
                 log.warn("DB 의 환경설정 값을 읽지 못해 파일·번들 값으로 기동합니다: " + msg);
             }
+        } catch (RuntimeException e) {
+            // 어떤 이유로든 읽기에 실패해도 기동은 계속한다 (fail-open: 파일·번들 값 사용).
+            log.warn("DB 의 환경설정 값을 읽는 중 예기치 못한 오류로 파일·번들 값으로 기동합니다: " + e);
         } finally {
             if (conn != null) {
                 try {

@@ -224,7 +224,7 @@ public class AppSettingStore {
                 next, key, dbId, mask && oldValue != null ? "***" : oldValue, mask && newValue != null ? "***" : newValue,
                 action, user, now, reason);
         log.info("설정 변경 [{}] {}{} : {} -> {} (by {}{})", action, key, dbId == null ? "" : " @" + dbId,
-                mask ? "***" : oldValue, mask ? "***" : newValue, user, reason == null ? "" : ", 사유=" + reason);
+                mask ? "***" : oldValue, mask ? "***" : newValue, user, reason == null ? "" : ", 사유=" + reason.replaceAll("[\r\n]+", " "));
     }
 
     /** 변경 이력 조회 (최신순). key / dbId 가 null 이면 그 조건은 걸지 않는다. */

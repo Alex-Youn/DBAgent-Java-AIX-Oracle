@@ -34,6 +34,8 @@ import java.util.Map;
 @RestController
 public class AppSettingsController {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AppSettingsController.class);
+
     /** 화면에 읽기 전용으로 보여주는 부트스트랩 항목 (conf/dbagent.conf 대상). {키, 설명}. */
     private static final String[][] BOOTSTRAP = {
             {"server.port", "웹 서버 포트"},
@@ -163,8 +165,11 @@ public class AppSettingsController {
                 }
             }
         }
-        SettingsService.ApplyResult r = settings.apply(scope, changes, versions, usernameOf(token), asString(body.get("reason")));
-        return toResponse(r);
+        try {
+            return toResponse(settings.apply(scope, changes, versions, usernameOf(token), asString(body.get("reason"))));
+        } catch (RuntimeException e) {
+            return storeFailure("저장", e);
+        }
     }
 
     /** body: {token, db_id?, keys:[키...], reason?} - 저장된 값을 지워 기본값(DB 별이면 전역값)으로 되돌린다. */
@@ -187,7 +192,11 @@ public class AppSettingsController {
                 keys.add(String.valueOf(o));
             }
         }
-        return toResponse(settings.reset(scope, keys, usernameOf(token), asString(body.get("reason"))));
+        try {
+            return toResponse(settings.reset(scope, keys, usernameOf(token), asString(body.get("reason"))));
+        } catch (RuntimeException e) {
+            return storeFailure("초기화", e);
+        }
     }
 
     /** body: {token, from_db_id, to_db_ids:[...], reason?} - 한 DB 의 재정의를 다른 DB 들에 복사한다. */
@@ -225,7 +234,12 @@ public class AppSettingsController {
         if (settings.overrideCount(from) == 0) {
             return error(HttpStatus.BAD_REQUEST, "이 DB 에 재정의한 항목이 없어 복사할 것이 없습니다.");
         }
-        Map<String, SettingsService.ApplyResult> results = settings.copyPerDb(from, targets, usernameOf(token), asString(body.get("reason")));
+        Map<String, SettingsService.ApplyResult> results;
+        try {
+            results = settings.copyPerDb(from, targets, usernameOf(token), asString(body.get("reason")));
+        } catch (RuntimeException e) {
+            return storeFailure("복사", e);
+        }
         List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
         boolean allOk = true;
         for (Map.Entry<String, SettingsService.ApplyResult> e : results.entrySet()) {
@@ -315,6 +329,10 @@ public class AppSettingsController {
         m.put("min", k.min());
         m.put("max", k.max());
         m.put("default", k.defaultValue());
+        // [기본값 복원] 으로 저장된 값을 지웠을 때 실제로 돌아가는 값 - 옛 외부 파일에 값이 있으면 그 값이라 '기본값' 과 다를 수 있다.
+        SettingsService.EnvValue restore = settings.restoreValue(k);
+        m.put("restore_value", k.secret() ? null : restore.value());
+        m.put("restore_source_label", restore.source().label());
         m.put("value", k.secret() ? null : v.value());
         m.put("is_set", k.secret() ? Boolean.valueOf(v.value() != null && !v.value().isEmpty()) : null);
         m.put("source", v.source().name());
@@ -433,6 +451,15 @@ public class AppSettingsController {
 
     private static String blankToNull(String s) {
         return (s == null || s.trim().isEmpty()) ? null : s.trim();
+    }
+
+    /**
+     * 설정 DB 쓰기가 실패했을 때(잠김·일시 오류 등) Spring 기본 500(영어) 대신 한국어 오류로 답한다. 스냅샷은 SettingsService 가
+     * 쓰기 중간 실패에도 DB 와 맞추므로 화면은 새로고침하면 실제 상태를 본다 (QA 2026-10-04: SQLite 가 외부에서 잠겨 있을 때 5.6초 뒤 500).
+     */
+    private ResponseEntity<Map<String, Object>> storeFailure(String what, RuntimeException e) {
+        log.error("환경설정 {} 실패: {}", what, e.toString());
+        return error(HttpStatus.SERVICE_UNAVAILABLE, "설정 DB 에 " + what + "하지 못했습니다(DB 가 잠겨 있거나 일시 오류). 잠시 뒤 새로고침한 다음 다시 시도하세요.");
     }
 
     private static ResponseEntity<Map<String, Object>> error(HttpStatus status, String message) {

@@ -159,6 +159,26 @@
                 if (it.default === '') return '(비어 있음)';
                 return it.default + (it.unit ? ' ' + it.unit : '');
             }
+            // [기본값 복원] 을 누르면 실제로 돌아가는 값을 보여준다 - 옛 외부 파일에 값이 있으면 코드 기본값과 다르다.
+            function fmtValue(it, v) {
+                if (it.type === 'BOOL') return boolText(v);
+                if (v === '' || v === null || v === undefined) return '(비어 있음)';
+                return v + (it.unit ? ' ' + it.unit : '');
+            }
+            function sameVal(it, a, b) {
+                if (it.type === 'INT' || it.type === 'DECIMAL') {
+                    const x = Number(a), y = Number(b);
+                    if (!isNaN(x) && !isNaN(y)) return x === y;
+                }
+                if (it.type === 'BOOL') return String(a).toLowerCase() === String(b).toLowerCase();
+                return String(a).trim() === String(b).trim();
+            }
+            function defaultText(it, scoped) {
+                const base = '기본값 ' + formatDefault(it);
+                if (scoped && it.per_db) return base;
+                if (it.restore_value === null || it.restore_value === undefined || sameVal(it, it.restore_value, it.default)) return base;
+                return '복원 시 ' + fmtValue(it, it.restore_value) + ' (' + it.restore_source_label + ') · ' + base;
+            }
             function isDirty(it) {
                 const d = drafts();
                 return Object.prototype.hasOwnProperty.call(d, it.key);
@@ -204,6 +224,7 @@
                 }
                 input.disabled = !it.editable;
                 input.dataset.key = it.key;
+                input.setAttribute('aria-label', it.label);
                 const onChange = () => {
                     const v = it.type === 'BOOL' ? String(input.checked) : input.value.trim();
                     const original = it.type === 'BOOL' ? String(String(it.value).toLowerCase() === 'true') : String(it.value === null ? '' : it.value);
@@ -225,7 +246,7 @@
 
                 const ctrl = el('div', 'as-ctrl');
                 const c = buildControl(it);
-                ctrl.append(c.wrap, el('span', 'as-def', '기본값 ' + formatDefault(it)));
+                ctrl.append(c.wrap, el('span', 'as-def', defaultText(it, scoped)));
 
                 const hasRow = scoped && it.per_db ? it.source === 'DB_PER_DB' : it.source === 'DB_GLOBAL';
                 const resetLabel = scoped && it.per_db ? '전역값으로 되돌리기' : '기본값 복원';
@@ -504,6 +525,13 @@
                 if (sub) b.append(el('small', '', sub));
                 b.addEventListener('click', () => {
                     state.group = id;
+                    // 전역 전용 그룹에서는 DB 범위를 풀어야 한다 - 안 풀면 저장·복원 요청에 db_id 가 실려 서버가 "DB별 재정의를 지원하지 않는 항목"으로 거절한다.
+                    const tg = state.data.groups.filter(x => x.id === id)[0];
+                    if (tg && !tg.per_db && state.dbId) {
+                        state.dbId = ''; state.message = ''; state.copyOpen = false; state.copyResult = null;
+                        load();
+                        return;
+                    }
                     if (id === 'hist') { state.history = null; loadHistory(); } else render();
                 });
                 return b;
@@ -570,7 +598,7 @@
                     sel.value = g.per_db ? (state.dbId || '') : '';
                     sel.addEventListener('change', () => { state.dbId = sel.value; state.message = ''; state.copyOpen = false; state.copyResult = null; load(); });
                     scope.append(lab, sel, el('span', 'pp-note', g.per_db
-                        ? (state.dbId ? '이 DB 에만 적용됩니다. 재정의하지 않은 항목은 전역값을 따릅니다. (DB별 값은 서버가 DB별로 읽도록 연결되는 다음 단계부터 적용됩니다)'
+                        ? (state.dbId ? '이 DB 에만 적용됩니다. 재정의하지 않은 항목은 전역값을 따릅니다.'
                             : '전역값입니다. "이 DB 재정의" 가 없는 모든 DB 에 적용됩니다.')
                         : '이 그룹은 전역 전용입니다.'));
                     if (g.per_db && state.dbId) {

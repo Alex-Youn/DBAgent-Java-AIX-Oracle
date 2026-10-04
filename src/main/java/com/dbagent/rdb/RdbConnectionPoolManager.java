@@ -48,7 +48,11 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
     // 환경설정 DB화 P5(2026-10-04): RDB 접속·응답 대기 시간과 풀 크기 기본값을 저장 즉시 반영한다. 설정이 바뀌면 지금 쓰던
     // 풀을 목록에서 빼 다음 조회부터 새 설정으로 풀을 다시 만들고, 쓰던 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫는다
     // (바로 닫으면 실행 중인 조회가 끊긴다). 풀을 다시 만들 때 대상 DB 에 새 접속이 생기므로 해당 설정은 화면에서 '위험' 표시다.
-    private static final long POOL_RETIRE_DELAY_SECONDS = 60;
+    // 쓰던 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫는다: 응답 대기 시간(그 풀이 만들어질 때의 값) + 30초, 최소 60초.
+    // 조회 하나는 응답 대기 시간을 넘기면 어차피 끊기므로 그 안에는 끝난다 (QA 에서 60초 고정 지연이 150초 쿼리를 끊는 것을 확인 - 2026-10-04).
+    private static final long POOL_RETIRE_MIN_DELAY_SECONDS = 60;
+    private static final long POOL_RETIRE_EXTRA_SECONDS = 30;
+    private volatile int appliedReadTimeoutMs;
     private static final java.util.concurrent.ScheduledExecutorService POOL_RETIRE =
             java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "pool-retire");
@@ -61,6 +65,7 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
     @Override
     public void afterPropertiesSet() {
         poolSettingsSig = poolSettingsSignature();
+        appliedReadTimeoutMs = settings.getInt(SettingKey.RDB_READ_TIMEOUT_MS);
         settings.addChangeListener(this::onSettingsChanged);
     }
 
@@ -74,11 +79,13 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
             return;
         }
         poolSettingsSig = sig;
+        long delay = Math.max(POOL_RETIRE_MIN_DELAY_SECONDS, appliedReadTimeoutMs / 1000L + POOL_RETIRE_EXTRA_SECONDS);
+        appliedReadTimeoutMs = settings.getInt(SettingKey.RDB_READ_TIMEOUT_MS);
         java.util.List<HikariDataSource> old = new java.util.ArrayList<>(pools.values());
         pools.clear();
         failedPools.clear();
         poolLog.info("RDB 풀 설정이 바뀌어 기존 풀 {}개를 교체합니다 (다음 조회부터 새 설정, 기존 풀은 {}초 뒤 닫음): {}",
-                old.size(), POOL_RETIRE_DELAY_SECONDS, sig);
+                old.size(), delay, sig);
         for (HikariDataSource ds : old) {
             POOL_RETIRE.schedule(() -> {
                 try {
@@ -86,7 +93,7 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
                 } catch (RuntimeException e) {
                     poolLog.warn("이전 풀을 닫지 못했습니다: {}", e.toString());
                 }
-            }, POOL_RETIRE_DELAY_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+            }, delay, java.util.concurrent.TimeUnit.SECONDS);
         }
     }
 
