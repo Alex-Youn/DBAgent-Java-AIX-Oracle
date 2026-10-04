@@ -16,19 +16,23 @@
     </script>
     <script src="dbagent-common.js?v=13"></script>
     <style>
-        /* 환경설정 DB화 P1-4(2026-10-04): 읽기 전용 조회 화면. 색은 전역 CSS 변수만 쓴다. */
+        /* 환경설정 DB화(2026-10-04): P1-4 조회 → P2 수정·초기화·이력·내보내기. 색은 전역 CSS 변수만 쓴다. */
         .as-layout { display: flex; gap: 12px; flex: 1 1 auto; min-height: 0; }
         .as-nav { flex: 0 0 200px; display: flex; flex-direction: column; gap: 4px; overflow: auto; }
         .as-nav button { text-align: left; background: transparent; color: var(--text-secondary); border: 1px solid transparent; border-radius: 6px; padding: 7px 10px; cursor: pointer; font: inherit; font-size: 13.5px; }
         .as-nav button:hover { background: var(--bg-hover); }
         .as-nav button.active { background: var(--bg-hover); color: var(--text-main); border-color: var(--border); }
         .as-nav small { display: block; color: var(--text-secondary); font-size: 11.5px; opacity: .8; }
-        .as-main { flex: 1 1 auto; min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); overflow: auto; }
+        .as-nav .dot { color: var(--primary); font-weight: 700; margin-left: 4px; }
+        .as-main { flex: 1 1 auto; min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); overflow: auto; display: flex; flex-direction: column; }
+        .as-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
         .as-scope { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
         .as-scope select { background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; font: inherit; }
         .as-scope select:disabled { opacity: .5; }
         .as-row { padding: 12px 14px; border-bottom: 1px solid var(--border); }
         .as-row:last-child { border-bottom: 0; }
+        .as-row.dirty { background: rgba(79, 156, 255, .08); }
+        .as-row.err { background: rgba(255, 107, 107, .08); }
         .as-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .as-label { font-weight: 700; }
         .as-key { color: var(--text-secondary); font: 11.5px Consolas, monospace; opacity: .85; }
@@ -37,11 +41,19 @@
         .as-badge.saved { color: var(--success, #22c55e); border-color: var(--success, #22c55e); }
         .as-badge.lock { color: #f5b942; border-color: #f5b942; }
         .as-badge.restart { color: #b58cff; border-color: #b58cff; }
+        .as-badge.pending { background: #b58cff; color: #12091f; border-color: #b58cff; }
+        .as-badge.live { color: var(--success, #22c55e); border-color: var(--success, #22c55e); }
+        .as-badge.none { color: var(--text-secondary); border-style: dashed; }
         .as-badge.danger { color: var(--danger); border-color: var(--danger); }
         .as-summary { color: var(--text-secondary); font-size: 12.5px; margin: 3px 0 8px; }
         .as-ctrl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-        .as-value { font: 600 13.5px Consolas, monospace; background: var(--bg-main); border: 1px solid var(--border); border-radius: 5px; padding: 3px 10px; max-width: 100%; overflow-wrap: anywhere; }
+        .as-input { background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border); border-radius: 5px; padding: 4px 10px; font: 600 13.5px Consolas, monospace; min-width: 120px; }
+        .as-input.wide { min-width: 360px; }
+        .as-input:disabled { opacity: .6; }
+        .as-input.bad { border-color: var(--danger); }
+        .as-unit { color: var(--text-secondary); font-size: 12.5px; }
         .as-def { color: var(--text-secondary); font-size: 12px; }
+        .as-error { margin-top: 6px; font-size: 12.5px; color: var(--danger); }
         .as-detail { display: none; margin-top: 10px; background: var(--bg-main); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 12.5px; color: var(--text-secondary); }
         .as-detail.open { display: block; }
         .as-detail p { margin: 0 0 6px; }
@@ -52,12 +64,22 @@
         .as-note { padding: 10px 14px; font-size: 12.5px; color: var(--text-secondary); background: var(--bg-hover); border-bottom: 1px solid var(--border); }
         .as-table { width: 100%; border-collapse: collapse; font-size: 13px; }
         .as-table th, .as-table td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
-        .as-table th { color: var(--text-secondary); font-weight: 600; }
+        .as-table th { color: var(--text-secondary); font-weight: 600; white-space: nowrap; }
         .as-table code { font: 12px Consolas, monospace; }
+        .as-savebar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-top: 1px solid var(--border); background: var(--bg-main); }
+        .as-savebar .grow { flex: 1 1 200px; font-size: 12.5px; color: var(--text-secondary); }
+        .as-savebar .grow.bad { color: var(--danger); }
+        .as-savebar input.reason { flex: 1 1 100%; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border); border-radius: 5px; padding: 5px 10px; font: inherit; }
+        .as-savebar input.reason.bad { border-color: var(--danger); }
+        .as-toast { position: fixed; right: 18px; bottom: 18px; background: var(--success, #22c55e); color: #05150d; padding: 8px 14px; border-radius: 6px; font-weight: 700; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10; }
+        .as-toast.show { opacity: 1; }
+        .as-toast.bad { background: var(--danger); color: #fff; }
+        .pp-btn:disabled { opacity: .45; cursor: not-allowed; }
     </style>
 </head>
 <body class="pp-body">
     <div id="root" class="pp-root">불러오는 중...</div>
+    <div id="toast" class="as-toast"></div>
     <script>
         (function () {
             const root = document.getElementById('root');
@@ -68,13 +90,34 @@
                 return;
             }
 
-            const state = { data: null, group: null, dbId: '' };
+            // drafts[범위][키] = 입력 중인 값(문자열). 범위는 '' (전역) 또는 db_id. 저장 전까지 화면 전환·새로고침 없이 유지한다.
+            const state = { data: null, group: null, dbId: '', drafts: {}, errors: {}, message: '', reason: '', history: null, resetArm: null };
+            let rowRefs = {};   // 현재 그려진 항목 행 (키 → {row, input, item})
+            let saveBarEl = null;
 
             function el(tag, cls, text) {
                 const e = document.createElement(tag);
                 if (cls) e.className = cls;
                 if (text !== undefined && text !== null) e.textContent = text;
                 return e;
+            }
+            function toast(msg, bad) {
+                const t = document.getElementById('toast');
+                t.textContent = msg;
+                t.className = 'as-toast show' + (bad ? ' bad' : '');
+                clearTimeout(toast._t);
+                toast._t = setTimeout(() => { t.className = 'as-toast' + (bad ? ' bad' : ''); }, 2200);
+            }
+            function scopeKey() { return state.dbId || ''; }
+            function drafts() { return state.drafts[scopeKey()] || (state.drafts[scopeKey()] = {}); }
+            function errs() { return state.errors[scopeKey()] || {}; }
+
+            async function api(method, path, body) {
+                const opt = { method, headers: {} };
+                if (body) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(Object.assign({ token }, body)); }
+                const res = await fetch(path, opt);
+                const json = await res.json().catch(() => ({}));
+                return { ok: res.ok, status: res.status, json };
             }
 
             async function load() {
@@ -91,31 +134,103 @@
                 }
             }
 
-            function formatValue(it) {
-                if (it.is_set !== null && it.is_set !== undefined) return it.is_set ? '(설정됨)' : '(비어 있음)';
-                if (it.type === 'BOOL') return String(it.value).toLowerCase() === 'true' ? '사용' : '사용 안 함';
-                if (it.value === '' || it.value === null) return '(비어 있음)';
-                return it.value + (it.unit ? ' ' + it.unit : '');
+            async function loadHistory() {
+                const r = await api('GET', '/api/app_settings/history?token=' + encodeURIComponent(token) + '&limit=200');
+                state.history = r.ok ? r.json.items : [];
+                render();
             }
+
+            // ───────── 표시 보조 ─────────
+            function findItem(key) {
+                for (const g of state.data.groups) for (const it of g.items) if (it.key === key) return it;
+                return null;
+            }
+            function boolText(v) { return String(v).toLowerCase() === 'true' ? '사용' : '사용 안 함'; }
             function formatDefault(it) {
-                if (it.type === 'BOOL') return String(it.default).toLowerCase() === 'true' ? '사용' : '사용 안 함';
+                if (it.type === 'BOOL') return boolText(it.default);
                 if (it.default === '') return '(비어 있음)';
                 return it.default + (it.unit ? ' ' + it.unit : '');
+            }
+            function isDirty(it) {
+                const d = drafts();
+                return Object.prototype.hasOwnProperty.call(d, it.key);
+            }
+            function dirtyKeys() { return Object.keys(drafts()); }
+            function dirtyDangerKeys() { return dirtyKeys().filter(k => { const it = findItem(k); return it && it.danger; }); }
+
+            function sourceBadge(it, scoped) {
+                if (it.locked) return el('span', 'as-badge lock', it.source_label + ' (고정)');
+                if (scoped && it.per_db) {
+                    return it.source === 'DB_PER_DB' ? el('span', 'as-badge override', '이 DB 재정의') : el('span', 'as-badge', '전역값 상속');
+                }
+                if (it.source === 'DB_GLOBAL') return el('span', 'as-badge saved', '변경됨 (DB 저장값)');
+                if (it.source === 'CODE_DEFAULT') return el('span', 'as-badge', '기본값 사용 중');
+                return el('span', 'as-badge', it.source_label);
+            }
+            function appliesBadge(it) {
+                if (it.applies === 'none') return el('span', 'as-badge none', '연결 전 (저장만 됨)');
+                if (it.applies === 'live') return el('span', 'as-badge live', '즉시 적용');
+                return it.restart_pending ? el('span', 'as-badge pending', '재시작 대기') : el('span', 'as-badge restart', '재시작 후 적용');
+            }
+
+            // ───────── 항목 행 ─────────
+            function buildControl(it) {
+                const d = drafts();
+                const cur = Object.prototype.hasOwnProperty.call(d, it.key) ? d[it.key] : it.value;
+                const wrap = el('span', 'as-ctrl');
+                let input;
+                if (it.type === 'BOOL') {
+                    input = el('input');
+                    input.type = 'checkbox';
+                    input.checked = String(cur).toLowerCase() === 'true';
+                    const lab = el('label');
+                    lab.append(input, document.createTextNode(' 사용'));
+                    wrap.append(lab);
+                } else {
+                    input = el('input', 'as-input' + (it.type === 'URL' || it.type === 'CSV' || it.type === 'STRING' ? ' wide' : ''));
+                    input.type = (it.type === 'INT' || it.type === 'DECIMAL') ? 'number' : 'text';
+                    if (it.type === 'DECIMAL') input.step = 'any';
+                    input.value = cur === null || cur === undefined ? '' : cur;
+                    wrap.append(input);
+                    if (it.unit) wrap.append(el('span', 'as-unit', it.unit));
+                }
+                input.disabled = !it.editable;
+                input.dataset.key = it.key;
+                const onChange = () => {
+                    const v = it.type === 'BOOL' ? String(input.checked) : input.value.trim();
+                    const original = it.type === 'BOOL' ? String(String(it.value).toLowerCase() === 'true') : String(it.value === null ? '' : it.value);
+                    if (v === original) delete drafts()[it.key]; else drafts()[it.key] = v;
+                    delete errs()[it.key];
+                    refreshDirtyUI();
+                };
+                input.addEventListener('input', onChange);
+                input.addEventListener('change', onChange);
+                return { wrap, input };
             }
 
             function renderItem(it, scoped) {
                 const row = el('div', 'as-row');
                 const head = el('div', 'as-head');
-                head.append(el('span', 'as-label', it.label), sourceBadge(it, scoped), el('span', 'as-key', it.key));
-                if (it.requires_restart) head.append(el('span', 'as-badge restart', '재시작 후 적용'));
+                head.append(el('span', 'as-label', it.label), sourceBadge(it, scoped), appliesBadge(it), el('span', 'as-key', it.key));
                 if (it.danger) head.append(el('span', 'as-badge danger', '위험'));
                 row.append(head, el('div', 'as-summary', it.summary));
 
                 const ctrl = el('div', 'as-ctrl');
-                ctrl.append(el('span', 'as-value', formatValue(it)), el('span', 'as-def', '기본값 ' + formatDefault(it)));
-                const btn = el('button', 'pp-btn', '설명');
-                ctrl.append(btn);
+                const c = buildControl(it);
+                ctrl.append(c.wrap, el('span', 'as-def', '기본값 ' + formatDefault(it)));
+
+                const hasRow = scoped && it.per_db ? it.source === 'DB_PER_DB' : it.source === 'DB_GLOBAL';
+                const resetLabel = scoped && it.per_db ? '전역값으로 되돌리기' : '기본값 복원';
+                const resetBtn = el('button', 'pp-btn', resetLabel);
+                resetBtn.disabled = !(hasRow && it.editable);
+                resetBtn.addEventListener('click', () => onReset(it, resetBtn, resetLabel));
+                const descBtn = el('button', 'pp-btn', '설명');
+                ctrl.append(resetBtn, descBtn);
                 row.append(ctrl);
+
+                const err = el('div', 'as-error');
+                err.style.display = 'none';
+                row.append(err);
 
                 const detail = el('div', 'as-detail');
                 detail.append(el('p', '', it.detail || '추가 설명이 없습니다.'));
@@ -123,24 +238,148 @@
                     + (it.min !== null && it.max !== null ? ' · 허용 범위 ' + it.min + ' ~ ' + it.max : '')));
                 if (it.warning) detail.append(el('div', 'warn', it.warning));
                 row.append(detail);
-                btn.addEventListener('click', () => {
+                descBtn.addEventListener('click', () => {
                     detail.classList.toggle('open');
-                    btn.textContent = detail.classList.contains('open') ? '설명 닫기' : '설명';
+                    descBtn.textContent = detail.classList.contains('open') ? '설명 닫기' : '설명';
                 });
+                rowRefs[it.key] = { row, input: c.input, item: it, err };
                 return row;
             }
 
-            function sourceBadge(it, scoped) {
-                if (it.locked) return el('span', 'as-badge lock', it.source_label);
-                if (scoped && it.per_db) {
-                    return it.source === 'DB_PER_DB' ? el('span', 'as-badge override', '이 DB 재정의')
-                        : el('span', 'as-badge', '전역값 상속');
-                }
-                if (it.source === 'DB_GLOBAL') return el('span', 'as-badge saved', '변경됨 (DB 저장값)');
-                if (it.source === 'CODE_DEFAULT') return el('span', 'as-badge', '기본값 사용 중');
-                return el('span', 'as-badge', it.source_label);
+            // 입력 중에는 전체를 다시 그리지 않고(포커스 유지) 행 표시와 저장 줄만 갱신한다.
+            function refreshDirtyUI() {
+                const e = errs();
+                Object.keys(rowRefs).forEach(k => {
+                    const r = rowRefs[k];
+                    r.row.classList.toggle('dirty', isDirty(r.item));
+                    const msg = e[k];
+                    r.row.classList.toggle('err', !!msg);
+                    r.err.style.display = msg ? 'block' : 'none';
+                    r.err.textContent = msg || '';
+                    if (r.input.type !== 'checkbox') r.input.classList.toggle('bad', !!msg);
+                });
+                updateSaveBar();
+                updateNavDots();
             }
 
+            function updateNavDots() {
+                const d = drafts();
+                document.querySelectorAll('.as-nav button[data-group]').forEach(b => {
+                    const g = state.data.groups.filter(x => x.id === b.dataset.group)[0];
+                    const dirty = g && g.items.some(it => Object.prototype.hasOwnProperty.call(d, it.key));
+                    const dot = b.querySelector('.dot');
+                    if (dirty && !dot) b.insertBefore(el('span', 'dot', '●'), b.querySelector('small'));
+                    if (!dirty && dot) dot.remove();
+                });
+            }
+
+            // ───────── 저장 줄 ─────────
+            function updateSaveBar() {
+                if (!saveBarEl) return;
+                const n = dirtyKeys().length;
+                const danger = dirtyDangerKeys();
+                saveBarEl.msg.className = 'grow' + (state.message ? ' bad' : '');
+                saveBarEl.msg.textContent = state.message || (n ? '변경 ' + n + '건 (저장 전)' : '변경 사항 없음');
+                saveBarEl.save.disabled = n === 0;
+                saveBarEl.discard.disabled = n === 0;
+                saveBarEl.reason.placeholder = danger.length ? '변경 사유 (필수 - 위험 항목이 포함되어 있습니다)' : '변경 사유 (선택)';
+            }
+
+            async function onSave() {
+                const d = drafts();
+                const keys = Object.keys(d);
+                if (!keys.length) return;
+                const reason = saveBarEl.reason.value.trim();
+                if (dirtyDangerKeys().length && reason.length < 2) {
+                    saveBarEl.reason.classList.add('bad');
+                    saveBarEl.reason.focus();
+                    state.message = '위험 항목이 있어 변경 사유를 입력해야 합니다.';
+                    updateSaveBar();
+                    saveBarEl.msg.className = 'grow bad';
+                    return;
+                }
+                const versions = {};
+                keys.forEach(k => { const it = findItem(k); if (it) versions[k] = it.version; });
+                saveBarEl.save.disabled = true;
+                const r = await api('PUT', '/api/app_settings', { db_id: state.dbId || null, changes: d, versions, reason });
+                if (r.ok) {
+                    state.drafts[scopeKey()] = {};
+                    state.errors[scopeKey()] = {};
+                    state.message = '';
+                    state.reason = '';
+                    toast('저장했습니다 (' + (r.json.changed ? r.json.changed.length : 0) + '건 변경)');
+                    await load();
+                } else {
+                    state.errors[scopeKey()] = r.json.field_errors || {};
+                    state.message = (r.json.error || ('저장 실패 (HTTP ' + r.status + ')')) + (r.status === 409 ? ' - 새로고침 버튼으로 최신 값을 불러오세요.' : '');
+                    toast(state.message, true);
+                    // 오류 항목이 있는 그룹으로 이동해 보여준다
+                    const first = Object.keys(state.errors[scopeKey()])[0];
+                    if (first) {
+                        const g = state.data.groups.filter(x => x.items.some(it => it.key === first))[0];
+                        if (g && g.id !== state.group) { state.group = g.id; render(); return; }
+                    }
+                    refreshDirtyUI();
+                }
+            }
+
+            function onDiscard() {
+                state.drafts[scopeKey()] = {};
+                state.errors[scopeKey()] = {};
+                state.message = '';
+                render();
+            }
+
+            // 기본값 복원은 한 번 더 눌러야 실행된다 (확인창 대신 버튼 문구로 확인)
+            async function onReset(it, btn, label) {
+                if (state.resetArm !== it.key) {
+                    state.resetArm = it.key;
+                    btn.textContent = '정말 복원? 한 번 더 클릭';
+                    setTimeout(() => { if (state.resetArm === it.key) { state.resetArm = null; btn.textContent = label; } }, 3500);
+                    return;
+                }
+                state.resetArm = null;
+                const reason = saveBarEl ? saveBarEl.reason.value.trim() : '';
+                if (it.danger && reason.length < 2) {
+                    state.message = '위험 항목은 아래 변경 사유를 입력한 뒤 복원할 수 있습니다.';
+                    updateSaveBar();
+                    if (saveBarEl) { saveBarEl.reason.classList.add('bad'); saveBarEl.reason.focus(); saveBarEl.msg.className = 'grow bad'; }
+                    btn.textContent = label;
+                    return;
+                }
+                const r = await api('POST', '/api/app_settings/reset', { db_id: state.dbId || null, keys: [it.key], reason });
+                if (r.ok) {
+                    delete drafts()[it.key];
+                    state.message = '';
+                    toast(r.json.changed && r.json.changed.length ? '복원했습니다' : '이미 기본값입니다');
+                    await load();
+                } else {
+                    state.message = r.json.error || ('복원 실패 (HTTP ' + r.status + ')');
+                    toast(state.message, true);
+                    btn.textContent = label;
+                    updateSaveBar();
+                }
+            }
+
+            async function onExport() {
+                try {
+                    const res = await fetch('/api/app_settings/export?token=' + encodeURIComponent(token));
+                    if (!res.ok) throw new Error('내보내기 실패 (HTTP ' + res.status + ')');
+                    const blob = await res.blob();
+                    const cd = res.headers.get('Content-Disposition') || '';
+                    const m = /filename="([^"]+)"/.exec(cd);
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = m ? m[1] : 'dbagent-settings.properties';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+                    toast('내보냈습니다 (DB 에 저장된 값만 담깁니다)');
+                } catch (e) { toast(e.message, true); }
+            }
+
+            // ───────── 화면 조립 ─────────
             function renderBootstrap() {
                 const wrap = el('div');
                 wrap.append(el('div', 'as-note', 'DB 를 열기 전에 필요한 값이라 이 화면에서 바꿀 수 없습니다. 서버의 conf/dbagent.conf 파일 또는 기동 인자로 변경하세요. (conf 가 없으면 jar 번들 기본값을 씁니다)'));
@@ -162,27 +401,70 @@
                 return wrap;
             }
 
+            function renderHistory() {
+                const wrap = el('div');
+                wrap.append(el('div', 'as-note', '환경설정 변경 이력입니다 (최근 200건, 최신순). 이관(MIGRATE)은 최초 기동 때 옛 application.properties 에서 옮긴 값입니다.'));
+                if (state.history === null) { wrap.append(el('div', 'as-note', '불러오는 중...')); return wrap; }
+                if (!state.history.length) { wrap.append(el('div', 'as-note', '변경 이력이 없습니다.')); return wrap; }
+                const table = el('table', 'as-table');
+                const thead = el('thead');
+                const hr = el('tr');
+                ['일시', '사용자', '대상', '항목', '이전 → 이후', '구분', '사유'].forEach(h => hr.append(el('th', '', h)));
+                thead.append(hr);
+                const tbody = el('tbody');
+                const show = v => (v === null || v === undefined || v === '') ? '(없음)' : v;
+                state.history.forEach(h => {
+                    const tr = el('tr');
+                    const k = el('td'); k.append(document.createTextNode(h.label), document.createElement('br'), el('code', '', h.key));
+                    tr.append(el('td', '', h.changed_at), el('td', '', h.changed_by || ''), el('td', '', h.db_id ? h.db_id : '전역'), k,
+                        el('td', '', show(h.old_value) + ' → ' + show(h.new_value)), el('td', '', h.action), el('td', '', h.reason || ''));
+                    tbody.append(tr);
+                });
+                table.append(thead, tbody);
+                wrap.append(table);
+                return wrap;
+            }
+
+            function navButton(id, label, sub) {
+                const b = el('button', state.group === id ? 'active' : '');
+                b.dataset.group = id;
+                b.append(document.createTextNode(label));
+                if (sub) b.append(el('small', '', sub));
+                b.addEventListener('click', () => {
+                    state.group = id;
+                    if (id === 'hist') { state.history = null; loadHistory(); } else render();
+                });
+                return b;
+            }
+
             function render() {
                 const d = state.data;
+                rowRefs = {};
+                saveBarEl = null;
                 const frag = document.createDocumentFragment();
 
                 const head = el('div', 'pp-head');
                 head.append(el('h3', '', '시스템 설정'),
-                    el('span', 'pp-note', '관리자 전용 · 조회 전용(수정 기능은 다음 단계) · 바꾸지 않은 항목은 기본값으로 동작합니다'));
+                    el('span', 'pp-note', '관리자 전용 · 바꾼 값만 DB 에 저장되고, 바꾸지 않은 항목은 기본값으로 동작합니다'));
                 const actions = el('div', 'pp-actions');
+                const exp = el('button', 'pp-btn', '내보내기');
+                exp.title = 'DB 에 저장된 값을 properties 텍스트로 받습니다 (롤백·백업용)';
+                exp.addEventListener('click', onExport);
                 const reload = el('button', 'pp-btn', '새로고침');
-                reload.addEventListener('click', load);
+                // 새로고침은 서버의 최신 값과 버전을 다시 받는다. 입력 중이던 값(drafts)은 지우지 않고 오류 표시만 걷는다 -
+                // 충돌(409) 뒤 다시 저장하면 최신 버전으로 덮어쓰고, 버리려면 [되돌리기] 를 누른다.
+                reload.addEventListener('click', () => { state.message = ''; state.errors = {}; load(); });
                 const close = el('button', 'pp-btn', '닫기');
                 close.addEventListener('click', () => window.close());
-                actions.append(reload, close);
+                actions.append(exp, reload, close);
                 head.append(actions);
                 frag.append(head);
 
                 if (d.ignore_db) {
-                    frag.append(el('div', 'as-banner warn', '안전 모드(-Ddbagent.settings.ignore-db=true)로 기동 중입니다. DB 에 저장된 값은 모두 무시되고 파일·번들 값이 쓰입니다.'));
+                    frag.append(el('div', 'as-banner warn', '안전 모드(-Ddbagent.settings.ignore-db=true)로 기동 중입니다. DB 에 저장된 값은 모두 무시되고 파일·번들 값이 쓰이며, 이 화면에서는 저장할 수 없습니다.'));
                 }
                 if (d.stale_file_values.length) {
-                    const b = el('div', 'as-banner warn', '옛 외부 application.properties 의 값이 DB 와 달라, DB 값이 적용 중입니다. 파일을 고쳐도 반영되지 않습니다.');
+                    const b = el('div', 'as-banner warn', '옛 외부 application.properties 의 값이 DB 와 달라, DB 값이 적용 중입니다. 파일을 고쳐도 반영되지 않으니 이 화면에서 바꾸세요.');
                     const ul = el('ul');
                     d.stale_file_values.forEach(s => ul.append(el('li', '', s.label + ' (' + s.key + ') - 파일 ' + s.file_value + ' / DB ' + s.db_value)));
                     b.append(ul);
@@ -193,11 +475,17 @@
                 const nav = el('div', 'as-nav');
                 d.groups.forEach(g => nav.append(navButton(g.id, g.label, g.description)));
                 nav.append(navButton('boot', '부트스트랩', '읽기 전용 (conf/dbagent.conf)'));
+                nav.append(navButton('hist', '변경 이력', '누가 언제 무엇을'));
                 layout.append(nav);
 
                 const main = el('div', 'as-main');
+                const body = el('div', 'as-body');
                 if (state.group === 'boot') {
-                    main.append(renderBootstrap());
+                    body.append(renderBootstrap());
+                    main.append(body);
+                } else if (state.group === 'hist') {
+                    body.append(renderHistory());
+                    main.append(body);
                 } else {
                     const g = d.groups.filter(x => x.id === state.group)[0] || d.groups[0];
                     const scope = el('div', 'as-scope');
@@ -208,25 +496,35 @@
                     sel.append(o0);
                     d.dbs.forEach(db => { const o = el('option', '', db.name + ' (' + db.id + ')'); o.value = db.id; sel.append(o); });
                     sel.value = g.per_db ? (state.dbId || '') : '';
-                    sel.addEventListener('change', () => { state.dbId = sel.value; load(); });
+                    sel.addEventListener('change', () => { state.dbId = sel.value; state.message = ''; load(); });
                     scope.append(lab, sel, el('span', 'pp-note', g.per_db
-                        ? (state.dbId ? '이 DB 의 유효값입니다. 재정의하지 않은 항목은 전역값을 따릅니다.' : '전역값입니다. "이 DB 재정의" 가 없는 모든 DB 에 적용됩니다.')
+                        ? (state.dbId ? '이 DB 에만 적용됩니다. 재정의하지 않은 항목은 전역값을 따릅니다. (DB별 값은 서버가 DB별로 읽도록 연결되는 다음 단계부터 적용됩니다)'
+                            : '전역값입니다. "이 DB 재정의" 가 없는 모든 DB 에 적용됩니다.')
                         : '이 그룹은 전역 전용입니다.'));
-                    main.append(scope);
+                    body.append(scope);
                     const scoped = g.per_db && !!state.dbId;
-                    g.items.forEach(it => main.append(renderItem(it, scoped)));
+                    g.items.forEach(it => body.append(renderItem(it, scoped)));
+                    main.append(body);
+
+                    const bar = el('div', 'as-savebar');
+                    const reason = el('input', 'reason');
+                    reason.type = 'text';
+                    reason.value = state.reason;
+                    reason.addEventListener('input', () => { state.reason = reason.value; reason.classList.remove('bad'); });
+                    const msg = el('span', 'grow');
+                    const discard = el('button', 'pp-btn', '되돌리기');
+                    discard.addEventListener('click', onDiscard);
+                    const save = el('button', 'pp-btn primary', '저장');
+                    save.addEventListener('click', onSave);
+                    if (d.ignore_db) { save.disabled = true; }
+                    bar.append(reason, msg, discard, save);
+                    main.append(bar);
+                    saveBarEl = { msg, discard, save, reason };
                 }
                 layout.append(main);
                 frag.append(layout);
                 root.replaceChildren(frag);
-            }
-
-            function navButton(id, label, sub) {
-                const b = el('button', state.group === id ? 'active' : '');
-                b.append(document.createTextNode(label));
-                if (sub) b.append(el('small', '', sub));
-                b.addEventListener('click', () => { state.group = id; render(); });
-                return b;
+                if (saveBarEl) refreshDirtyUI();
             }
 
             load();

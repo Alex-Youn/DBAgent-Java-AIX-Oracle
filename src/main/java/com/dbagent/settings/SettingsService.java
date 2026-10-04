@@ -65,6 +65,7 @@ public class SettingsService {
         scanEnvironment();
         if (ignoreDb) {
             log.warn("안전 모드: DB 에 저장된 환경설정 값을 읽지도 이관하지도 않습니다 (파일·번들·기본값만 사용).");
+            captureBootValues();
             return;
         }
         migrateFromOldFileIfNeeded();
@@ -210,6 +211,10 @@ public class SettingsService {
         }
         log.info("환경설정 스냅샷 갱신: DB 저장 전역 {}건, DB별 재정의 {}건 ({}개 DB)", global.size(), perDbCount, perDb.size());
         refreshStaleFileValues();
+        if (bootValues.isEmpty()) {
+            // 기동 직후 첫 스냅샷의 유효값 = 소비자 코드(@Value)가 지금 쓰고 있는 값
+            captureBootValues();
+        }
     }
 
     /** 저장된 행이 쓸 수 있는 값이면 키를, 아니면 경고 후 null. */
@@ -231,6 +236,305 @@ public class SettingsService {
             return null;
         }
         return k;
+    }
+
+    // ───────────────────────── 저장 · 초기화 (P2) ─────────────────────────
+
+    /** 저장·초기화 결과. status: 200 성공 / 400 입력 오류 / 409 버전 충돌·저장 불가. */
+    public static final class ApplyResult {
+        private final int status;
+        private final String error;
+        private final Map<String, String> fieldErrors;
+        private final List<String> changedKeys;
+        private final int unchanged;
+
+        ApplyResult(int status, String error, Map<String, String> fieldErrors, List<String> changedKeys, int unchanged) {
+            this.status = status;
+            this.error = error;
+            this.fieldErrors = fieldErrors == null ? Collections.<String, String>emptyMap() : fieldErrors;
+            this.changedKeys = changedKeys == null ? Collections.<String>emptyList() : changedKeys;
+            this.unchanged = unchanged;
+        }
+
+        public int status() { return status; }
+        public String error() { return error; }
+        public Map<String, String> fieldErrors() { return fieldErrors; }
+        public List<String> changedKeys() { return changedKeys; }
+        public int unchanged() { return unchanged; }
+        public boolean ok() { return status == 200; }
+    }
+
+    /** 두 키의 크기 관계 규칙 (low &lt; high, 또는 low &lt;= high). 둘 중 하나라도 바뀔 때 유효값 기준으로 검사한다. */
+    private static final class PairRule {
+        final SettingKey low;
+        final SettingKey high;
+        final boolean strict;
+        final String message;
+
+        PairRule(SettingKey low, SettingKey high, boolean strict, String message) {
+            this.low = low;
+            this.high = high;
+            this.strict = strict;
+            this.message = message;
+        }
+    }
+
+    private static final PairRule[] PAIR_RULES = {
+            new PairRule(SettingKey.TM_HOLDER_WARN_COUNT, SettingKey.TM_HOLDER_INCIDENT_COUNT, true, "Holder 주의 개수는 장애 판정 Holder 수보다 작아야 합니다."),
+            new PairRule(SettingKey.LOCK_TX_WAIT_WARN, SettingKey.LOCK_TX_WAIT_CRIT, true, "TX 대기 주의는 위험 기준보다 작아야 합니다."),
+            new PairRule(SettingKey.LOCK_TM_WAIT_WARN, SettingKey.LOCK_TM_WAIT_CRIT, true, "TM 대기 주의는 위험 기준보다 작아야 합니다."),
+            new PairRule(SettingKey.CHECK_TABLESPACE_WARN_PCT, SettingKey.CHECK_TABLESPACE_CRIT_PCT, true, "테이블스페이스 경고는 위험 기준보다 작아야 합니다."),
+            new PairRule(SettingKey.CHECK_FRA_WARN_PCT, SettingKey.CHECK_FRA_CRIT_PCT, true, "FRA 경고는 위험 기준보다 작아야 합니다."),
+            new PairRule(SettingKey.CHECK_TEMP_WARN_PCT, SettingKey.CHECK_TEMP_CRIT_PCT, true, "Temp 경고는 위험 기준보다 작아야 합니다."),
+            new PairRule(SettingKey.SQL_RUNNER_MAX_ROWS, SettingKey.SQL_RUNNER_MAX_ROWS_LIMIT, false, "기본 조회 건수는 최대 조회 건수 이하여야 합니다."),
+            new PairRule(SettingKey.ORACLE_POOL_MIN_IDLE, SettingKey.ORACLE_POOL_MAX_SIZE, false, "Oracle 풀 최소 유휴는 최대 크기 이하여야 합니다."),
+            new PairRule(SettingKey.RDB_POOL_MIN_IDLE, SettingKey.RDB_POOL_MAX_SIZE, false, "RDB 풀 최소 유휴는 최대 크기 이하여야 합니다.")
+    };
+
+    /** 기동 시점의 유효값 - 재시작 전에 소비자 코드(@Value)가 실제로 쓰는 값이라 "재시작 대기" 판단에 쓴다. */
+    private volatile Map<SettingKey, String> bootValues = Collections.<SettingKey, String>emptyMap();
+
+    private void captureBootValues() {
+        Map<SettingKey, String> m = new EnumMap<SettingKey, String>(SettingKey.class);
+        for (SettingKey k : SettingKey.values()) {
+            m.put(k, resolve(k, null).value());
+        }
+        bootValues = Collections.unmodifiableMap(m);
+    }
+
+    /** 저장된 값이 아직 실행 중인 앱에 적용되지 않았는지 (재시작 필요 키이고 기동 때 값과 다를 때). */
+    public boolean restartPending(SettingKey key) {
+        if (!key.requiresRestart() || key.unwired()) {
+            return false;
+        }
+        String boot = bootValues.get(key);
+        return boot != null && !sameValue(key, boot, resolve(key, null).value());
+    }
+
+    /** 이 범위(전역 또는 DB별)에 저장된 행의 버전. 행이 없으면 0. 동시 수정 감지용. */
+    public long rowVersion(SettingKey key, String dbId) {
+        Snapshot s = snapshot;
+        if (dbId != null && key.perDb()) {
+            Map<SettingKey, AppSettingStore.Row> m = s.perDb.get(dbId);
+            AppSettingStore.Row r = m == null ? null : m.get(key);
+            return r == null ? 0L : r.version();
+        }
+        AppSettingStore.Row g = s.global.get(key);
+        return g == null ? 0L : g.version();
+    }
+
+    /**
+     * DB 에 저장된 값을 properties 형식 텍스트로 내보낸다 (롤백·백업용). 전역 값은 그대로 옛 application.properties 에
+     * 붙여 쓸 수 있고, DB별 재정의는 properties 로 표현할 수 없어 주석으로만 적는다. 비밀값은 제외한다.
+     */
+    public String exportProperties() {
+        Snapshot s = snapshot;
+        StringBuilder sb = new StringBuilder();
+        sb.append("# DBAgent 환경설정 내보내기 - DB 에 저장된(기본값과 다른) 전역 값만 담았습니다.\n");
+        sb.append("# 롤백할 때 이 내용을 옛 application.properties 에 붙여 쓸 수 있습니다.\n");
+        for (Map.Entry<SettingKey, AppSettingStore.Row> e : s.global.entrySet()) {
+            if (!e.getKey().secret()) {
+                sb.append(e.getKey().key()).append('=').append(e.getValue().value()).append('\n');
+            }
+        }
+        boolean header = false;
+        for (Map.Entry<String, Map<SettingKey, AppSettingStore.Row>> d : s.perDb.entrySet()) {
+            for (Map.Entry<SettingKey, AppSettingStore.Row> e : d.getValue().entrySet()) {
+                if (!header) {
+                    sb.append("\n# --- DB별 재정의 (properties 로는 복원할 수 없는 참고용) ---\n");
+                    header = true;
+                }
+                sb.append("# [").append(d.getKey()).append("] ").append(e.getKey().key()).append('=').append(e.getValue().value()).append('\n');
+            }
+        }
+        return sb.toString();
+    }
+
+    /** DB 값을 걷어냈을 때 돌아가는 값 (옛 파일·번들 값, 없으면 코드 기본값). */
+    private String baseValue(SettingKey key) {
+        EnvHit hit = envHits.get(key);
+        return hit != null ? hit.value : key.defaultValue();
+    }
+
+    /**
+     * 값을 저장한다 (전부 검증을 통과해야 쓴다). 새 값이 "DB 를 걷어냈을 때의 값"과 같으면 행을 지운다 -
+     * 기본값과 다른 값만 저장한다는 원칙(옛 기본값이 DB 에 굳지 않게). DB별 저장은 전역 유효값과 같으면 재정의를 지운다.
+     *
+     * <p>쓰기는 항목마다 따로 커밋된다(전체 롤백 없음) - 검증을 먼저 전부 끝내 두어 중간 실패 가능성을 낮춘다.
+     */
+    public synchronized ApplyResult apply(String dbId, Map<String, String> changes, Map<String, Long> versions, String user, String reason) {
+        if (ignoreDb) {
+            return new ApplyResult(409, "안전 모드로 기동 중이라 저장할 수 없습니다. 안전 모드(-Ddbagent.settings.ignore-db)를 빼고 재기동하세요.", null, null, 0);
+        }
+        if (changes == null || changes.isEmpty()) {
+            return new ApplyResult(400, "변경할 항목이 없습니다.", null, null, 0);
+        }
+        Map<String, String> errors = new LinkedHashMap<String, String>();
+        Map<SettingKey, String> parsed = new LinkedHashMap<SettingKey, String>();
+        for (Map.Entry<String, String> e : changes.entrySet()) {
+            SettingKey k = SettingKey.byKey(e.getKey());
+            String v = e.getValue() == null ? "" : e.getValue().trim();
+            String problem = editProblem(k, dbId);
+            if (problem == null) {
+                problem = k.validate(v);
+            }
+            if (problem != null) {
+                errors.put(e.getKey(), problem);
+            } else {
+                parsed.put(k, v);
+            }
+        }
+        // 키 사이 관계 (주의 < 위험 등) - 바뀌는 키가 있는 규칙만, 유효값 기준
+        for (PairRule r : PAIR_RULES) {
+            if (dbId != null && !r.low.perDb()) {
+                continue;
+            }
+            if (!parsed.containsKey(r.low) && !parsed.containsKey(r.high)) {
+                continue;
+            }
+            if (errors.containsKey(r.low.key()) || errors.containsKey(r.high.key())) {
+                continue;
+            }
+            String lo = parsed.containsKey(r.low) ? parsed.get(r.low) : resolve(r.low, dbId).value();
+            String hi = parsed.containsKey(r.high) ? parsed.get(r.high) : resolve(r.high, dbId).value();
+            int c = compareNumbers(lo, hi);
+            if (r.strict ? c >= 0 : c > 0) {
+                String field = parsed.containsKey(r.low) ? r.low.key() : r.high.key();
+                errors.put(field, r.message + " (적용될 값: " + lo + " / " + hi + ")");
+            }
+        }
+        // 위험 키는 사유 필수
+        String dangerKey = null;
+        for (Map.Entry<SettingKey, String> e : parsed.entrySet()) {
+            if (e.getKey().danger() && !sameValue(e.getKey(), e.getValue(), resolve(e.getKey(), dbId).value())) {
+                dangerKey = e.getKey().key();
+                break;
+            }
+        }
+        if (dangerKey != null && (reason == null || reason.trim().length() < 2)) {
+            errors.put(dangerKey, "위험 항목은 변경 사유를 입력해야 합니다.");
+        }
+        if (!errors.isEmpty()) {
+            return new ApplyResult(400, "입력값을 확인하세요.", errors, null, 0);
+        }
+        // 동시 수정 감지
+        Map<String, String> conflicts = new LinkedHashMap<String, String>();
+        for (SettingKey k : parsed.keySet()) {
+            Long sent = versions == null ? null : versions.get(k.key());
+            if (sent != null && sent.longValue() != rowVersion(k, dbId)) {
+                conflicts.put(k.key(), "다른 관리자가 먼저 바꿨습니다. 새로고침한 뒤 다시 시도하세요.");
+            }
+        }
+        if (!conflicts.isEmpty()) {
+            return new ApplyResult(409, "다른 관리자가 먼저 변경한 항목이 있습니다.", conflicts, null, 0);
+        }
+
+        List<String> changed = new ArrayList<String>();
+        int unchanged = 0;
+        String who = user == null ? "unknown" : user;
+        String why = (reason == null || reason.trim().isEmpty()) ? null : reason.trim();
+        for (Map.Entry<SettingKey, String> e : parsed.entrySet()) {
+            SettingKey k = e.getKey();
+            String v = e.getValue();
+            if (sameValue(k, v, resolve(k, dbId).value())) {
+                unchanged++;
+                continue;
+            }
+            String base = dbId == null ? baseValue(k) : resolve(k, null).value();
+            boolean backToBase = sameValue(k, v, base);
+            if (dbId == null) {
+                if (backToBase) {
+                    store.resetGlobal(k.key(), who, why);
+                } else {
+                    store.setGlobal(k.key(), v, who, why, "SET");
+                }
+            } else {
+                if (backToBase) {
+                    store.resetPerDb(dbId, k.key(), who, why);
+                } else {
+                    store.setPerDb(dbId, k.key(), v, who, why);
+                }
+            }
+            changed.add(k.key());
+        }
+        reload();
+        return new ApplyResult(200, null, null, changed, unchanged);
+    }
+
+    /** 저장된 값을 지워 기본값(DB 별이면 전역값)으로 되돌린다. */
+    public synchronized ApplyResult reset(String dbId, List<String> keys, String user, String reason) {
+        if (ignoreDb) {
+            return new ApplyResult(409, "안전 모드로 기동 중이라 초기화할 수 없습니다.", null, null, 0);
+        }
+        if (keys == null || keys.isEmpty()) {
+            return new ApplyResult(400, "초기화할 항목이 없습니다.", null, null, 0);
+        }
+        Map<String, String> errors = new LinkedHashMap<String, String>();
+        List<SettingKey> targets = new ArrayList<SettingKey>();
+        String dangerKey = null;
+        for (String name : keys) {
+            SettingKey k = SettingKey.byKey(name);
+            String problem = editProblem(k, dbId);
+            if (problem != null) {
+                errors.put(name, problem);
+                continue;
+            }
+            targets.add(k);
+            if (k.danger() && dangerKey == null && hasRow(k, dbId)) {
+                dangerKey = k.key();
+            }
+        }
+        if (dangerKey != null && (reason == null || reason.trim().length() < 2)) {
+            errors.put(dangerKey, "위험 항목은 변경 사유를 입력해야 합니다.");
+        }
+        if (!errors.isEmpty()) {
+            return new ApplyResult(400, "입력값을 확인하세요.", errors, null, 0);
+        }
+        List<String> changed = new ArrayList<String>();
+        int unchanged = 0;
+        String who = user == null ? "unknown" : user;
+        String why = (reason == null || reason.trim().isEmpty()) ? null : reason.trim();
+        for (SettingKey k : targets) {
+            boolean removed = dbId == null ? store.resetGlobal(k.key(), who, why) : store.resetPerDb(dbId, k.key(), who, why);
+            if (removed) {
+                changed.add(k.key());
+            } else {
+                unchanged++;
+            }
+        }
+        reload();
+        return new ApplyResult(200, null, null, changed, unchanged);
+    }
+
+    private boolean hasRow(SettingKey key, String dbId) {
+        Snapshot s = snapshot;
+        if (dbId != null && key.perDb()) {
+            Map<SettingKey, AppSettingStore.Row> m = s.perDb.get(dbId);
+            return m != null && m.containsKey(key);
+        }
+        return s.global.containsKey(key);
+    }
+
+    /** 이 키를 이 범위에서 화면으로 바꿀 수 있는지 - 바꿀 수 없으면 사용자에게 보일 사유, 가능하면 null. */
+    private String editProblem(SettingKey k, String dbId) {
+        if (k == null || k.hidden()) {
+            return "변경할 수 없는 항목입니다.";
+        }
+        if (k.secret()) {
+            return "비밀값은 이 화면에서 변경할 수 없습니다.";
+        }
+        if (dbId != null && !k.perDb()) {
+            return "DB별 재정의를 지원하지 않는 항목입니다.";
+        }
+        EnvHit hit = envHits.get(k);
+        if (hit != null && hit.source.locksOverDb()) {
+            return "기동 인자 또는 conf/dbagent.conf 로 고정된 값이라 화면에서 바꿀 수 없습니다. (현재 출처: " + hit.source.label() + ")";
+        }
+        return null;
+    }
+
+    private static int compareNumbers(String a, String b) {
+        return new BigDecimal(a.trim()).compareTo(new BigDecimal(b.trim()));
     }
 
     // ───────────────────────── 옛 외부 파일 이관 · 불일치 점검 ─────────────────────────

@@ -239,7 +239,11 @@ public enum SettingKey {
         BY_KEY = Collections.unmodifiableMap(m);
     }
 
-    private static final Pattern CSV_CHARS = Pattern.compile("[A-Za-z0-9_$#%.,\\- ]*");
+    // 기존에 nd-lock.js 에 숫자가 박혀 있던 키들 - 아직 화면이 서버 값을 읽지 않는다 (P3-1 에서 연결).
+    private static final java.util.Set<SettingKey> UNWIRED = java.util.Collections.unmodifiableSet(java.util.EnumSet.of(
+            TM_HOLDER_WARN_COUNT, LOCK_TX_WAIT_WARN, LOCK_TX_WAIT_CRIT, LOCK_TM_WAIT_WARN, LOCK_TM_WAIT_CRIT));
+
+    private static final Pattern CSV_CHARS =Pattern.compile("[A-Za-z0-9_$#%.,\\- ]*");
 
     private final String key;
     private final SettingType type;
@@ -301,6 +305,12 @@ public enum SettingKey {
     public boolean hidden() { return hidden; }
     /** 값을 화면·로그에 그대로 내리지 않는 키 (CredentialCipher 로 암호화 저장). */
     public boolean secret() { return secret; }
+
+    /**
+     * 아직 서버·화면 코드가 읽지 않는 키 - 저장은 되지만 어디에도 적용되지 않는다 (화면에 "연결 전" 으로 표시).
+     * 소비자 코드를 SettingsService 조회로 옮기는 P3 에서 하나씩 뺀다.
+     */
+    public boolean unwired() { return UNWIRED.contains(this); }
 
     public static SettingKey byKey(String key) {
         return key == null ? null : BY_KEY.get(key);
