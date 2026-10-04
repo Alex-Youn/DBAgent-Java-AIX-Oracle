@@ -6,7 +6,12 @@ __pycache__/
 
 /jdk17/
 /java8/
-/dist-aix/
+# dist-aix 는 반입 산출물이라 무시하되, 폐쇄망 포트 설정 conf/dbagent.conf 만 추적한다(2026-10-04 오케스트레이터 지시).
+/dist-aix/*
+!/dist-aix/conf/
+/dist-aix/conf/*
+!/dist-aix/conf/dbagent.conf
+!/dist-aix/conf/dbagent.conf.sample
 /maven39/bin/
 /maven39/boot/*.jar
 /maven39/lib/*.jar
