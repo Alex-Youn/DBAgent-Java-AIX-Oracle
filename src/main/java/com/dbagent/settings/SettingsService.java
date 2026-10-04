@@ -235,6 +235,43 @@ public class SettingsService {
 
     // ───────────────────────── 옛 외부 파일 이관 · 불일치 점검 ─────────────────────────
 
+    /** 환경(파일·번들·인자)에서 찾은 임의 키의 값과 출처. 부트스트랩 항목 표시용. */
+    public static final class EnvValue {
+        private final String value;
+        private final SettingSource source;
+
+        EnvValue(String value, SettingSource source) {
+            this.value = value;
+            this.source = source;
+        }
+
+        public String value() { return value; }
+        public SettingSource source() { return source; }
+    }
+
+    /**
+     * SettingKey 에 없는 키(포트·DB 경로 같은 부트스트랩 값)의 현재 값과 출처를 환경에서 찾는다. 없으면 null.
+     * 비밀번호 키는 호출하지 말 것.
+     */
+    public EnvValue environmentValue(String key) {
+        if (!(environment instanceof ConfigurableEnvironment)) {
+            return null;
+        }
+        ConfigurableEnvironment cenv = (ConfigurableEnvironment) environment;
+        for (PropertySource<?> ps : cenv.getPropertySources()) {
+            String name = ps.getName();
+            if ("configurationProperties".equals(name) || DB_INJECTED_SOURCE_NAME.equals(name) || !ps.containsProperty(key)) {
+                continue;
+            }
+            Object raw = ps.getProperty(key);
+            if (raw == null) {
+                return null;
+            }
+            return new EnvValue(cenv.resolvePlaceholders(String.valueOf(raw)), classify(name));
+        }
+        return null;
+    }
+
     /** 안전 모드 여부. */
     public boolean isIgnoreDb() {
         return ignoreDb;

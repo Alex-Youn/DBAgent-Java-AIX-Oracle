@@ -516,6 +516,9 @@ function dbagentSectionVisible(id) {
         document.getElementById('open-menu-visibility-btn')?.addEventListener('click', () => {
             openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', window.dbagentAdminPopupFeatures('menu'));
         });
+        document.getElementById('open-app-settings-btn')?.addEventListener('click', () => {
+            openAdminPopup('app-settings.html', 'dbagent_app_settings', window.dbagentAdminPopupFeatures('settings'));
+        });
 
         // --- Menu visibility settings (admin only) ---
         // getHiddenMenus/applyMenuVisibility etc. stay here (not moved into menu-visibility.html)

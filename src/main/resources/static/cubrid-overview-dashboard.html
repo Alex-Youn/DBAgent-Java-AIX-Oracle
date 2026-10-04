@@ -496,6 +496,7 @@
                         <button type="button" class="gear-dropdown-item" id="pmmOpenAccountMgmt"><i data-lucide="users"></i><span>계정 관리</span></button>
                         <button type="button" class="gear-dropdown-item" id="pmmOpenDbMgmt"><i data-lucide="database"></i><span>DB 관리</span></button>
                         <button type="button" class="gear-dropdown-item" id="pmmOpenMenuVisibility"><i data-lucide="list-checks"></i><span>메뉴 표시 설정</span></button>
+                        <button type="button" class="gear-dropdown-item" id="pmmOpenAppSettings"><i data-lucide="sliders-horizontal"></i><span>시스템 설정</span></button>
                     </div>
                 </div>
             </div>
@@ -1083,6 +1084,9 @@
         });
         document.getElementById('pmmOpenMenuVisibility')?.addEventListener('click', () => {
             openAdminPopup('menu-visibility.html', 'dbagent_menu_visibility', window.dbagentAdminPopupFeatures('menu'));
+        });
+        document.getElementById('pmmOpenAppSettings')?.addEventListener('click', () => {
+            openAdminPopup('app-settings.html', 'dbagent_app_settings', window.dbagentAdminPopupFeatures('settings'));
         });
     })();
 

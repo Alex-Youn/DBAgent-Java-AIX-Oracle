@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>시스템 설정</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
+    <link rel="stylesheet" href="style.css?v=76">
+    <link rel="stylesheet" href="popup.css?v=3">
+    <script>
+        // 메인 화면의 테마 선택을 따른다 (다른 팝업과 동일).
+        (function () {
+            const saved = localStorage.getItem('dbagent_theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        })();
+    </script>
+    <script src="dbagent-common.js?v=13"></script>
+    <style>
+        /* 환경설정 DB화 P1-4(2026-10-04): 읽기 전용 조회 화면. 색은 전역 CSS 변수만 쓴다. */
+        .as-layout { display: flex; gap: 12px; flex: 1 1 auto; min-height: 0; }
+        .as-nav { flex: 0 0 200px; display: flex; flex-direction: column; gap: 4px; overflow: auto; }
+        .as-nav button { text-align: left; background: transparent; color: var(--text-secondary); border: 1px solid transparent; border-radius: 6px; padding: 7px 10px; cursor: pointer; font: inherit; font-size: 13.5px; }
+        .as-nav button:hover { background: var(--bg-hover); }
+        .as-nav button.active { background: var(--bg-hover); color: var(--text-main); border-color: var(--border); }
+        .as-nav small { display: block; color: var(--text-secondary); font-size: 11.5px; opacity: .8; }
+        .as-main { flex: 1 1 auto; min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); overflow: auto; }
+        .as-scope { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+        .as-scope select { background: var(--bg-main); color: var(--text-main); border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; font: inherit; }
+        .as-scope select:disabled { opacity: .5; }
+        .as-row { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+        .as-row:last-child { border-bottom: 0; }
+        .as-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .as-label { font-weight: 700; }
+        .as-key { color: var(--text-secondary); font: 11.5px Consolas, monospace; opacity: .85; }
+        .as-badge { font-size: 11.5px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-secondary); white-space: nowrap; }
+        .as-badge.override { color: var(--primary); border-color: var(--primary); }
+        .as-badge.saved { color: var(--success, #22c55e); border-color: var(--success, #22c55e); }
+        .as-badge.lock { color: #f5b942; border-color: #f5b942; }
+        .as-badge.restart { color: #b58cff; border-color: #b58cff; }
+        .as-badge.danger { color: var(--danger); border-color: var(--danger); }
+        .as-summary { color: var(--text-secondary); font-size: 12.5px; margin: 3px 0 8px; }
+        .as-ctrl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .as-value { font: 600 13.5px Consolas, monospace; background: var(--bg-main); border: 1px solid var(--border); border-radius: 5px; padding: 3px 10px; max-width: 100%; overflow-wrap: anywhere; }
+        .as-def { color: var(--text-secondary); font-size: 12px; }
+        .as-detail { display: none; margin-top: 10px; background: var(--bg-main); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 12.5px; color: var(--text-secondary); }
+        .as-detail.open { display: block; }
+        .as-detail p { margin: 0 0 6px; }
+        .as-detail .warn { color: var(--danger); border-left: 3px solid var(--danger); background: rgba(255, 107, 107, .08); padding: 5px 9px; margin-top: 6px; }
+        .as-banner { margin-bottom: 10px; padding: 8px 12px; border-radius: 6px; font-size: 12.5px; border: 1px solid var(--border); }
+        .as-banner.warn { border-color: #f5b942; color: #f5b942; background: rgba(245, 185, 66, .08); }
+        .as-banner ul { margin: 4px 0 0 18px; padding: 0; }
+        .as-note { padding: 10px 14px; font-size: 12.5px; color: var(--text-secondary); background: var(--bg-hover); border-bottom: 1px solid var(--border); }
+        .as-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .as-table th, .as-table td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+        .as-table th { color: var(--text-secondary); font-weight: 600; }
+        .as-table code { font: 12px Consolas, monospace; }
+    </style>
+</head>
+<body class="pp-body">
+    <div id="root" class="pp-root">불러오는 중...</div>
+    <script>
+        (function () {
+            const root = document.getElementById('root');
+            const token = sessionStorage.getItem('dbagent_token');
+            // 톱니 메뉴 숨김은 편의일 뿐이다 - 일반 계정이 주소로 직접 열 때를 위해 여기서도 막는다(서버도 막는다).
+            if (sessionStorage.getItem('dbagent_role') !== 'admin' || !token) {
+                root.innerHTML = '<h3 style="color: var(--danger);">관리자만 접근할 수 있습니다.</h3>';
+                return;
+            }
+
+            const state = { data: null, group: null, dbId: '' };
+
+            function el(tag, cls, text) {
+                const e = document.createElement(tag);
+                if (cls) e.className = cls;
+                if (text !== undefined && text !== null) e.textContent = text;
+                return e;
+            }
+
+            async function load() {
+                const q = '/api/app_settings?token=' + encodeURIComponent(token) + (state.dbId ? '&db_id=' + encodeURIComponent(state.dbId) : '');
+                try {
+                    const res = await fetch(q);
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(body.error || ('조회 실패 (HTTP ' + res.status + ')'));
+                    state.data = body;
+                    if (!state.group) state.group = body.groups.length ? body.groups[0].id : 'boot';
+                    render();
+                } catch (e) {
+                    root.replaceChildren(el('h3', 'pp-error', e.message));
+                }
+            }
+
+            function formatValue(it) {
+                if (it.is_set !== null && it.is_set !== undefined) return it.is_set ? '(설정됨)' : '(비어 있음)';
+                if (it.type === 'BOOL') return String(it.value).toLowerCase() === 'true' ? '사용' : '사용 안 함';
+                if (it.value === '' || it.value === null) return '(비어 있음)';
+                return it.value + (it.unit ? ' ' + it.unit : '');
+            }
+            function formatDefault(it) {
+                if (it.type === 'BOOL') return String(it.default).toLowerCase() === 'true' ? '사용' : '사용 안 함';
+                if (it.default === '') return '(비어 있음)';
+                return it.default + (it.unit ? ' ' + it.unit : '');
+            }
+
+            function renderItem(it, scoped) {
+                const row = el('div', 'as-row');
+                const head = el('div', 'as-head');
+                head.append(el('span', 'as-label', it.label), sourceBadge(it, scoped), el('span', 'as-key', it.key));
+                if (it.requires_restart) head.append(el('span', 'as-badge restart', '재시작 후 적용'));
+                if (it.danger) head.append(el('span', 'as-badge danger', '위험'));
+                row.append(head, el('div', 'as-summary', it.summary));
+
+                const ctrl = el('div', 'as-ctrl');
+                ctrl.append(el('span', 'as-value', formatValue(it)), el('span', 'as-def', '기본값 ' + formatDefault(it)));
+                const btn = el('button', 'pp-btn', '설명');
+                ctrl.append(btn);
+                row.append(ctrl);
+
+                const detail = el('div', 'as-detail');
+                detail.append(el('p', '', it.detail || '추가 설명이 없습니다.'));
+                detail.append(el('p', 'as-def', '키: ' + it.key + (it.per_db ? ' · DB별 재정의 가능' : ' · 전역 전용')
+                    + (it.min !== null && it.max !== null ? ' · 허용 범위 ' + it.min + ' ~ ' + it.max : '')));
+                if (it.warning) detail.append(el('div', 'warn', it.warning));
+                row.append(detail);
+                btn.addEventListener('click', () => {
+                    detail.classList.toggle('open');
+                    btn.textContent = detail.classList.contains('open') ? '설명 닫기' : '설명';
+                });
+                return row;
+            }
+
+            function sourceBadge(it, scoped) {
+                if (it.locked) return el('span', 'as-badge lock', it.source_label);
+                if (scoped && it.per_db) {
+                    return it.source === 'DB_PER_DB' ? el('span', 'as-badge override', '이 DB 재정의')
+                        : el('span', 'as-badge', '전역값 상속');
+                }
+                if (it.source === 'DB_GLOBAL') return el('span', 'as-badge saved', '변경됨 (DB 저장값)');
+                if (it.source === 'CODE_DEFAULT') return el('span', 'as-badge', '기본값 사용 중');
+                return el('span', 'as-badge', it.source_label);
+            }
+
+            function renderBootstrap() {
+                const wrap = el('div');
+                wrap.append(el('div', 'as-note', 'DB 를 열기 전에 필요한 값이라 이 화면에서 바꿀 수 없습니다. 서버의 conf/dbagent.conf 파일 또는 기동 인자로 변경하세요. (conf 가 없으면 jar 번들 기본값을 씁니다)'));
+                const table = el('table', 'as-table');
+                const thead = el('thead');
+                const hr = el('tr');
+                ['키', '현재 값', '출처', '설명'].forEach(h => hr.append(el('th', '', h)));
+                thead.append(hr);
+                const tbody = el('tbody');
+                state.data.bootstrap.forEach(b => {
+                    const tr = el('tr');
+                    const k = el('td'); k.append(el('code', '', b.key));
+                    tr.append(k, el('td', '', b.value === null || b.value === '' ? '(비어 있음)' : b.value),
+                        el('td', '', b.source_label), el('td', '', b.description));
+                    tbody.append(tr);
+                });
+                table.append(thead, tbody);
+                wrap.append(table);
+                return wrap;
+            }
+
+            function render() {
+                const d = state.data;
+                const frag = document.createDocumentFragment();
+
+                const head = el('div', 'pp-head');
+                head.append(el('h3', '', '시스템 설정'),
+                    el('span', 'pp-note', '관리자 전용 · 조회 전용(수정 기능은 다음 단계) · 바꾸지 않은 항목은 기본값으로 동작합니다'));
+                const actions = el('div', 'pp-actions');
+                const reload = el('button', 'pp-btn', '새로고침');
+                reload.addEventListener('click', load);
+                const close = el('button', 'pp-btn', '닫기');
+                close.addEventListener('click', () => window.close());
+                actions.append(reload, close);
+                head.append(actions);
+                frag.append(head);
+
+                if (d.ignore_db) {
+                    frag.append(el('div', 'as-banner warn', '안전 모드(-Ddbagent.settings.ignore-db=true)로 기동 중입니다. DB 에 저장된 값은 모두 무시되고 파일·번들 값이 쓰입니다.'));
+                }
+                if (d.stale_file_values.length) {
+                    const b = el('div', 'as-banner warn', '옛 외부 application.properties 의 값이 DB 와 달라, DB 값이 적용 중입니다. 파일을 고쳐도 반영되지 않습니다.');
+                    const ul = el('ul');
+                    d.stale_file_values.forEach(s => ul.append(el('li', '', s.label + ' (' + s.key + ') - 파일 ' + s.file_value + ' / DB ' + s.db_value)));
+                    b.append(ul);
+                    frag.append(b);
+                }
+
+                const layout = el('div', 'as-layout');
+                const nav = el('div', 'as-nav');
+                d.groups.forEach(g => nav.append(navButton(g.id, g.label, g.description)));
+                nav.append(navButton('boot', '부트스트랩', '읽기 전용 (conf/dbagent.conf)'));
+                layout.append(nav);
+
+                const main = el('div', 'as-main');
+                if (state.group === 'boot') {
+                    main.append(renderBootstrap());
+                } else {
+                    const g = d.groups.filter(x => x.id === state.group)[0] || d.groups[0];
+                    const scope = el('div', 'as-scope');
+                    const lab = el('label', '', '적용 대상');
+                    const sel = el('select');
+                    sel.disabled = !g.per_db;
+                    const o0 = el('option', '', '전역 기본값 (모든 DB)'); o0.value = '';
+                    sel.append(o0);
+                    d.dbs.forEach(db => { const o = el('option', '', db.name + ' (' + db.id + ')'); o.value = db.id; sel.append(o); });
+                    sel.value = g.per_db ? (state.dbId || '') : '';
+                    sel.addEventListener('change', () => { state.dbId = sel.value; load(); });
+                    scope.append(lab, sel, el('span', 'pp-note', g.per_db
+                        ? (state.dbId ? '이 DB 의 유효값입니다. 재정의하지 않은 항목은 전역값을 따릅니다.' : '전역값입니다. "이 DB 재정의" 가 없는 모든 DB 에 적용됩니다.')
+                        : '이 그룹은 전역 전용입니다.'));
+                    main.append(scope);
+                    const scoped = g.per_db && !!state.dbId;
+                    g.items.forEach(it => main.append(renderItem(it, scoped)));
+                }
+                layout.append(main);
+                frag.append(layout);
+                root.replaceChildren(frag);
+            }
+
+            function navButton(id, label, sub) {
+                const b = el('button', state.group === id ? 'active' : '');
+                b.append(document.createTextNode(label));
+                if (sub) b.append(el('small', '', sub));
+                b.addEventListener('click', () => { state.group = id; render(); });
+                return b;
+            }
+
+            load();
+        })();
+    </script>
+</body>
+</html>
