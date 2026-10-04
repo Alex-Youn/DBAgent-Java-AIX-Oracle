@@ -21,6 +21,15 @@ if (Test-Path $propsFile) {
         $port = [int]$Matches[1]
     }
 }
+# conf\dbagent.conf(부트스트랩 설정, 2026-10-04)가 있으면 그 포트가 application.properties보다 우선한다 -
+# Spring도 conf 값을 우선 적용하므로 안내 포트·브라우저 열기 주소가 실제 기동 포트와 맞도록 같은 순서로 읽는다.
+$confFile = Join-Path $PSScriptRoot "conf\dbagent.conf"
+if (Test-Path $confFile) {
+    $confPortLine = Get-Content $confFile | Where-Object { $_ -match '^\s*server\.port\s*=\s*(\d+)\s*$' } | Select-Object -Last 1
+    if ($confPortLine -match '^\s*server\.port\s*=\s*(\d+)\s*$') {
+        $port = [int]$Matches[1]
+    }
+}
 
 if (-not (Test-Path $javaExe)) {
     throw "Bundled runtime not found at '$javaExe'. This folder must be copied whole, including runtime\."

@@ -35,7 +35,9 @@ public class OracleConnectionPoolManager {
     // Kept well under 1s: pool init (see minimumIdle below) makes one attempt at this bound, so the
     // *total* failure time is roughly this value, not a multiple of it. Tune upward
     // (dbagent.oracle.connect-timeout-ms) if a real-but-slow DB starts false-failing.
-    @Value("${dbagent.oracle.connect-timeout-ms:500}")
+    // 코드 기본값을 jar 번들 값(3000)과 맞췄다(2026-10-04) - 설정 파일 없이 뜨는 환경에서도 실제 네트워크 지연에
+    // 오탐으로 "접속 불가"가 나지 않게 하려는 것. 로컬 개발처럼 빨리 실패시키고 싶으면 500 등으로 내린다.
+    @Value("${dbagent.oracle.connect-timeout-ms:3000}")
     private int connectTimeoutMs;
 
     // Separate from connectTimeoutMs on purpose (사용자 피드백: SQL 정합성/튜닝 매뉴가 폐쇄망에서

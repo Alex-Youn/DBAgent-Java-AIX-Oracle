@@ -36,7 +36,7 @@ public class ErrorSearchService {
         return prompt != null && ORA_CODE.matcher(prompt.toUpperCase(Locale.ROOT)).find();
     }
 
-    @Value("${aidba.errors-db-path}")
+    @Value("${aidba.errors-db-path:data/oracle_errors}")
     private String errorsDbPath;
 
     public Map<String, Object> getErrorSolution(String rawCode) {

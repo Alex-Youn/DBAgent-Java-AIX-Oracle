@@ -49,7 +49,7 @@ public class OllamaChatService {
 
     // 2026-09-14: aidba.ollama.url + sqltuneadvisor.api.url 는 결국 같은 sqlrestapi 서버를 가리키므로
     // aidba.restapi.url 하나로 통합했다. 스킴을 빠뜨려도 되게 normalizeUrl()에서 http://를 보정한다.
-    @Value("${aidba.restapi.url}")
+    @Value("${aidba.restapi.url:http://localhost:9300}")
     private String ollamaUrl;
 
     @Value("${aidba.ollama.timeout-ms:30000}")

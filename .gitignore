@@ -64,3 +64,7 @@ dbagent.key
 /dist/oracle.env
 /dist/data/*.bak
 /dbagent-java.pid
+
+# 2026-10-04: 운영자가 환경마다 직접 두는 부트스트랩 설정(conf/dbagent.conf)은 커밋하지 않는다. 설명용 conf/dbagent.conf.sample 만 추적(dist-aix 는 위에서 통째로 무시 중).
+/conf/dbagent.conf
+/dist/conf/dbagent.conf
