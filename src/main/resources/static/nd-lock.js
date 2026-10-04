@@ -18,10 +18,18 @@
     // 대기 세션 기준(Waiter 수, 2026-09-26 오케스트레이터 결정) - TX 5건 주의/10건 위험, TM 3건 주의/6건 위험
     // (TM은 테이블 단위라 한 건이 여러 세션을 막을 수 있어 더 낮게. 블로킹 TM Holder 3개 주의/6개 장애와 같은 숫자).
     // 예전: TX 1~4 주의/5 위험, TM 1~2 주의/3 위험. 그래프 점선은 TX 주의 기준(5건).
-    const TX_WARN = 5;
-    const TX_CRIT = 10;
-    const TM_WARN = 3;
-    const TM_CRIT = 6;
+    // 기준값(위 숫자)은 이제 서버가 DB별 설정으로 내려준다(lock/realtime 응답의 txWaitWarn 등, 환경설정 DB화 P3-1, 2026-10-04).
+    // 아래는 응답에 값이 없을 때(옛 서버·판단 보류)만 쓰는 기본값 - 서버 기본값과 같다.
+    const DEF_THR = { txWarn: 5, txCrit: 10, tmWarn: 3, tmCrit: 6, holderWarn: 3 };
+    const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) && v > 0) ? v : d;
+    function thr() {
+        const d = st.last || {};
+        return {
+            txWarn: num(d.txWaitWarn, DEF_THR.txWarn), txCrit: num(d.txWaitCrit, DEF_THR.txCrit),
+            tmWarn: num(d.tmWaitWarn, DEF_THR.tmWarn), tmCrit: num(d.tmWaitCrit, DEF_THR.tmCrit),
+            holderWarn: (typeof d.holderWarnCount === 'number' && d.holderWarnCount >= 0) ? d.holderWarnCount : DEF_THR.holderWarn // 0 = 주의 단계 없음
+        };
+    }
 
     const st = {
         last: null,        // 마지막 정상 응답
@@ -150,8 +158,9 @@
             `<span class="nd-lk-val">${value}</span>${state}</span>`;
         const pill = (c, text) => `<span class="nd-lvl nd-lvl-${c === 'warn' ? 'serious' : c}">${esc(text)}</span>`;
         const state = (l) => l.c === 'good' ? '' : pill(l.c, l.t);
-        const txTip = `TX Lock(행 잠금) 대기 세션 수 · 주의 ${TX_WARN}건↑ / 위험 ${TX_CRIT}건↑`;
-        const tmTip = `TM Lock(테이블 잠금) 대기 세션 수 · 주의 ${TM_WARN}건↑ / 위험 ${TM_CRIT}건↑`;
+        const T = thr();
+        const txTip = `TX Lock(행 잠금) 대기 세션 수 · 주의 ${T.txWarn}건↑ / 위험 ${T.txCrit}건↑`;
+        const tmTip = `TM Lock(테이블 잠금) 대기 세션 수 · 주의 ${T.tmWarn}건↑ / 위험 ${T.tmCrit}건↑`;
         if (!d) {
             box.innerHTML = item('TX 대기', '—', txTip, '', TX_COLOR) + item('TM 대기', '—', tmTip, '', TM_COLOR) +
                 item('블로킹 Holder', '—', '다른 세션을 막고 있는 TM Lock Holder 수', '') +
@@ -161,10 +170,10 @@
         const th = d.lastCallEtThreshold, lim = d.incidentCount, oc = d.holderOverCount;
         // 분·초는 작은 단위 글씨로 - 숫자 글꼴(Consolas)에 한글이 없어 "2분 13초"를 값 크기로 쓰면 글자가 크고 들쭉날쭉했다
         const et = d.maxLastCallEt, etHtml = et >= 60 ? `${Math.floor(et / 60)}<small>분</small> ${pad(et % 60)}<small>초</small>` : `${et}<small>초</small>`;
-        const ocState = oc >= lim ? pill('crit', '장애 기준 도달') : oc >= 3 ? pill('warn', `기준까지 ${lim - oc}개`) : '';
+        const ocState = oc >= lim ? pill('crit', '장애 기준 도달') : (T.holderWarn > 0 && oc >= T.holderWarn) ? pill('warn', `기준까지 ${lim - oc}개`) : '';
         box.innerHTML =
-            item('TX 대기', String(d.txWait), txTip, state(lvl(d.txWait, TX_WARN, TX_CRIT)), TX_COLOR) +
-            item('TM 대기', String(d.tmWait), tmTip, state(lvl(d.tmWait, TM_WARN, TM_CRIT)), TM_COLOR) +
+            item('TX 대기', String(d.txWait), txTip, state(lvl(d.txWait, T.txWarn, T.txCrit)), TX_COLOR) +
+            item('TM 대기', String(d.tmWait), tmTip, state(lvl(d.tmWait, T.tmWarn, T.tmCrit)), TM_COLOR) +
             item('블로킹 Holder', `${oc}<small>/ ${lim}</small>`,
                 `last_call_et ${th}초 이상 다른 세션을 막고 있는 TM Lock Holder 수 / 장애 기준 ${lim}개 · 전체 Holder ${d.holderTotal}개`, ocState) +
             item('최장 경과', d.maxLastCallEt ? etHtml : '—',
@@ -201,6 +210,7 @@
         if (!plot || !svg) return;
         const d = st.last;
         const hist = d && d.history ? d.history : [];
+        const T = thr();
         // 화면이 없던 구간(다른 메뉴·다른 DB)은 서버가 60초 샘플로 채워 준다(fill) - 흐린 점선, 툴팁에 "1분 샘플"
         const fill = (d && d.fill ? d.fill : []).map(p => Object.assign({ coarse: true }, p));
         const all = hist.concat(fill).sort((a, b) => a.t - b.t);
@@ -208,8 +218,8 @@
         const W = Math.max(220, plot.clientWidth), H = Math.max(60, plot.clientHeight);
         const t1 = all[all.length - 1].t, t0 = Math.min(all[0].t, t1 - 10 * 60000);
         // 값 하나라도 숫자가 아니면 Math.max가 NaN이 되어 아래 눈금 루프가 끝나지 않는다(탭 멈춤) - 그때는 기본 범위로 그린다.
-        const mxRaw = Math.max(TX_WARN + 1, ...all.map(h => Math.max(h.tx, h.tm)));
-        const mx = Number.isFinite(mxRaw) ? mxRaw : TX_WARN + 1;
+        const mxRaw = Math.max(T.txWarn + 1, ...all.map(h => Math.max(h.tx, h.tm)));
+        const mx = Number.isFinite(mxRaw) ? mxRaw : T.txWarn + 1;
         // Y 눈금은 차트 높이에 맞춰 18px에 1개 이하로 - 예전엔 간격이 최대 10 고정이라 대기 100건이면 눈금 12개가
         // 작은 차트(1920×1080에서 약 60px)에 몰려 숫자가 겹쳤다(2026-09-29 폐쇄망). 간격은 1·2·2.5·5 × 10^n.
         // 왼쪽 여백은 최댓값 자릿수에 맞춘다(세 자리 이상이 잘리지 않게).
@@ -248,7 +258,7 @@
         for (let t = Math.ceil((t0 + off()) / 120000) * 120000 - off(); t <= t1; t += 120000) {
             s += `<text class="nd-tick" x="${x(t).toFixed(1)}" y="${H - 5}" text-anchor="middle">${hms(t).slice(0, 5)}</text>`;
         }
-        const wy = y(TX_WARN).toFixed(1);
+        const wy = y(T.txWarn).toFixed(1);
         s += `<line class="nd-thl" x1="${ml}" x2="${ml + pw}" y1="${wy}" y2="${wy}"/>`;
         const path = (pts, k) => {
             let p = `M${x(pts[0].t).toFixed(1)},${y(pts[0][k]).toFixed(1)}`;

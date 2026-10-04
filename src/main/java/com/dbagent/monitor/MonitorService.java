@@ -2,6 +2,8 @@ package com.dbagent.monitor;
 
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
 import com.dbagent.util.Maps;
 import com.dbagent.util.Strings;
 import org.slf4j.Logger;
@@ -94,37 +96,15 @@ public class MonitorService {
     @Value("${dbagent.monitor.ash-awr-query-timeout-seconds:60}")
     private int ashAwrQueryTimeoutSeconds;
 
-    // TM Lock 장애 판정 기준(초) - 이 시간 이상 last_call_et가 흐른 블로킹 TM Holder만 센다. getFailureProb()
-    // (장애 판정·장애조치 버튼)와 예전 getActiveAlerts()("Blocking Session 감지" 알림, 2026-09-30 v2와 함께 삭제)가 같은 값을 써야 화면마다
-    // 판정이 갈리지 않는다(2026-09-25 오케스트레이터 결정으로 하드코딩 60초를 프로퍼티화). application.properties는
-    // skip-worktree라 pull로 새 키가 들어가지 않으므로 키가 없으면 기존과 같은 60초로 동작해야 하고, 폐쇄망에서
-    // 오타로 잘못 넣어도 앱 기동 자체가 실패하지 않도록 문자열로 받아 직접 검증한다.
-    private static final int DEFAULT_TM_HOLDER_LAST_CALL_ET_SECONDS = 60;
-    private int tmHolderLastCallEtSeconds = DEFAULT_TM_HOLDER_LAST_CALL_ET_SECONDS;
+    // TM Lock 장애 판정 기준(초)은 이제 환경설정(SettingsService, DB별 재정의 가능)에서 읽는다 (환경설정 DB화 P3-1, 2026-10-04).
+    // 예전 프로퍼티화 경위(2026-09-25): 하드코딩 60초를 dbagent.monitor.tm-holder-last-call-et-seconds 로 뺐고, 새 대시보드 Lock 실시간
+    // (LockRealtimeService)과 이 getFailureProb()가 같은 값을 써야 화면마다 판정이 갈리지 않는다 - 둘 다 같은 설정을 DB별로 읽는다.
 
-    @Value("${dbagent.monitor.tm-holder-last-call-et-seconds:60}")
-    void setTmHolderLastCallEtSeconds(String value) {
-        int seconds;
-        try {
-            seconds = Integer.parseInt(value.trim());
-        } catch (NumberFormatException e) {
-            seconds = -1;
-        }
-        if (seconds < 1) {
-            log.warn("dbagent.monitor.tm-holder-last-call-et-seconds='{}' is not a positive integer - using {}s",
-                    value, DEFAULT_TM_HOLDER_LAST_CALL_ET_SECONDS);
-            seconds = DEFAULT_TM_HOLDER_LAST_CALL_ET_SECONDS;
-        }
-        this.tmHolderLastCallEtSeconds = seconds;
-    }
-
-    /** 새 대시보드 Lock 실시간(LockRealtimeService)도 v2와 같은 기준을 쓰도록 공유(F2, 2026-09-25). */
-    public int getTmHolderLastCallEtSeconds() {
-        return tmHolderLastCallEtSeconds;
-    }
+    private final SettingsService settings;
 
     public MonitorService(OracleConnectionPoolManager poolManager, OracleQueryHelper queryHelper,
-                           MonitorStoreService storeService) {
+                           MonitorStoreService storeService, SettingsService settings) {
+        this.settings = settings;
         this.poolManager = poolManager;
         this.queryHelper = queryHelper;
         this.storeService = storeService;
@@ -2032,7 +2012,7 @@ public class MonitorService {
         // last_call_et 기준은 프로퍼티(dbagent.monitor.tm-holder-last-call-et-seconds, 기본 60) - int라 결합해도 안전.
         String query = "SELECT /*+ rule */ count(distinct s.sid) FROM v$session s " +
                 "JOIN v$lock l ON s.sid = l.sid " +
-                "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= " + tmHolderLastCallEtSeconds + " " +
+                "WHERE l.type = 'TM' AND s.blocking_session IS NULL AND s.last_call_et >= " + settings.getInt(SettingKey.TM_HOLDER_LAST_CALL_ET_SECONDS, target.id()) + " " +
                 "AND EXISTS (SELECT 1 FROM v$session w WHERE w.blocking_session = s.sid AND w.blocking_instance = " + LOCAL_INSTANCE + ")";
 
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {

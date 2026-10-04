@@ -261,14 +261,9 @@ public class AppSettingsController {
         m.put("per_db", k.perDb());
         m.put("danger", k.danger());
         m.put("version", settings.rowVersion(k, scope));
-        // 적용 방식: live(저장 즉시) / restart(재시작 후) / none(아직 어디에서도 읽지 않아 저장만 됨).
-        // DB별 값은 소비자 코드가 아직 DB별로 읽지 않아 P3 전까지는 저장만 된다.
+        // 적용 방식: live(저장 즉시) / restart(재시작 후). 소비자 코드를 SettingsService 조회로 옮긴 키만 live (P3 에서 하나씩 늘린다).
         String applies;
-        if (k.unwired() || (scope != null && k.perDb())) {
-            applies = "none";
-        } else {
-            applies = k.live() ? "live" : "restart";
-        }
+        applies = k.live() ? "live" : "restart";
         m.put("applies", applies);
         m.put("requires_restart", k.requiresRestart());
         m.put("restart_pending", scope == null && settings.restartPending(k));

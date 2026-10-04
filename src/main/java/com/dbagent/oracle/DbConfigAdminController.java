@@ -5,6 +5,7 @@ import com.dbagent.monitor.InstanceMetricSamplerService;
 import com.dbagent.monitor.LockRealtimeService;
 import com.dbagent.monitor.MonitorService;
 import com.dbagent.rdb.RdbConnectionPoolManager;
+import com.dbagent.settings.SettingsService;
 import com.dbagent.util.Maps;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -53,11 +54,12 @@ public class DbConfigAdminController {
     private final InstanceMetricSamplerService metricSamplerService;
     private final MonitorService monitorService;
     private final LockRealtimeService lockRealtimeService;
+    private final SettingsService settings;
 
     public DbConfigAdminController(AuthService authService, DatabaseConfigService configService,
             OracleConnectionPoolManager poolManager, RdbConnectionPoolManager rdbPoolManager,
             InstanceMetricSamplerService metricSamplerService, MonitorService monitorService,
-            LockRealtimeService lockRealtimeService) {
+            LockRealtimeService lockRealtimeService, SettingsService settings) {
         this.authService = authService;
         this.configService = configService;
         this.poolManager = poolManager;
@@ -65,6 +67,7 @@ public class DbConfigAdminController {
         this.metricSamplerService = metricSamplerService;
         this.monitorService = monitorService;
         this.lockRealtimeService = lockRealtimeService;
+        this.settings = settings;
     }
 
     @PostMapping("/api/db_configs")
@@ -315,6 +318,8 @@ public class DbConfigAdminController {
         }
         Map<String, Object> result = configService.deleteInstance(id);
         if (Boolean.TRUE.equals(result.get("success"))) {
+            // 이 DB 의 환경설정 재정의(Lock 임계치 등)도 함께 지운다 - 같은 id 로 다시 등록한 새 DB 가 옛 설정을 물려받지 않게 (환경설정 DB화 P3-1).
+            settings.clearDbOverrides(id, authService.sessionForToken(token).map(s -> s.username()).orElse("unknown"));
             lockRealtimeService.clearDb(id);
             poolManager.evictPoolsForDbId(id);
             rdbPoolManager.evictPoolsForDbId(id);

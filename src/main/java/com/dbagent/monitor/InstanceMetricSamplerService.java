@@ -3,6 +3,8 @@ package com.dbagent.monitor;
 import com.dbagent.oracle.DatabaseConfigService;
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -104,9 +106,8 @@ public class InstanceMetricSamplerService {
     @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
     private int lockQueryTimeoutSeconds;
 
-    // TX 대기 기준을 대시보드 Lock 실시간(LockRealtimeService)과 맞춘다 - 이 값이 차트 빈 구간(fill)을 채우므로 두 선이 같은 정의여야 한다.
-    @Value("${dbagent.monitor.lock-tx-row-lock-only:false}")
-    private boolean txRowLockOnly;
+    // TX 대기 기준(lock-tx-row-lock-only)은 대시보드 Lock 실시간(LockRealtimeService)과 같은 설정을 환경설정(SettingsService)에서 읽는다 -
+    // 이 값이 차트 빈 구간(fill)을 채우므로 두 선이 같은 정의여야 한다 (환경설정 DB화 P3-1, 2026-10-04).
 
     // ash_* 계열(아래 sampleOne() 참고) 카운트를 AAS로 정규화할 때 쓰는 창 길이 - sampleAll()의
     // @Scheduled 주기(fixedRateString)와 반드시 같은 값이어야 한다(그래야 "최근 N초"에 실제로 샘플링
@@ -114,8 +115,12 @@ public class InstanceMetricSamplerService {
     @Value("${dbagent.monitor.metric-sample-interval-seconds:60}")
     private int sampleIntervalSeconds;
 
+    private final SettingsService settings;
+
     public InstanceMetricSamplerService(OracleConnectionPoolManager poolManager, DatabaseConfigService configService,
-                                         InstanceMetricHistoryService historyService, PerfStoreService perfStore) {
+                                         InstanceMetricHistoryService historyService, PerfStoreService perfStore,
+                                         SettingsService settings) {
+        this.settings = settings;
         this.poolManager = poolManager;
         this.configService = configService;
         this.historyService = historyService;
@@ -302,7 +307,7 @@ public class InstanceMetricSamplerService {
             // v$lock request>0 대신 v$session 대기 이벤트로 센다(2026-09-29): 앱 계정(dbagent_user, DBA 롤)으로 보면 v$lock에서
             // 대기 요청 행이 일부 빠져 TM 대기 3개가 1개로 기록됐다(로컬 XE 실측, SYS로는 3개). 대시보드 Lock 실시간과 같은 정의라
             // 차트 점선 구간(fill)과 실시간 선이 어긋나지 않고, 느린 v$lock 스캔(폐쇄망 49초 전례)도 이 경로에서 빠진다.
-            String txCond = txRowLockOnly ? "event = 'enq: TX - row lock contention'" : "event LIKE 'enq: TX%'";
+            String txCond = settings.getBool(SettingKey.LOCK_TX_ROW_LOCK_ONLY) ? "event = 'enq: TX - row lock contention'" : "event LIKE 'enq: TX%'";
             try (ResultSet rs = st.executeQuery(
                     "SELECT COUNT(CASE WHEN " + txCond + " THEN 1 END) AS tx_cnt, " +
                             "COUNT(CASE WHEN event LIKE 'enq: TM%' THEN 1 END) AS tm_cnt " +

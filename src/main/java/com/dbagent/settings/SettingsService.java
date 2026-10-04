@@ -210,6 +210,7 @@ public class SettingsService {
             perDbCount += m.size();
         }
         log.info("환경설정 스냅샷 갱신: DB 저장 전역 {}건, DB별 재정의 {}건 ({}개 DB)", global.size(), perDbCount, perDb.size());
+        notifyChanged();
         refreshStaleFileValues();
         if (bootValues.isEmpty()) {
             // 기동 직후 첫 스냅샷의 유효값 = 소비자 코드(@Value)가 지금 쓰고 있는 값
@@ -304,7 +305,7 @@ public class SettingsService {
 
     /** 저장된 값이 아직 실행 중인 앱에 적용되지 않았는지 (재시작 필요 키이고 기동 때 값과 다를 때). */
     public boolean restartPending(SettingKey key) {
-        if (!key.requiresRestart() || key.unwired()) {
+        if (!key.requiresRestart()) {
             return false;
         }
         String boot = bootValues.get(key);
@@ -574,6 +575,42 @@ public class SettingsService {
             return new EnvValue(cenv.resolvePlaceholders(String.valueOf(raw)), classify(name));
         }
         return null;
+    }
+
+    private final List<Runnable> changeListeners = new java.util.concurrent.CopyOnWriteArrayList<Runnable>();
+
+    /**
+     * 설정이 다시 읽힐 때(저장·초기화·reload) 부를 콜백을 등록한다. 설정을 캐시해 판정에 쓰는 서비스(Lock 실시간 스냅샷 등)가
+     * 옛 기준으로 만든 결과를 버리는 데 쓴다. 콜백은 설정 잠금 안에서 불리므로 가볍게 끝내야 한다.
+     */
+    public void addChangeListener(Runnable listener) {
+        changeListeners.add(listener);
+    }
+
+    private void notifyChanged() {
+        for (Runnable r : changeListeners) {
+            try {
+                r.run();
+            } catch (RuntimeException e) {
+                log.warn("설정 변경 콜백 실패: {}", e.toString());
+            }
+        }
+    }
+
+    /** DB 를 삭제할 때 그 DB 의 재정의를 모두 지우고 스냅샷을 갱신한다. 실패해도 DB 삭제 자체는 막지 않는다. */
+    public void clearDbOverrides(String dbId, String user) {
+        if (dbId == null || dbId.isEmpty()) {
+            return;
+        }
+        try {
+            int n = store.deleteAllForDb(dbId, user);
+            if (n > 0) {
+                log.info("DB 삭제로 환경설정 재정의 {}건을 정리했습니다: {}", n, dbId);
+                reload();
+            }
+        } catch (RuntimeException e) {
+            log.warn("DB 삭제 후 환경설정 재정의 정리에 실패했습니다 ({}): {}", dbId, e.toString());
+        }
     }
 
     /** 안전 모드 여부. */

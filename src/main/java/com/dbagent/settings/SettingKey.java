@@ -52,7 +52,7 @@ public enum SettingKey {
             "기준 시간을 넘긴 Holder 가 이 개수 이상이면 '장애 처리' 버튼이 나타납니다.").unit("개").range(1, 100).perDb()
             .detail("'장애 처리 · TM Holder N개 KILL' 버튼의 노출 조건입니다. 주의 개수보다 커야 합니다.")),
     TM_HOLDER_WARN_COUNT(d("dbagent.monitor.tm-holder-warn-count", INT, "3", LOCK, "Holder 주의 개수",
-            "Holder 가 이 개수 이상이면 주의 색으로 표시합니다. 장애 판정 개수보다 작아야 합니다.").unit("개").range(1, 100).perDb()
+            "Holder 가 이 개수 이상이면 주의 색으로 표시합니다. 장애 판정 개수보다 작아야 합니다. 0이면 주의 단계를 쓰지 않습니다.").unit("개").range(0, 100).perDb()
             .detail("기존에는 화면 코드(nd-lock.js)에 3으로 고정돼 있었습니다.")),
     LOCK_TX_WAIT_WARN(d("dbagent.monitor.lock-tx-wait-warn", INT, "5", LOCK, "TX 대기 주의",
             "행 Lock(TX) 대기 세션 수가 이 값 이상이면 주의 색으로 표시합니다.").unit("세션").range(1, 1000).perDb()
@@ -239,9 +239,14 @@ public enum SettingKey {
         BY_KEY = Collections.unmodifiableMap(m);
     }
 
-    // 기존에 nd-lock.js 에 숫자가 박혀 있던 키들 - 아직 화면이 서버 값을 읽지 않는다 (P3-1 에서 연결).
-    private static final java.util.Set<SettingKey> UNWIRED = java.util.Collections.unmodifiableSet(java.util.EnumSet.of(
-            TM_HOLDER_WARN_COUNT, LOCK_TX_WAIT_WARN, LOCK_TX_WAIT_CRIT, LOCK_TM_WAIT_WARN, LOCK_TM_WAIT_CRIT));
+    // 소비자 코드가 SettingsService 조회로 옮겨져 저장 즉시 적용되는 키 (환경설정 DB화 P3, 2026-10-04). 나머지는 기동 때 한 번
+    // 읽는  라 재시작이 필요하다. 키를 하나씩 옮길 때마다 여기에 추가한다.
+    private static final java.util.Set<SettingKey> LIVE = java.util.Collections.unmodifiableSet(java.util.EnumSet.of(
+            // P3-1 Lock · 실시간 (DB별 재정의 가능한 키 + 전역 키)
+            TM_HOLDER_LAST_CALL_ET_SECONDS, TM_HOLDER_INCIDENT_COUNT, TM_HOLDER_WARN_COUNT,
+            LOCK_TX_WAIT_WARN, LOCK_TX_WAIT_CRIT, LOCK_TM_WAIT_WARN, LOCK_TM_WAIT_CRIT,
+            TM_HOLDER_KILL_BLOCKING_ONLY, TM_HOLDER_KILL_INACTIVE_ONLY, LOCK_TX_ROW_LOCK_ONLY,
+            LONG_RUNNING_QUERY_SECONDS, LOCK_CACHE_MILLIS));
 
     private static final Pattern CSV_CHARS =Pattern.compile("[A-Za-z0-9_$#%.,\\- ]*");
 
@@ -297,7 +302,7 @@ public enum SettingKey {
     /** DB 별 재정의 가능 여부 (Lock 임계치류). */
     public boolean perDb() { return perDb; }
     /** true 이면 저장 즉시 적용, false 이면 재시작 후 적용. */
-    public boolean live() { return live; }
+    public boolean live() { return live || LIVE.contains(this); }
     public boolean requiresRestart() { return !live; }
     /** 운영에 영향이 커서 변경 사유를 필수로 받는 키. */
     public boolean danger() { return danger; }
@@ -306,11 +311,6 @@ public enum SettingKey {
     /** 값을 화면·로그에 그대로 내리지 않는 키 (CredentialCipher 로 암호화 저장). */
     public boolean secret() { return secret; }
 
-    /**
-     * 아직 서버·화면 코드가 읽지 않는 키 - 저장은 되지만 어디에도 적용되지 않는다 (화면에 "연결 전" 으로 표시).
-     * 소비자 코드를 SettingsService 조회로 옮기는 P3 에서 하나씩 뺀다.
-     */
-    public boolean unwired() { return UNWIRED.contains(this); }
 
     public static SettingKey byKey(String key) {
         return key == null ? null : BY_KEY.get(key);

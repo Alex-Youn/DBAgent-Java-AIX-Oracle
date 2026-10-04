@@ -53,6 +53,7 @@
         .as-input.bad { border-color: var(--danger); }
         .as-unit { color: var(--text-secondary); font-size: 12.5px; }
         .as-def { color: var(--text-secondary); font-size: 12px; }
+        .as-phrase { margin-top: 8px; font-size: 12.5px; color: var(--success, #22c55e); background: rgba(62, 207, 142, .08); border-left: 3px solid var(--success, #22c55e); padding: 5px 9px; border-radius: 0 4px 4px 0; }
         .as-error { margin-top: 6px; font-size: 12.5px; color: var(--danger); }
         .as-detail { display: none; margin-top: 10px; background: var(--bg-main); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 12.5px; color: var(--text-secondary); }
         .as-detail.open { display: block; }
@@ -92,6 +93,8 @@
 
             // drafts[범위][키] = 입력 중인 값(문자열). 범위는 '' (전역) 또는 db_id. 저장 전까지 화면 전환·새로고침 없이 유지한다.
             const state = { data: null, group: null, dbId: '', drafts: {}, errors: {}, message: '', reason: '', history: null, resetArm: null };
+            const INCIDENT_KEY = 'dbagent.monitor.tm-holder-incident-count';
+            const LASTCALL_KEY = 'dbagent.monitor.tm-holder-last-call-et-seconds';
             let rowRefs = {};   // 현재 그려진 항목 행 (키 → {row, input, item})
             let saveBarEl = null;
 
@@ -228,6 +231,11 @@
                 ctrl.append(resetBtn, descBtn);
                 row.append(ctrl);
 
+                let phrase = null;
+                if (it.key === INCIDENT_KEY) {
+                    phrase = el('div', 'as-phrase');
+                    row.append(phrase);
+                }
                 const err = el('div', 'as-error');
                 err.style.display = 'none';
                 row.append(err);
@@ -242,7 +250,7 @@
                     detail.classList.toggle('open');
                     descBtn.textContent = detail.classList.contains('open') ? '설명 닫기' : '설명';
                 });
-                rowRefs[it.key] = { row, input: c.input, item: it, err };
+                rowRefs[it.key] = { row, input: c.input, item: it, err, phrase };
                 return row;
             }
 
@@ -258,8 +266,23 @@
                     r.err.textContent = msg || '';
                     if (r.input.type !== 'checkbox') r.input.classList.toggle('bad', !!msg);
                 });
+                updatePhrase();
                 updateSaveBar();
                 updateNavDots();
+            }
+
+            // "현재값 문장 풀이" - 입력 중인 값까지 반영해 장애가 어떤 조건에서 나는지 문장으로 보여준다.
+            function effectiveValue(key) {
+                const d = drafts();
+                if (Object.prototype.hasOwnProperty.call(d, key)) return d[key];
+                const it = findItem(key);
+                return it ? it.value : '';
+            }
+            function updatePhrase() {
+                const r = rowRefs[INCIDENT_KEY];
+                if (!r || !r.phrase) return;
+                r.phrase.textContent = '현재 설정: 다른 세션을 ' + effectiveValue(LASTCALL_KEY) + '초 넘게 막고 있는 TM Holder 가 ' +
+                    effectiveValue(INCIDENT_KEY) + '개 이상이면 장애로 판정하고 "장애 처리" 버튼을 보여줍니다.';
             }
 
             function updateNavDots() {

@@ -2,6 +2,8 @@ package com.dbagent.monitor;
 
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
+import com.dbagent.settings.SettingKey;
+import com.dbagent.settings.SettingsService;
 import javax.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,31 +82,20 @@ public class LockRealtimeService {
     private final MonitorService monitorService;
     private final MonitorStoreService storeService;
     private final InstanceMetricHistoryService historyService;
+    private final SettingsService settings;
 
     @Value("${dbagent.monitor.lock-query-timeout-seconds:3}")
     private int lockQueryTimeoutSeconds;
 
-    @Value("${dbagent.monitor.lock-cache-millis:2000}")
-    private long cacheMillis;
 
-    @Value("${dbagent.monitor.tm-holder-incident-count:6}")
-    private int incidentCount;
 
-    @Value("${dbagent.monitor.tm-holder-kill-blocking-only:false}")
-    private boolean killBlockingOnly;
 
-    @Value("${dbagent.monitor.tm-holder-kill-inactive-only:false}")
-    private boolean killInactiveOnly;
 
-    @Value("${dbagent.monitor.lock-tx-row-lock-only:false}")
-    private boolean txRowLockOnly;
 
     // ⑧ 점검 알림의 "장시간 실행 쿼리" 실시간 카드(2026-09-30 두 번째 대시보드에서 이식) - ACTIVE 사용자 세션 중 현재 호출이
     // 이 초 이상 도는 것(last_call_et). 두 번째 대시보드와 같은 기본 300초. 10분 주기 점검이 아니라 3초 조회에 얹는 이유:
     // 5분 넘는 쿼리는 다음 10분 점검 전에 끝나 버려 놓치기 쉽다. 0 이하면 끔(프로젝트 관례, 2026-09-30 정밀 점검 반영 -
     // 예전엔 0이면 모든 ACTIVE 세션이 장시간으로 잡혔다).
-    @Value("${dbagent.monitor.long-running-query-seconds:300}")
-    private int longRunningSeconds;
 
     // A안 - 최근 본 DB 백그라운드 수집(2026-09-28, 설계문서 `Lock실시간차트_빈구간_A+B_전환계획_2026-09-28.md` 4.1).
     // 마지막으로 본 뒤 keepaliveMinutes 동안은 화면이 없어도 3초마다 조회해 history를 이어 붙인다. 그보다 오래 비운
@@ -146,11 +137,15 @@ public class LockRealtimeService {
     private final Map<String, Map<Long, String>> objectNames = new ConcurrentHashMap<>();
 
     public LockRealtimeService(OracleConnectionPoolManager poolManager, MonitorService monitorService,
-                               MonitorStoreService storeService, InstanceMetricHistoryService historyService) {
+                               MonitorStoreService storeService, InstanceMetricHistoryService historyService,
+                               SettingsService settings) {
         this.poolManager = poolManager;
         this.monitorService = monitorService;
         this.storeService = storeService;
         this.historyService = historyService;
+        this.settings = settings;
+        // 설정이 바뀌면 2초 캐시된 스냅샷(옛 기준으로 판정된 장애 여부·KILL 대상)을 버려 다음 조회부터 새 기준을 쓴다.
+        settings.addChangeListener(cache::clear);
     }
 
     // ------------------------------------------------------------------ 조회
@@ -168,7 +163,7 @@ public class LockRealtimeService {
             });
         }
         Snapshot snap;
-        if (cached != null && now - cached.at < cacheMillis) {
+        if (cached != null && now - cached.at < settings.getLong(SettingKey.LOCK_CACHE_MILLIS)) {
             snap = cached;
         } else {
             try {
@@ -281,7 +276,9 @@ public class LockRealtimeService {
     private Snapshot query(TargetDbConfig target) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {
             Snapshot s = new Snapshot(System.currentTimeMillis());
-            String txCond = txRowLockOnly ? "event = 'enq: TX - row lock contention'" : "event LIKE 'enq: TX%'";
+            // 장시간 실행 기준은 DB별로 설정할 수 있다(환경설정 DB화 P3-1, 2026-10-04). 정수만 SQL 문자열에 들어간다.
+            int longRunningSeconds = settings.getInt(SettingKey.LONG_RUNNING_QUERY_SECONDS, target.id());
+            String txCond = settings.getBool(SettingKey.LOCK_TX_ROW_LOCK_ONLY) ? "event = 'enq: TX - row lock contention'" : "event LIKE 'enq: TX%'";
             try (Statement st = conn.createStatement()) {
                 st.setQueryTimeout(lockQueryTimeoutSeconds);
                 try (ResultSet rs = st.executeQuery(
@@ -322,7 +319,7 @@ public class LockRealtimeService {
             s.bufferHitPct = sm[2];
             s.holders = queryHolders(conn);
             resolveObjectNames(conn, target.id(), s.holders);
-            evaluate(s);
+            evaluate(s, target.id());
             return s;
         }
     }
@@ -511,8 +508,12 @@ public class LockRealtimeService {
     }
 
     /** 한 번 조회한 Holder 목록을 장애 판정 수와 KILL 대상으로 나눈다. */
-    private void evaluate(Snapshot s) {
-        int threshold = monitorService.getTmHolderLastCallEtSeconds();
+    private void evaluate(Snapshot s, String dbId) {
+        // 장애 판정·KILL 대상 기준은 DB별로 설정할 수 있다 (환경설정 DB화 P3-1, 2026-10-04) - DB별 재정의 > 전역 > 기본값.
+        int threshold = settings.getInt(SettingKey.TM_HOLDER_LAST_CALL_ET_SECONDS, dbId);
+        int incidentCount = settings.getInt(SettingKey.TM_HOLDER_INCIDENT_COUNT, dbId);
+        boolean killBlockingOnly = settings.getBool(SettingKey.TM_HOLDER_KILL_BLOCKING_ONLY, dbId);
+        boolean killInactiveOnly = settings.getBool(SettingKey.TM_HOLDER_KILL_INACTIVE_ONLY, dbId);
         int over = 0;
         long maxEt = 0;
         List<Map<String, Object>> killTargets = new ArrayList<>();
@@ -521,7 +522,7 @@ public class LockRealtimeService {
             boolean isOver = et >= threshold && h.get("blockingSession") == null && (Integer) h.get("waiters") > 0;
             h.put("overThreshold", isOver);
             if (isOver) over++;
-            if (isKillable(h)) {
+            if (isKillable(h, killBlockingOnly, killInactiveOnly)) {
                 killTargets.add(h);
                 // 최장 경과는 실제로 다른 세션을 막고 있는(대기 세션이 있는) Holder만 - 예전엔 KILL 대상 전체라, 아무도 막지 않는
                 // 커밋 대기 세션 하나만 있어도 Lock 카드에 "최장 경과 … 위험"이 떴다(2026-09-30 QA). KILL 대상 범위는 그대로.
@@ -535,7 +536,7 @@ public class LockRealtimeService {
     }
 
     /** KILL 대상: USER 세션만(백그라운드는 목록에도 넣지 않음), 설정이 켜져 있을 때만 더 좁힌다. */
-    private boolean isKillable(Map<String, Object> h) {
+    private boolean isKillable(Map<String, Object> h, boolean killBlockingOnly, boolean killInactiveOnly) {
         if (!"USER".equals(h.get("sessionType"))) return false;
         if (killBlockingOnly && (Integer) h.get("block") <= 0) return false;
         if (killInactiveOnly && !"INACTIVE".equals(h.get("status"))) return false;
@@ -658,7 +659,7 @@ public class LockRealtimeService {
             r.put("tps", s.tps);
             r.put("bufferHitPct", s.bufferHitPct);
             r.put("longRunning", s.longRunning);
-            r.put("longRunningSec", longRunningSeconds);
+            r.put("longRunningSec", settings.getInt(SettingKey.LONG_RUNNING_QUERY_SECONDS, dbId));
             r.put("longRunningTop", s.longRunningTop);
             r.put("txWait", s.txWait);
             r.put("tmWait", s.tmWait);
@@ -675,8 +676,14 @@ public class LockRealtimeService {
             }
             r.put("holders", holders);
         }
-        r.put("lastCallEtThreshold", monitorService.getTmHolderLastCallEtSeconds());
-        r.put("incidentCount", incidentCount);
+        // 화면이 색·문구에 쓰는 기준도 같은 DB의 유효값으로 내려보낸다 - 판정(서버)과 표시(화면)가 어긋나지 않게 (P3-1, 2026-10-04).
+        r.put("lastCallEtThreshold", settings.getInt(SettingKey.TM_HOLDER_LAST_CALL_ET_SECONDS, dbId));
+        r.put("incidentCount", settings.getInt(SettingKey.TM_HOLDER_INCIDENT_COUNT, dbId));
+        r.put("holderWarnCount", settings.getInt(SettingKey.TM_HOLDER_WARN_COUNT, dbId));
+        r.put("txWaitWarn", settings.getInt(SettingKey.LOCK_TX_WAIT_WARN, dbId));
+        r.put("txWaitCrit", settings.getInt(SettingKey.LOCK_TX_WAIT_CRIT, dbId));
+        r.put("tmWaitWarn", settings.getInt(SettingKey.LOCK_TM_WAIT_WARN, dbId));
+        r.put("tmWaitCrit", settings.getInt(SettingKey.LOCK_TM_WAIT_CRIT, dbId));
         Deque<Map<String, Object>> h = history.get(dbId);
         List<Map<String, Object>> hist = new ArrayList<>();
         if (h != null) {
@@ -721,7 +728,7 @@ public class LockRealtimeService {
             resolveObjectNames(conn, target.id(), holders);
             Snapshot fresh = new Snapshot(now);
             fresh.holders = holders;
-            evaluate(fresh);
+            evaluate(fresh, target.id());
             String reason = fresh.incident ? "TM_HOLDER_INCIDENT" : "MANUAL";
 
             Map<String, Map<String, Object>> current = new HashMap<>();
