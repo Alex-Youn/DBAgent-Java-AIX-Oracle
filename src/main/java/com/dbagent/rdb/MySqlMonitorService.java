@@ -194,6 +194,7 @@ public class MySqlMonitorService implements EngineMonitorService {
             result.put("bufferPoolHitRatePct", hitRatePct);
             result.put("bufferPoolHitRateNote", hitRateNote);
         } catch (SQLException e) {
+            log.warn("MySQL/MariaDB 개요/상태 조회 실패 (db={}): {}", target.id(), e.toString()); // 원인을 남긴다(2026-10-09 점검 수정 D-5)
             result.put("error", "DB에 연결할 수 없습니다.");
         }
         return result;
@@ -344,6 +345,7 @@ public class MySqlMonitorService implements EngineMonitorService {
             }
             result.put("processStates", processStates);
         } catch (SQLException e) {
+            log.warn("MySQL/MariaDB 개요/상태 조회 실패 (db={}): {}", target.id(), e.toString()); // 원인을 남긴다(2026-10-09 점검 수정 D-5)
             result.put("error", "DB에 연결할 수 없습니다.");
         }
         return result;
@@ -600,7 +602,13 @@ public class MySqlMonitorService implements EngineMonitorService {
     public Map<String, Object> killSession(TargetDbConfig target, long sessionId) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("session_id", sessionId);
-        try (Connection conn = poolManager.getConnection(target);
+        if (sessionId < 1 || sessionId > Integer.MAX_VALUE) {
+            // 컨트롤러와 같은 범위로 한 번 더 막는다(2026-10-09 점검 수정 D-1).
+            result.put("status", "error");
+            result.put("message", "세션 ID가 올바르지 않습니다.");
+            return result;
+        }
+        try (Connection conn = poolManager.getKillConnection(target);
              Statement st = conn.createStatement()) {
             st.execute("KILL " + sessionId);
             result.put("status", "killed");
@@ -609,8 +617,13 @@ public class MySqlMonitorService implements EngineMonitorService {
             result.put("status", "error");
             // ER_NO_SUCH_THREAD(1094) - 누르기 직전에 스스로 끝난 세션이다. 사용자에게는
             // 원문 에러보다 "이미 종료되었다" 가 정확한 설명이다.
-            result.put("message", e.getErrorCode() == 1094
-                    ? "이미 종료된 세션입니다." : e.getMessage());
+            if (e.getErrorCode() == 1094) {
+                result.put("message", "이미 종료된 세션입니다.");
+            } else {
+                // 드라이버 원문은 화면에 내리지 않고 로그에만 남긴다(2026-10-09 점검 수정 D-9).
+                log.warn("MySQL/MariaDB 세션 종료 실패 (db={}, id={}): {}", target.id(), sessionId, e.toString());
+                result.put("message", "세션 종료에 실패했습니다. 서버 로그를 확인해 주세요.");
+            }
         }
         return result;
     }

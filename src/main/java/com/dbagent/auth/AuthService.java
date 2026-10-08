@@ -136,6 +136,10 @@ public class AuthService {
     }
 
     public Optional<AuthSession> login(String username, String password) {
+        // null 비밀번호는 BCrypt.matches 에서 예외(500)가 되므로 미리 거른다(2026-10-09 점검 수정 B-9).
+        if (username == null || password == null) {
+            return Optional.empty();
+        }
         Map<String, Object> row;
         try {
             row = jdbc.queryForMap("SELECT password, role, hidden_menus, hidden_dbs, fleet_overview, fleet_overview_auto_redirect FROM users WHERE username = ?", username);
@@ -211,8 +215,10 @@ public class AuthService {
         if (dbId == null || Strings.isBlank(dbId)) {
             return true;
         }
+        // findRow 와 같은 정규화 값으로 비교한다(2026-10-09 점검 수정 B-1) - "SECRET,x" 로 숨김 DB를 여는 우회 차단.
+        final String normalized = com.dbagent.oracle.DatabaseConfigService.normalizeDbId(dbId);
         return sessionForToken(token)
-                .map(s -> "admin".equals(s.role()) || !s.hiddenDbs().contains(dbId))
+                .map(s -> "admin".equals(s.role()) || !s.hiddenDbs().contains(normalized))
                 .orElse(false);
     }
 
@@ -289,6 +295,10 @@ public class AuthService {
     }
 
     public boolean changePassword(String token, String currentPassword, String newPassword) {
+        // 컨트롤러가 400 으로 먼저 거르지만, 서비스 단독 호출에서도 BCrypt null 예외(500)가 나지 않게 막는다(2026-10-09 점검 수정 B-9).
+        if (token == null || currentPassword == null || newPassword == null || newPassword.isEmpty()) {
+            return false;
+        }
         List<String[]> row = jdbc.query("SELECT u.username, u.password FROM sessions s JOIN users u ON u.username = s.username " +
                         "WHERE s.token = ? AND s.created_at >= ?",
                 (rs, rowNum) -> new String[]{rs.getString("username"), rs.getString("password")}, token, sessionExpiryCutoffMs());

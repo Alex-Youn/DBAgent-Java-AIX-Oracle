@@ -129,6 +129,13 @@ public class LockRealtimeService {
 
     /** DB별 object_id → OWNER.NAME. 매 주기 dba_objects 조인 금지(11g 무응답 전례) - 모르는 id만 한 번 조회. */
     private final Map<String, Map<Long, String>> objectNames = new ConcurrentHashMap<>();
+    /**
+     * (2026-10-09 점검 수정 A2-10) dba_objects에서 못 찾은 object_id의 만료 시각(epoch ms) - 못 찾은 id는 OBJ#id 자리표시자로
+     * 표시하고 TTL 동안 다시 조회하지 않는다(예전엔 폴링마다 dba_objects를 재조회). 못 찾음 10분, 조회 실패 1분.
+     */
+    private final Map<String, Map<Long, Long>> objectMissingUntil = new ConcurrentHashMap<>();
+    private static final long OBJ_MISSING_TTL_MS = 10 * 60_000L;
+    private static final long OBJ_FAILED_TTL_MS = 60_000L;
 
     public LockRealtimeService(OracleConnectionPoolManager poolManager, MonitorService monitorService,
                                MonitorStoreService storeService, InstanceMetricHistoryService historyService,
@@ -208,6 +215,7 @@ public class LockRealtimeService {
         longTopCache.remove(id);
         fillCache.remove(id);
         objectNames.remove(id);
+        objectMissingUntil.remove(id);
     }
 
     /**
@@ -344,32 +352,47 @@ public class LockRealtimeService {
      * (SGA 합 + total PGA allocated) / PHYSICAL_MEMORY_BYTES × 100. 실패하면 null(판단 보류).
      */
     private Double memoryPct(Connection conn, String dbId) {
+        // (2026-10-09 점검 수정 A2-9) sysmetric()과 같은 방식 - 실패·값 없음도 시각과 함께 캐시(NaN = 값 없음)해 3초마다 v$sgastat
+        // SUM을 재시도하지 않고, 실패했을 때 몇 시간 전 값을 현재 값처럼 돌려주지 않는다(null = 판단 보류).
         double[] cached = memoryCache.get(dbId);
         long now = System.currentTimeMillis();
         if (cached != null && now - (long) cached[0] < MEMORY_CACHE_MS) {
-            return cached[1];
+            return Double.isNaN(cached[1]) ? null : cached[1];
         }
         try (Statement st = conn.createStatement()) {
             st.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
-            double sga = 0;
-            double pga = 0;
-            double total = 0;
+            double sga = Double.NaN;
+            double pga = Double.NaN;
+            double total = Double.NaN;
             try (ResultSet rs = st.executeQuery("SELECT SUM(bytes) FROM v$sgastat")) {
-                if (rs.next()) sga = rs.getDouble(1);
+                if (rs.next()) {
+                    double v = rs.getDouble(1);
+                    if (!rs.wasNull()) sga = v;
+                }
             }
             try (ResultSet rs = st.executeQuery("SELECT SUM(value) FROM v$pgastat WHERE name = 'total PGA allocated'")) {
-                if (rs.next()) pga = rs.getDouble(1);
+                if (rs.next()) {
+                    double v = rs.getDouble(1);
+                    if (!rs.wasNull()) pga = v;
+                }
             }
             try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'PHYSICAL_MEMORY_BYTES'")) {
-                if (rs.next()) total = rs.getDouble(1);
+                if (rs.next()) {
+                    double v = rs.getDouble(1);
+                    if (!rs.wasNull()) total = v;
+                }
             }
-            if (total <= 0) return null;
+            if (Double.isNaN(sga) || Double.isNaN(pga) || Double.isNaN(total) || total <= 0) {
+                memoryCache.put(dbId, new double[]{now, Double.NaN});
+                return null;
+            }
             double pct = Math.round(((sga + pga) / total) * 10000.0) / 100.0;
             memoryCache.put(dbId, new double[]{now, pct});
             return pct;
         } catch (SQLException e) {
             log.debug("memory usage lookup failed for {}: {}", dbId, e.toString());
-            return cached != null ? cached[1] : null;
+            memoryCache.put(dbId, new double[]{now, Double.NaN});
+            return null;
         }
     }
 
@@ -493,12 +516,18 @@ public class LockRealtimeService {
 
     private void resolveObjectNames(Connection conn, String dbId, List<Map<String, Object>> holders) {
         Map<Long, String> names = objectNames.computeIfAbsent(dbId, k -> new ConcurrentHashMap<>());
+        Map<Long, Long> missing = objectMissingUntil.computeIfAbsent(dbId, k -> new ConcurrentHashMap<>());
+        long nowMs = System.currentTimeMillis();
         Set<Long> unknown = new HashSet<>();
         for (Map<String, Object> h : holders) {
             Long id = (Long) h.get("objId");
-            if (id != null && !names.containsKey(id)) unknown.add(id);
+            if (id == null || names.containsKey(id)) continue;
+            Long until = missing.get(id);
+            if (until != null && until > nowMs) continue; // 최근에 못 찾은 id
+            unknown.add(id);
         }
         if (!unknown.isEmpty() && unknown.size() <= 500) {
+            boolean lookupFailed = false;
             String in = String.join(",", Collections.nCopies(unknown.size(), "?"));
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT object_id, owner || '.' || object_name AS name FROM dba_objects WHERE object_id IN (" + in + ")")) {
@@ -509,8 +538,14 @@ public class LockRealtimeService {
                     while (rs.next()) names.put(rs.getLong(1), rs.getString(2));
                 }
             } catch (SQLException e) {
+                lookupFailed = true;
                 log.debug("TM holder object name lookup skipped: {}", e.toString());
             }
+            long ttl = lookupFailed ? OBJ_FAILED_TTL_MS : OBJ_MISSING_TTL_MS;
+            for (Long id : unknown) {
+                if (!names.containsKey(id)) missing.put(id, nowMs + ttl);
+            }
+            if (missing.size() > 5000) missing.clear();
             if (names.size() > 5000) names.clear(); // 캐시 상한 - 객체가 계속 바뀌는 환경 대비
         }
         for (Map<String, Object> h : holders) {
@@ -746,10 +781,17 @@ public class LockRealtimeService {
             evaluate(fresh, target.id());
             String reason = fresh.incident ? "TM_HOLDER_INCIDENT" : "MANUAL";
 
+            // (2026-10-09 점검 수정 A2-1) 화면 목록과 같은 기준(evaluate의 isKillable: USER + kill-blocking-only + kill-inactive-only)을
+            // 서버에서 다시 적용한다. 예전에는 USER 여부만 봐서, 목록에서는 INACTIVE였던 세션이 클릭 사이에 ACTIVE로 바뀌거나
+            // 직접 만든 요청으로 목록 밖 USER 세션을 보내도 설정과 무관하게 KILL됐다. 설정상 KILL 불가면 SKIPPED로 처리한다.
             Map<String, Map<String, Object>> current = new HashMap<>();
+            for (Map<String, Object> h : fresh.killTargets) {
+                current.put(h.get("sid") + ":" + h.get("serial"), h);
+            }
+            java.util.Set<String> userSessionKeys = new HashSet<>();
             for (Map<String, Object> h : holders) {
                 if ("USER".equals(h.get("sessionType"))) {
-                    current.put(h.get("sid") + ":" + h.get("serial"), h);
+                    userSessionKeys.add(h.get("sid") + ":" + h.get("serial"));
                 }
             }
             for (long[] t : requested) {
@@ -763,6 +805,10 @@ public class LockRealtimeService {
                 String err = null;
                 if (h == null) {
                     result = "SKIPPED"; // 이미 끝났거나 SERIAL#이 달라짐(다른 세션) 또는 USER가 아님
+                    if (userSessionKeys.contains(sid + ":" + serial)) {
+                        // 세션은 있으나 현재 설정(kill-blocking-only·kill-inactive-only)상 KILL 대상이 아님
+                        r.put("message", "현재 설정상 KILL 대상이 아니어서 건너뛰었습니다.");
+                    }
                 } else {
                     try (Statement st = conn.createStatement()) {
                         st.execute("ALTER SYSTEM KILL SESSION '" + sid + "," + serial + "' IMMEDIATE");

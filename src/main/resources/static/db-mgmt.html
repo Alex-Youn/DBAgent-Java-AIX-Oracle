@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB 관리</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="style.css?v=78">
     <link rel="stylesheet" href="popup.css?v=3">
     <script>
         (function () {
@@ -98,13 +98,16 @@
                 window.close();
             }
 
+            // value 속성에 들어가는 값 이스케이프(2026-10-09 점검 수정) - "가 있으면 속성이 깨지고 다른 이름으로 저장된다.
+            function escAttr(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (ch) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]; }); }
+
             function addAccountRow(container, user, password) {
                 const row = document.createElement('div');
                 row.className = 'db-account-row';
                 row.style.cssText = 'display:flex; gap:8px; align-items:center;';
                 row.innerHTML = `
-                    <input type="text" class="db-account-user" placeholder="계정명" value="${user || ''}" style="flex:1;">
-                    <input type="password" class="db-account-password" placeholder="비밀번호${user ? ' (비워두면 유지)' : ''}" value="${password || ''}" style="flex:1;" autocomplete="new-password">
+                    <input type="text" class="db-account-user" placeholder="계정명" value="${escAttr(user)}" style="flex:1;">
+                    <input type="password" class="db-account-password" placeholder="비밀번호${user ? ' (비워두면 유지)' : ''}" value="${escAttr(password)}" style="flex:1;" autocomplete="new-password">
                     <button type="button" class="login-btn" style="width:auto; margin-top:0; padding:10px 14px; background:#d03b3b;">×</button>
                 `;
                 row.querySelector('button').addEventListener('click', () => row.remove());
@@ -435,7 +438,7 @@
 
                     const groupOptions = document.getElementById('db-group-options');
                     groupOptions.innerHTML = (data.groups || [])
-                        .map(g => `<option value="${g.group_name}"></option>`).join('');
+                        .map(g => `<option value="${escAttr(g.group_name)}"></option>`).join('');
 
                     instanceById = {};
                     dbSelect.innerHTML = '';
@@ -562,13 +565,24 @@
                     return;
                 }
                 if (!confirm(`'${inst.name}' (${inst.id})를 삭제하시겠습니까?`)) return;
-                const delRes = await fetch(`/api/db_configs/${encodeURIComponent(inst.id)}?token=${encodeURIComponent(token)}`, { method: 'DELETE' });
-                const delData = await delRes.json();
+                // 네트워크 오류·비JSON 응답에도 안내가 나오도록 try/catch(2026-10-09 점검 수정).
+                let delRes, delData;
+                try {
+                    delRes = await fetch(`/api/db_configs/${encodeURIComponent(inst.id)}?token=${encodeURIComponent(token)}`, { method: 'DELETE' });
+                    delData = await delRes.json();
+                } catch (err) {
+                    dbMgmtMainError.textContent = '삭제 요청 중 오류가 발생했습니다: ' + err.message;
+                    dbMgmtMainError.style.display = 'block';
+                    return;
+                }
                 if (!delRes.ok || !delData.success) {
                     dbMgmtMainError.textContent = delData.message || '삭제 실패';
                     dbMgmtMainError.style.display = 'block';
                     return;
                 }
+                // 이전 시도의 오류 문구가 남지 않게 지운다(2026-10-09 QA 수정)
+                dbMgmtMainError.textContent = '';
+                dbMgmtMainError.style.display = 'none';
                 if (window.opener && !window.opener.closed) window.opener.location.reload();
                 loadDbConfigList();
             });

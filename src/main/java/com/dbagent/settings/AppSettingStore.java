@@ -240,8 +240,9 @@ public class AppSettingStore {
             sql.append(" AND db_id = ?");
             args.add(dbId);
         }
-        sql.append(" ORDER BY id DESC");
-        List<Map<String, Object>> all = jdbc.queryForList(sql.toString(), args.toArray());
-        return all.size() > limit ? all.subList(0, Math.max(limit, 0)) : all;
+        // SQL LIMIT 로 필요한 만큼만 읽는다 - 예전엔 전부 읽은 뒤 subList 로 잘라 이력이 쌓일수록 느려졌다(2026-10-09 점검 수정 C-4).
+        // limit 은 int 라 문자열에 넣어도 인젝션 위험이 없고, SQLite·H2 모두 같은 문법이다.
+        sql.append(" ORDER BY id DESC LIMIT ").append(Math.max(limit, 0));
+        return jdbc.queryForList(sql.toString(), args.toArray());
     }
 }

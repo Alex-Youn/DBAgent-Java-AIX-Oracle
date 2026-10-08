@@ -411,16 +411,22 @@ public class DashboardQueryService {
         r.put("to", w.to.format(ISO));
         r.put("dbNow", w.dbNow.format(ISO));
         r.put("source", w.source());
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT instance_name FROM v$instance")) {
-            r.put("instanceName", rs.next() ? rs.getString(1) : null);
+        try (Statement st = conn.createStatement()) {
+            st.setQueryTimeout(AshRange.META_QUERY_TIMEOUT_SECONDS); // 2026-10-09 점검 수정 A1-9
+            try (ResultSet rs = st.executeQuery("SELECT instance_name FROM v$instance")) {
+                r.put("instanceName", rs.next() ? rs.getString(1) : null);
+            }
         }
         r.put("instanceNumber", localInst);
         return r;
     }
 
     private static int instanceNumber(Connection conn) throws SQLException {
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT instance_number FROM v$instance")) {
-            return rs.next() ? rs.getInt(1) : 1;
+        try (Statement st = conn.createStatement()) {
+            st.setQueryTimeout(AshRange.META_QUERY_TIMEOUT_SECONDS); // 2026-10-09 점검 수정 A1-9
+            try (ResultSet rs = st.executeQuery("SELECT instance_number FROM v$instance")) {
+                return rs.next() ? rs.getInt(1) : 1;
+            }
         }
     }
 

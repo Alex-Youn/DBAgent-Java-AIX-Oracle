@@ -41,7 +41,14 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
 
 
 
+    // 풀 키 구분자. id 가 "a" 인 DB 와 "a_b" 인 DB 가 prefix 로 섞이지 않게 id 경계를 제어문자로 둔다(2026-10-09 점검 수정).
+    private static final String KEY_SEP = "\u0001";
+    // 설정 키를 읽지 못할 때의 조회 제한 시간(초).
+    private static final int DEFAULT_QUERY_TIMEOUT_SECONDS = 30;
+
     private final Map<String, HikariDataSource> pools = new ConcurrentHashMap<>();
+    // KILL 전용 풀(DB 당 연결 1개). 일반 풀 고갈 중에도 KILL 이 나갈 수 있게 따로 둔다.
+    private final Map<String, HikariDataSource> killPools = new ConcurrentHashMap<>();
     private final Map<String, Instant> failedPools = new ConcurrentHashMap<>();
     private final Map<String, ReentrantLock> poolLocks = new ConcurrentHashMap<>();
 
@@ -82,7 +89,9 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
         long delay = Math.max(POOL_RETIRE_MIN_DELAY_SECONDS, appliedReadTimeoutMs / 1000L + POOL_RETIRE_EXTRA_SECONDS);
         appliedReadTimeoutMs = settings.getInt(SettingKey.RDB_READ_TIMEOUT_MS);
         java.util.List<HikariDataSource> old = new java.util.ArrayList<>(pools.values());
+        old.addAll(killPools.values());
         pools.clear();
+        killPools.clear();
         failedPools.clear();
         poolLog.info("RDB 풀 설정이 바뀌어 기존 풀 {}개를 교체합니다 (다음 조회부터 새 설정, 기존 풀은 {}초 뒤 닫음): {}",
                 old.size(), delay, sig);
@@ -99,20 +108,38 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
 
 
     public Connection getConnection(TargetDbConfig target) throws SQLException {
-        String url = buildJdbcUrl(target);
-        String poolKey = target.id() + "_" + target.user() + "_" + url;
+        return acquire(target, false);
+    }
 
-        checkCooldown(poolKey);
+    /**
+     * KILL 전용 연결. 10초 쿨다운을 건너뛰고, 일반 풀이 가득 찼거나(느린 쿼리가 연결을 다 잡은 상황)
+     * 접속에 실패하면 KILL 전용 풀(최대 1개)에서 따로 연결을 얻는다.
+     * 풀이 고갈된 순간이 바로 KILL 이 가장 필요한 때라, 일반 조회와 같은 풀·쿨다운에 묶어 두면
+     * 그 순간 KILL 도 막히기 때문이다 (2026-10-09 점검 수정 D-3).
+     */
+    public Connection getKillConnection(TargetDbConfig target) throws SQLException {
+        return acquire(target, true);
+    }
+
+    private Connection acquire(TargetDbConfig target, boolean forKill) throws SQLException {
+        String url = buildJdbcUrl(target);
+        String poolKey = poolKey(target, url);
+
+        if (!forKill) {
+            checkCooldown(poolKey);
+        }
 
         HikariDataSource ds = pools.get(poolKey);
         if (ds == null) {
             ReentrantLock keyLock = poolLocks.computeIfAbsent(poolKey, k -> new ReentrantLock());
             keyLock.lock();
             try {
-                checkCooldown(poolKey);
+                if (!forKill) {
+                    checkCooldown(poolKey);
+                }
                 ds = pools.get(poolKey);
                 if (ds == null) {
-                    ds = createPool(target, url);
+                    ds = createPool(target, url, false);
                     pools.put(poolKey, ds);
                 }
             } finally {
@@ -120,26 +147,79 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
             }
         }
 
+        // KILL 인데 일반 풀이 이미 가득 찼다면 연결 대기(수 초)를 건너뛰고 바로 전용 풀로 간다.
+        if (forKill && isExhausted(ds)) {
+            return killPoolConnection(target, url, poolKey);
+        }
+
         try {
-            return ds.getConnection();
+            return withQueryTimeout(ds.getConnection());
         } catch (SQLException e) {
-            failedPools.put(poolKey, Instant.now());
+            // 풀 고갈로 인한 대기 초과는 DB 장애가 아니므로 쿨다운을 걸지 않는다(걸면 풀이 비어도 10초간 전체 조회가 막힌다).
+            if (!isExhausted(ds)) {
+                failedPools.put(poolKey, Instant.now());
+            }
+            if (forKill) {
+                try {
+                    return killPoolConnection(target, url, poolKey);
+                } catch (SQLException ke) {
+                    e.addSuppressed(ke);
+                }
+            }
             throw e;
         }
     }
 
+    private static String poolKey(TargetDbConfig target, String url) {
+        return target.id() + KEY_SEP + target.user() + KEY_SEP + url;
+    }
+
+    private static boolean isExhausted(HikariDataSource ds) {
+        try {
+            com.zaxxer.hikari.HikariPoolMXBean mx = ds.getHikariPoolMXBean();
+            return mx != null && mx.getIdleConnections() == 0
+                    && mx.getActiveConnections() >= ds.getMaximumPoolSize();
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private Connection killPoolConnection(TargetDbConfig target, String url, String poolKey) throws SQLException {
+        HikariDataSource kp = killPools.get(poolKey);
+        if (kp == null) {
+            ReentrantLock keyLock = poolLocks.computeIfAbsent(poolKey, k -> new ReentrantLock());
+            keyLock.lock();
+            try {
+                kp = killPools.get(poolKey);
+                if (kp == null) {
+                    kp = createPool(target, url, true);
+                    killPools.put(poolKey, kp);
+                }
+            } finally {
+                keyLock.unlock();
+            }
+        }
+        return withQueryTimeout(kp.getConnection());
+    }
+
+    /**
+     * 이 DB 의 풀을 정확히 id 가 같은 것만 제거한다. 예전에는 prefix(id + "_")로 지워서
+     * id "a" 를 지우면 "a_b" 풀까지 닫혔다 (2026-10-09 점검 수정).
+     */
     public void evictPoolsForDbId(String dbId) {
-        String prefix = dbId + "_";
-        pools.keySet().removeIf(key -> {
-            if (!key.startsWith(prefix)) {
-                return false;
-            }
-            HikariDataSource ds = pools.get(key);
-            if (ds != null) {
-                ds.close();
-            }
-            return true;
-        });
+        String prefix = dbId + KEY_SEP;
+        for (Map<String, HikariDataSource> m : java.util.Arrays.asList(pools, killPools)) {
+            m.keySet().removeIf(key -> {
+                if (!key.startsWith(prefix)) {
+                    return false;
+                }
+                HikariDataSource ds = m.get(key);
+                if (ds != null) {
+                    ds.close();
+                }
+                return true;
+            });
+        }
         failedPools.keySet().removeIf(key -> key.startsWith(prefix));
         poolLocks.keySet().removeIf(key -> key.startsWith(prefix));
     }
@@ -148,10 +228,50 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
         Instant failedAt = failedPools.get(poolKey);
         if (failedAt != null) {
             if (Duration.between(failedAt, Instant.now()).compareTo(COOLDOWN) < 0) {
-                throw new SQLException("Connection failed recently. Waiting for cooldown.");
+                throw new SQLException("최근 접속에 실패하여 잠시 대기 중입니다. 10초 후 다시 시도해 주세요.");
             }
             failedPools.remove(poolKey);
         }
+    }
+
+    /**
+     * 이 연결에서 만드는 모든 Statement/PreparedStatement 에 쿼리 제한 시간을 건다(D-4, 2026-10-09 점검 수정).
+     * 서비스 4개의 조회 지점이 수십 곳이라 호출부마다 넣으면 빠뜨리기 쉬워, 연결을 감싸 한 곳에서 처리한다.
+     * 제한 시간은 화면 조회 제한 시간 설정(screen-query-timeout-seconds)을 따르고, 드라이버가
+     * setQueryTimeout 을 지원하지 않아 예외가 나도 조회 자체는 계속한다.
+     */
+    private Connection withQueryTimeout(Connection raw) {
+        int seconds;
+        try {
+            seconds = settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS);
+        } catch (RuntimeException e) {
+            seconds = DEFAULT_QUERY_TIMEOUT_SECONDS;
+        }
+        if (seconds <= 0) {
+            return raw;
+        }
+        final int timeoutSec = seconds;
+        return (Connection) java.lang.reflect.Proxy.newProxyInstance(
+                Connection.class.getClassLoader(), new Class<?>[] {Connection.class},
+                (proxy, method, args) -> {
+                    Object result;
+                    try {
+                        result = method.invoke(raw, args);
+                    } catch (java.lang.reflect.InvocationTargetException ite) {
+                        throw ite.getCause() != null ? ite.getCause() : ite;
+                    }
+                    String name = method.getName();
+                    if (result instanceof java.sql.Statement
+                            && (name.equals("createStatement") || name.equals("prepareStatement")
+                                    || name.equals("prepareCall"))) {
+                        try {
+                            ((java.sql.Statement) result).setQueryTimeout(timeoutSec);
+                        } catch (SQLException | RuntimeException e) {
+                            poolLog.debug("setQueryTimeout 을 적용하지 못했습니다(조회는 계속): {}", e.toString());
+                        }
+                    }
+                    return result;
+                });
     }
 
     private String buildJdbcUrl(TargetDbConfig target) {
@@ -203,14 +323,21 @@ public class RdbConnectionPoolManager implements org.springframework.beans.facto
         }
     }
 
-    private HikariDataSource createPool(TargetDbConfig target, String url) {
+    private HikariDataSource createPool(TargetDbConfig target, String url, boolean killOnly) {
         HikariConfig cfg = new HikariConfig();
         cfg.setJdbcUrl(url);
         cfg.setUsername(target.user());
         cfg.setPassword(target.password());
-        cfg.setMinimumIdle(target.poolMinIdle() != null ? target.poolMinIdle() : settings.getInt(SettingKey.RDB_POOL_MIN_IDLE));
-        cfg.setMaximumPoolSize(target.poolMaxSize() != null ? target.poolMaxSize() : settings.getInt(SettingKey.RDB_POOL_MAX_SIZE));
-        cfg.setPoolName("rdb-" + target.id());
+        if (killOnly) {
+            // KILL 전용: 평소엔 연결을 만들지 않고(minIdle 0) 필요할 때 1개만 연다.
+            cfg.setMinimumIdle(0);
+            cfg.setMaximumPoolSize(1);
+            cfg.setPoolName("rdb-kill-" + target.id());
+        } else {
+            cfg.setMinimumIdle(target.poolMinIdle() != null ? target.poolMinIdle() : settings.getInt(SettingKey.RDB_POOL_MIN_IDLE));
+            cfg.setMaximumPoolSize(target.poolMaxSize() != null ? target.poolMaxSize() : settings.getInt(SettingKey.RDB_POOL_MAX_SIZE));
+            cfg.setPoolName("rdb-" + target.id());
+        }
         cfg.setConnectionTimeout(settings.getInt(SettingKey.RDB_CONNECT_TIMEOUT_MS));
         cfg.setInitializationFailTimeout(-1);
         return new HikariDataSource(cfg);

@@ -23,9 +23,11 @@ final class CpuCores {
 
     /** NUM_CPUS, 없으면 0. */
     static int query(Connection conn) throws SQLException {
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT stat_name, value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
-            return rs.next() ? rs.getInt(2) : 0;
+        try (Statement st = conn.createStatement()) {
+            st.setQueryTimeout(AshRange.META_QUERY_TIMEOUT_SECONDS); // 2026-10-09 점검 수정 A1-9
+            try (ResultSet rs = st.executeQuery("SELECT stat_name, value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
+                return rs.next() ? rs.getInt(2) : 0;
+            }
         }
     }
 
@@ -35,9 +37,11 @@ final class CpuCores {
      * 넘으면 코어를 스레드로 나눠 쓰기 시작해 세션당 처리 속도가 떨어질 수 있다는 참고선이다. 일부 플랫폼·권한에서는 행이 없다.
      */
     static int queryPhysical(Connection conn) throws SQLException {
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPU_CORES'")) {
-            return rs.next() ? rs.getInt(1) : 0;
+        try (Statement st = conn.createStatement()) {
+            st.setQueryTimeout(AshRange.META_QUERY_TIMEOUT_SECONDS); // 2026-10-09 점검 수정 A1-9
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPU_CORES'")) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
         }
     }
 }

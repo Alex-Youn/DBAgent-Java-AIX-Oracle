@@ -556,6 +556,55 @@
     const instanceName = qs.get('name');
     const dbId = qs.get('db_id');
     function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
+
+    // ---- 2026-10-09 점검 수정(G-1/G-2/G-8/G-9/G-12) 공통 보조 함수 ----
+    // 서버가 준 문자열(DB 이름·그룹명·host·접속 계정·오류 문구)은 innerHTML에 넣기 전에 반드시 이스케이프한다.
+    // 접속 클라이언트가 정하는 값(application_name 등)으로 대시보드를 연 관리자의 토큰을 탈취할 수 있었다.
+    function esc(v) {
+        return String(v == null ? '' : v).replace(/[&<>"']/g, function (ch) {
+            return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+        });
+    }
+    // 숫자 포맷: 값이 null/없음이면 '--' (한 필드가 비었다고 toLocaleString TypeError로 패널 전체가 실패하지 않게).
+    function fmtNum(v) {
+        if (v == null || v === '') return '--';
+        const n = Number(v);
+        return isFinite(n) ? n.toLocaleString() : String(v);
+    }
+
+    // 로그인 만료(G-9): 토큰이 없거나 API가 401이면 폴링을 멈추고 로그인 화면(index.html)으로 보낸다.
+    // 403은 권한 없음일 수도, 만료 토큰일 수도 있어 /api/check-auth로 한 번만 확인한다(app.js의 dbagentFetch와 같은 방식).
+    let authExpired = false;
+    let authCheckPromise = null;
+    function handleAuthExpired() {
+        if (authExpired) return;
+        authExpired = true;
+        sessionStorage.removeItem('dbagent_token');
+        sessionStorage.removeItem('dbagent_role');
+        window.location.href = 'index.html';
+    }
+    async function authFetch(url, options) {
+        const res = await fetch(url, options);
+        if ((res.status === 401 || res.status === 403) && !authExpired) {
+            if (res.status === 401) {
+                handleAuthExpired();
+            } else {
+                // 같은 주기의 여러 403이 check-auth를 한 번만 부르게 공유한다.
+                if (!authCheckPromise) {
+                    authCheckPromise = fetch('/api/check-auth', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token: getToken() })
+                    }).then(function (chk) { return chk.status === 401; })
+                      .catch(function () { return false; }) // 확인 실패는 판단 보류 - 기존 오류 표시 유지
+                      .then(function (expired) { authCheckPromise = null; return expired; });
+                }
+                if (await authCheckPromise) handleAuthExpired();
+            }
+        }
+        return res;
+    }
+    if (!getToken()) handleAuthExpired();
     if (instanceName) {
         document.title = `${instanceName} - MS SQL Server Overview`;
         document.getElementById('pmmTitle').textContent = instanceName;
@@ -615,7 +664,7 @@
 
                 const header = document.createElement('div');
                 header.className = 'db-tree-group';
-                header.innerHTML = `<span>${g.group_name}</span><i data-lucide="chevron-right" class="db-tree-chevron${hasActive ? ' rotated' : ''}"></i>`;
+                header.innerHTML = `<span>${esc(g.group_name)}</span><i data-lucide="chevron-right" class="db-tree-chevron${hasActive ? ' rotated' : ''}"></i>`;
 
                 const body = document.createElement('div');
                 body.className = 'db-tree-instances' + (hasActive ? '' : ' collapsed');
@@ -623,10 +672,10 @@
                     const active = inst.id === dbId;
                     const page = dbTreeTargetPage(inst.db_type);
                     const href = `${page}?db_id=${encodeURIComponent(inst.id)}&db_type=${encodeURIComponent(inst.db_type)}&name=${encodeURIComponent(inst.name || inst.id)}`;
-                    return `<div class="db-tree-item${active ? ' active' : ''}" data-href="${href}" title="${inst.name || inst.id}">` +
+                    return `<div class="db-tree-item${active ? ' active' : ''}" data-href="${esc(href)}" title="${esc(inst.name || inst.id)}">` +
                         `<i data-lucide="database" class="item-icon-static"></i>` +
                         `<i data-lucide="activity" class="item-icon-live"></i>` +
-                        `<span>${inst.name || inst.id}</span></div>`;
+                        `<span>${esc(inst.name || inst.id)}</span></div>`;
                 }).join('');
 
                 // index.html의 그룹 아코디언(클릭 시 화살표 회전 + 펼침/접힘)과 동일한 동작.
@@ -769,10 +818,10 @@
     function loadStorage() {
         const el = liveHolders.storage && liveHolders.storage[0];
         if (!el || !dbId) return;
-        fetch(`/api/rdb/storage?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
+        return authFetch(`/api/rdb/storage?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
             .then(res => res.json())
             .then(data => {
-                if (data.error) { el.innerHTML = `<span class="live-error">DB Error: ${data.error}</span>`; return; }
+                if (data.error) { el.innerHTML = `<span class="live-error">DB Error: ${esc(data.error)}</span>`; return; }
                 if (!data.length) { el.innerHTML = '스토리지 정보가 없습니다.'; return; }
                 // sys.master_files.size 는 파일에 "할당된" 크기라, 서버가 그 값을 total_mb 에 담고
                 // 사용량/사용률은 null 로 준다(MsSqlMonitorService.getStorage). 예전에는 같은 값을
@@ -781,7 +830,7 @@
                 let sumTotal = 0;
                 const rows = data.map(t => {
                     sumTotal += Number(t.total_mb) || 0;
-                    return `<tr><td>${t.tablespace_name}</td><td>${t.status}</td><td>${Number(t.total_mb).toLocaleString()}</td></tr>`;
+                    return `<tr><td>${esc(t.tablespace_name)}</td><td>${esc(t.status)}</td><td>${fmtNum(t.total_mb)}</td></tr>`;
                 }).join('');
                 el.innerHTML = `
                     <div class="live-summary">
@@ -794,7 +843,7 @@
                     </table>
                 `;
             })
-            .catch(err => { el.innerHTML = `<span class="live-error">${err.message}</span>`; });
+            .catch(err => { el.innerHTML = `<span class="live-error">${esc(err.message)}</span>`; });
     }
 
     // ---- Real data: Connections (/api/rdb/sessions) ----
@@ -814,19 +863,19 @@
         const holders = liveHolders.connections;
         if (!holders || !dbId) return;
         const [countEl, listEl] = holders;
-        fetch(`/api/rdb/sessions?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
+        return authFetch(`/api/rdb/sessions?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`)
             .then(res => res.json())
             .then(data => {
                 if (data.error) {
                     countEl.innerHTML = `<span class="live-error">DB Error</span>`;
-                    listEl.innerHTML = `<span class="live-error">${data.error}</span>`;
+                    listEl.innerHTML = `<span class="live-error">${esc(data.error)}</span>`;
                     return;
                 }
                 // 패널 제목(ROWS 의 '현재 연결 수')이 이미 뜻을 말해 주므로 숫자 아래 같은 라벨을 또 붙이지 않는다.
                 countEl.innerHTML = `<div class="live-count">${data.length}</div>`;
                 if (!data.length) { listEl.innerHTML = '연결이 없습니다.'; return; }
                 const rows = data.map(s => `
-                    <tr><td>${s.user || ''}</td><td>${s.host || ''}</td><td>${s.application_name || ''}</td><td>${s.state || ''}</td></tr>
+                    <tr><td>${esc(s.user)}</td><td>${esc(s.host)}</td><td>${esc(s.application_name)}</td><td>${esc(s.state)}</td></tr>
                 `).join('');
                 listEl.innerHTML = `
                     <div class="live-table-scroll conn-scroll">
@@ -840,7 +889,7 @@
             })
             .catch(err => {
                 countEl.innerHTML = `<span class="live-error">오류</span>`;
-                listEl.innerHTML = `<span class="live-error">${err.message}</span>`;
+                listEl.innerHTML = `<span class="live-error">${esc(err.message)}</span>`;
             });
     }
     loadStorage();
@@ -849,13 +898,13 @@
     // ---- Real data: the remaining status-counter rows (/api/rdb/mssql_status) ----
     function renderMetricList(el, items) {
         el.innerHTML = `<table class="live-table"><tbody>${
-            items.map(([label, value]) => `<tr><td>${label}</td><td style="text-align:right;">${value}</td></tr>`).join('')
+            items.map(([label, value]) => `<tr><td>${esc(label)}</td><td style="text-align:right;">${value == null ? '--' : esc(value)}</td></tr>`).join('')
         }</tbody></table>`;
     }
     function renderWaitTable(el, waits) {
         if (!waits || !waits.length) { el.innerHTML = '대기 이벤트가 없습니다.'; return; }
         const rows = waits.map(w => `
-            <tr><td>${w.waitType}</td><td style="text-align:right;">${Number(w.waitTimeMs).toLocaleString()}</td><td style="text-align:right;">${Number(w.waitingTasks).toLocaleString()}</td></tr>
+            <tr><td>${esc(w.waitType)}</td><td style="text-align:right;">${fmtNum(w.waitTimeMs)}</td><td style="text-align:right;">${fmtNum(w.waitingTasks)}</td></tr>
         `).join('');
         el.innerHTML = `
             <table class="live-table">
@@ -869,7 +918,7 @@
         if (d.error) {
             Object.keys(liveHolders).forEach(key => {
                 if (key === 'storage' || key === 'connections') return;
-                (liveHolders[key] || []).forEach(el => { el.innerHTML = `<span class="live-error">${d.error}</span>`; });
+                (liveHolders[key] || []).forEach(el => { el.innerHTML = `<span class="live-error">${esc(d.error)}</span>`; });
             });
             return;
         }
@@ -882,8 +931,8 @@
         }
         if (liveHolders.locks) {
             renderMetricList(liveHolders.locks[0], [
-                ['Granted', d.locksGranted.toLocaleString()],
-                ['Waiting', d.locksWaiting.toLocaleString()]
+                ['Granted', fmtNum(d.locksGranted)],
+                ['Waiting', fmtNum(d.locksWaiting)]
             ]);
         }
         if (liveHolders.waitStats) {
@@ -891,8 +940,8 @@
         }
         if (liveHolders.memory) {
             renderMetricList(liveHolders.memory[0], [
-                ['Total Server Memory (MB)', Number(d.totalServerMemoryMb).toLocaleString()],
-                ['Target Server Memory (MB)', Number(d.targetServerMemoryMb).toLocaleString()]
+                ['Total Server Memory (MB)', fmtNum(d.totalServerMemoryMb)],
+                ['Target Server Memory (MB)', fmtNum(d.targetServerMemoryMb)]
             ]);
         }
         if (liveHolders.tempdb) {
@@ -903,10 +952,10 @@
         }
         if (liveHolders.io) {
             renderMetricList(liveHolders.io[0], [
-                ['Reads', d.ioReads.toLocaleString()],
-                ['Writes', d.ioWrites.toLocaleString()],
-                ['Read Stall (ms)', d.ioReadStallMs.toLocaleString()],
-                ['Write Stall (ms)', d.ioWriteStallMs.toLocaleString()]
+                ['Reads', fmtNum(d.ioReads)],
+                ['Writes', fmtNum(d.ioWrites)],
+                ['Read Stall (ms)', fmtNum(d.ioReadStallMs)],
+                ['Write Stall (ms)', fmtNum(d.ioWriteStallMs)]
             ]);
         }
     }
@@ -1012,7 +1061,7 @@
 
     function renderDetailPanels(d) {
         if (d.error) {
-            Object.values(detailHolders).forEach(el => { el.innerHTML = `<span class="live-error">${d.error}</span>`; });
+            Object.values(detailHolders).forEach(el => { el.innerHTML = `<span class="live-error">${esc(d.error)}</span>`; });
             return;
         }
         renderTimeSeriesPanel(detailHolders.connections, {
@@ -1066,13 +1115,13 @@
             ids.forEach(id => { document.getElementById(id).innerHTML = '<span class="live-error">db_id 없음</span>'; });
             return;
         }
-        Promise.all([
-            fetch(`/api/rdb/mssql_overview?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`).then(res => res.json()),
-            fetch(`/api/rdb/mssql_status?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`).then(res => res.json())
+        return Promise.all([
+            authFetch(`/api/rdb/mssql_overview?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`).then(res => res.json()),
+            authFetch(`/api/rdb/mssql_status?db_id=${encodeURIComponent(dbId)}&token=${encodeURIComponent(getToken())}`).then(res => res.json())
         ]).then(([overview, status]) => {
             renderStatusPanels(status);
             if (overview.error) {
-                ids.forEach(id => { document.getElementById(id).innerHTML = `<span class="live-error">${overview.error}</span>`; });
+                ids.forEach(id => { document.getElementById(id).innerHTML = `<span class="live-error">${esc(overview.error)}</span>`; });
                 renderDetailPanels({ error: overview.error });
                 return;
             }
@@ -1090,7 +1139,7 @@
                     hitRateKnown ? Math.min(100, Math.max(0, hitRate)) + '%' : '0%';
             renderDetailPanels(status);
         }).catch(err => {
-            ids.forEach(id => { document.getElementById(id).innerHTML = `<span class="live-error">${err.message}</span>`; });
+            ids.forEach(id => { document.getElementById(id).innerHTML = `<span class="live-error">${esc(err.message)}</span>`; });
             renderStatusPanels({ error: err.message });
             renderDetailPanels({ error: err.message });
         });
@@ -1252,14 +1301,28 @@
      * loadKpiStats). 세 대시보드가 이 블록을 그대로 공유할 수 있도록, 선언되지 않은 식별자에도
      * 안전한 typeof로 존재하는 것만 호출한다.
      */
-    function refreshAllPanels() {
-        if (typeof loadStorage === 'function') loadStorage();
-        if (typeof loadConnections === 'function') loadConnections();
-        if (typeof loadAll === 'function') loadAll();
-        if (typeof loadStatusOverview === 'function') loadStatusOverview();
-        if (typeof loadKpiStats === 'function') loadKpiStats();
-        // 세션 리스트/Lock 탭은 지금 보고 있는 탭만 다시 읽는다(rdb-session-views.js).
-        if (typeof window.dbagentRefreshRdbSessionViews === 'function') window.dbagentRefreshRdbSessionViews();
+    // G-6(2026-10-09 점검 수정): 이전 갱신이 끝나기 전에는 다음 주기를 건너뛴다 - 대상 DB가 느리면 주기마다
+    // 5~7개 요청이 쌓여 운영 DB 부하가 커졌다. 각 loadXxx()는 Promise를 돌려준다. 응답이 영영 안 오는 경우를 대비해 60초가 지나면 가드를 푼다.
+    let refreshInFlight = false;
+    let refreshStartedAt = 0;
+    async function refreshAllPanels() {
+        if (authExpired) return;
+        if (refreshInFlight && Date.now() - refreshStartedAt < 60000) return;
+        refreshInFlight = true;
+        refreshStartedAt = Date.now();
+        try {
+            const pending = [];
+            if (typeof loadStorage === 'function') pending.push(loadStorage());
+            if (typeof loadConnections === 'function') pending.push(loadConnections());
+            if (typeof loadAll === 'function') pending.push(loadAll());
+            if (typeof loadStatusOverview === 'function') pending.push(loadStatusOverview());
+            if (typeof loadKpiStats === 'function') pending.push(loadKpiStats());
+            // 세션 리스트/Lock 탭은 지금 보고 있는 탭만 다시 읽는다(rdb-session-views.js).
+            if (typeof window.dbagentRefreshRdbSessionViews === 'function') window.dbagentRefreshRdbSessionViews();
+            await Promise.allSettled(pending);
+        } finally {
+            refreshInFlight = false;
+        }
     }
 
     (function wireFilterBar() {
@@ -1308,6 +1371,12 @@
                 timerId = setInterval(function () { if (!document.hidden) refreshAllPanels(); }, ms);
             }
         }
+
+        // G-7(2026-10-09 점검 수정): 숨김 탭에서 돌아오면 다음 주기를 기다리지 않고 즉시 한 번 갱신한다
+        // (자동 갱신이 꺼져 있으면 하지 않는다). fleet-overview.html과 같은 방식.
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden && currentMs() > 0) refreshAllPanels();
+        });
 
         if (intervalSel) {
             const savedCustom = parseInt(localStorage.getItem(CUSTOM_KEY), 10);
@@ -1372,7 +1441,7 @@
                         return i.db_type && i.db_type !== 'oracle';
                     });
                     if (!list.length) return;
-                    ddHtml += '<div class="td-group">' + g.group_name + '</div>';
+                    ddHtml += '<div class="td-group">' + esc(g.group_name) + '</div>';
                     ddHtml += list.map(function (inst) {
                         const page = dbTreeTargetPage(inst.db_type);
                         const href = page + '?db_id=' + encodeURIComponent(inst.id)
@@ -1381,9 +1450,9 @@
                         const active = inst.id === dbId;
                         // 현재 보고 있는 인스턴스는 data-href를 주지 않아 클릭해도 이동하지 않는다.
                         return '<div class="td-item' + (active ? ' active' : '') + '"'
-                            + (active ? '' : ' data-href="' + href + '"') + '>'
-                            + '<span>' + (inst.name || inst.id) + '</span>'
-                            + '<span class="td-host">' + (inst.host || '') + ':' + inst.port + '</span></div>';
+                            + (active ? '' : ' data-href="' + esc(href) + '"') + '>'
+                            + '<span>' + esc(inst.name || inst.id) + '</span>'
+                            + '<span class="td-host">' + esc((inst.host || '') + ':' + inst.port) + '</span></div>';
                     }).join('');
                 });
                 titleDd.innerHTML = ddHtml || '<div class="td-group">등록된 RDB DB가 없습니다</div>';
@@ -1419,7 +1488,7 @@
                     + '&name=' + encodeURIComponent(inst.name || inst.id);
                 const host = inst.host || '(host 미지정)';
                 const label = host + ':' + inst.port + ' \u00b7 ' + (inst.name || inst.id);
-                return '<option value="' + href + '"' + (inst.id === dbId ? ' selected' : '') + '>' + label + '</option>';
+                return '<option value="' + esc(href) + '"' + (inst.id === dbId ? ' selected' : '') + '>' + esc(label) + '</option>';
             }).join('');
             hostSel.addEventListener('change', function () {
                 if (hostSel.value) window.location.href = hostSel.value;
@@ -1430,7 +1499,7 @@
             applyInterval();
             if (hostSel) {
                 var reason = (err && err.message) ? err.message : String(err);
-                hostSel.innerHTML = '<option>실패: ' + reason + '</option>';
+                hostSel.innerHTML = '<option>실패: ' + esc(reason) + '</option>';
                 hostSel.disabled = true;
             }
         });

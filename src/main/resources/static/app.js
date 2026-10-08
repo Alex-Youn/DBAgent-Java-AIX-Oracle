@@ -119,6 +119,34 @@ function dbagentEsc(v) {
     return String(v == null ? '' : v).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
+// 레거시 화면 공통 fetch(2026-10-09 점검 수정 F-11) - 로그인이 풀린 뒤(서버 재기동·세션 만료)에도 폴링이 "Network response was not ok"만
+// 반복하던 문제. 401이면 바로, 403이면 "권한 없음"과 구분하기 위해 /api/check-auth로 한 번 확인해 401일 때만 토큰을 지우고 로그인 화면으로 보낸다.
+// 진짜 403(권한 없음)은 건드리지 않고 호출부의 기존 오류 표시에 맡긴다. 새로고침은 한 번만(플래그) - 로그인 전에는 토큰이 없어 오버레이가 뜬다.
+let dbagentAuthExpiredHandled = false;
+async function dbagentFetch(url, options) {
+    const res = await fetch(url, options);
+    if ((res.status === 401 || res.status === 403) && !dbagentAuthExpiredHandled) {
+        let expired = res.status === 401;
+        if (!expired) {
+            try {
+                const chk = await fetch('/api/check-auth', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: getToken() })
+                });
+                expired = chk.status === 401;
+            } catch (e) { /* 확인 실패는 판단 보류 - 기존 오류 표시 유지 */ }
+        }
+        if (expired && !dbagentAuthExpiredHandled) {
+            dbagentAuthExpiredHandled = true;
+            sessionStorage.removeItem('dbagent_token');
+            sessionStorage.removeItem('dbagent_role');
+            location.reload();
+        }
+    }
+    return res;
+}
+
 /** 앱 안 창 하나 - 누른 버튼의 value로 끝난다(Esc·바깥 클릭은 null). body 바로 아래에 붙여 .app-container zoom 영향을 받지 않는다. */
 function dbagentKillModal(title, bodyHtml, buttons) {
     return new Promise(resolve => {
@@ -1492,6 +1520,16 @@ let layoutHTML = "";
             const tsLoadingOverlay = document.getElementById('tablespace-loading-overlay');
             if (tsLoadingOverlay) tsLoadingOverlay.style.display = 'flex';
 
+            // onclick 문자열 삽입 대신 data-ts + 이벤트 위임 - 따옴표가 든 식별자로 JS가 깨지거나 주입되는 것을 막는다(2026-10-09 점검 수정 F-5).
+            if (!tsTbody.dataset.tsDelegated) {
+                tsTbody.dataset.tsDelegated = '1';
+                tsTbody.addEventListener('click', (ev) => {
+                    const link = ev.target.closest && ev.target.closest('a.tablespace-name-link');
+                    if (!link) return;
+                    ev.preventDefault();
+                    window.showTablespaceDatafiles(link.getAttribute('data-ts'));
+                });
+            }
             try {
                 const response = await fetch(`/api/tablespace?db_id=${myDbId}&token=${encodeURIComponent(getToken())}`);
                 if (isStale()) return;
@@ -1500,7 +1538,7 @@ let layoutHTML = "";
                     if (isStale()) return;
 
                     if (data.error) {
-                        tsTbody.innerHTML = `<tr><td colspan="8" style="color:#d03b3b; text-align:center; padding: 30px;">DB Error: ${data.error}</td></tr>`;
+                        tsTbody.innerHTML = `<tr><td colspan="8" style="color:#d03b3b; text-align:center; padding: 30px;">DB Error: ${dbagentEsc(data.error)}</td></tr>`;
                         if (tsTotalMbEl) tsTotalMbEl.textContent = '-- MB';
                         if (tsUsedMbEl) tsUsedMbEl.textContent = '-- MB';
                         if (tsTotalPctEl) tsTotalPctEl.textContent = '--%';
@@ -1536,8 +1574,8 @@ let layoutHTML = "";
 
                             const row = `
                                 <tr>
-                                    <td><a href="#" class="tablespace-name-link" style="color: var(--primary-color); text-decoration: underline; cursor: pointer;" onclick="window.showTablespaceDatafiles('${ts.tablespace_name}'); return false;">${ts.tablespace_name}</a></td>
-                                    <td><span class="status-badge ${statusBadge}">${ts.status}</span></td>
+                                    <td><a href="#" class="tablespace-name-link" style="color: var(--primary-color); text-decoration: underline; cursor: pointer;" data-ts="${dbagentEsc(ts.tablespace_name)}">${dbagentEsc(ts.tablespace_name)}</a></td>
+                                    <td><span class="status-badge ${statusBadge}">${dbagentEsc(ts.status)}</span></td>
                                     <td>${ts.total_mb.toLocaleString()}</td>
                                     <td>${ts.used_mb.toLocaleString()}</td>
                                     <td>${free.toLocaleString()}</td>
@@ -1570,7 +1608,7 @@ let layoutHTML = "";
             } catch (error) {
                 if (isStale()) return;
                 console.error('Tablespace fetch error:', error);
-                tsTbody.innerHTML = `<tr><td colspan="8" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+                tsTbody.innerHTML = `<tr><td colspan="8" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${dbagentEsc(error.message)}</td></tr>`;
                 resetTablespaceTotals();
             } finally {
                 // 스피너/오버레이는 가장 최근 요청이 끝날 때만 내린다 - 이전 DB 요청이 먼저 끝나며
@@ -1622,6 +1660,7 @@ let layoutHTML = "";
     // Holder도 접힌 채로 나오게, 모두 접기 모드에서는 "펼친 것"만 기억한다. 접혀서 안 그려진 행은 체크박스도 없으므로
     // 선택 세션 KILL 대상에서도 빠진다(보이지 않는 세션을 KILL하지 않게). 토글은 다시 조회하지 않고 마지막 결과로 다시 그린다.
     let tmlockLastData = null;
+    const tmlockRequestGuard = dbagentLatestRequest();
     let tmlockCollapseAllMode = false;
     const tmlockCollapsed = new Set();   // 보통 모드: 접은 것
     const tmlockExpanded = new Set();    // 모두 접기 모드: 펼친 것
@@ -1745,21 +1784,21 @@ let layoutHTML = "";
                 ? `<span class="lock-below${item.collapsed ? ' collapsed' : ''}" title="이 세션 아래에서 기다리는 세션 수(체인 포함)">대기 ${item.below}</span>`
                 : '';
             tableHtml += `
-                <tr class="tmlock-row clickable-session-row" data-sid="${d.sid}" data-serial="${d.serial || ''}">
-                    <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${d.sid}" data-serial="${d.serial}" onclick="event.stopPropagation();"></td>
-                    <td>${branch}${fold}<span class="lock-badge ${role}" title="${roleTitle}">${roleLabel}</span><span class="lock-sid">${d.sid}</span>${below}${cycle}</td>
-                    <td>${d.serial}</td>
-                    <td>${d.spid || ''}</td>
-                    <td>${d.username}</td>
-                    <td>${d.lock_type}</td>
-                    <td>${d.mode}</td>
-                    <td>${d.object_waiting || ''}</td>
+                <tr class="tmlock-row clickable-session-row" data-sid="${dbagentEsc(d.sid)}" data-serial="${dbagentEsc(d.serial || '')}">
+                    <td style="text-align: center;"><input type="checkbox" class="tmlock-checkbox" data-sid="${dbagentEsc(d.sid)}" data-serial="${dbagentEsc(d.serial)}" onclick="event.stopPropagation();"></td>
+                    <td>${branch}${fold}<span class="lock-badge ${role}" title="${roleTitle}">${roleLabel}</span><span class="lock-sid">${dbagentEsc(d.sid)}</span>${below}${cycle}</td>
+                    <td>${dbagentEsc(d.serial)}</td>
+                    <td>${dbagentEsc(d.spid || '')}</td>
+                    <td>${dbagentEsc(d.username)}</td>
+                    <td>${dbagentEsc(d.lock_type)}</td>
+                    <td>${dbagentEsc(d.mode)}</td>
+                    <td>${dbagentEsc(d.object_waiting || '')}</td>
                     <td>${formatDuration(d.time)}</td>
-                    <td>${d.login || ''}</td>
-                    <td>${d.status || ''}</td>
-                    <td>${d.program || ''}</td>
-                    <td>${d.machine || ''}</td>
-                    <td>${d.osuser || ''}</td>
+                    <td>${dbagentEsc(d.login || '')}</td>
+                    <td>${dbagentEsc(d.status || '')}</td>
+                    <td>${dbagentEsc(d.program || '')}</td>
+                    <td>${dbagentEsc(d.machine || '')}</td>
+                    <td>${dbagentEsc(d.osuser || '')}</td>
                 </tr>
             `;
         });
@@ -1824,15 +1863,28 @@ let layoutHTML = "";
             return;
         }
 
+        // DB 전환 레이스 방지(2026-10-09 점검 수정 F-9) - 이전 DB의 늦은 응답이 새 DB 화면을 덮어쓰지 않게 세대 가드를 쓴다.
+        const guard = tmlockRequestGuard.begin();
+        const icon = tmlockRefreshBtn ? tmlockRefreshBtn.querySelector('i') : null;
         try {
-            const icon = tmlockRefreshBtn.querySelector('i');
             if (icon) icon.classList.add('spinning');
-            
-            const response = await fetch(`/api/tmlock?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`);
+
+            const response = await dbagentFetch(`/api/tmlock?db_id=${window.currentDbId || ""}&token=${encodeURIComponent(getToken())}`);
+            if (guard.isStale()) return;
             if (!response.ok) throw new Error('Network response was not ok');
             const data = await response.json();
-            
-            if (!data || data.length === 0) {
+            if (guard.isStale()) return;
+
+            // 오류 객체·비배열 응답을 "정상(0건)"으로 보이게 하지 않는다 - 판단 보류로 표시.
+            if (!Array.isArray(data)) {
+                tmlockLastData = null;
+                tmlockTbody.innerHTML = `<tr><td colspan="14" style="text-align: center; padding: 40px; color: var(--danger);">TM LOCK 조회에 실패해 판단을 보류합니다${data && data.error ? ': ' + dbagentEsc(data.error) : ''}</td></tr>`;
+                if (window.dbagentSyncKillButtons) window.dbagentSyncKillButtons();
+                if (icon) icon.classList.remove('spinning');
+                return;
+            }
+
+            if (data.length === 0) {
                 tmlockLastData = null;
                 tmlockTbody.innerHTML = `
                     <tr>
@@ -1852,7 +1904,9 @@ let layoutHTML = "";
 
             if (icon) icon.classList.remove('spinning');
         } catch (error) {
-            tmlockTbody.innerHTML = `<tr><td colspan="14" style="color:var(--danger); padding:20px; text-align:center;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+            if (guard.isStale()) return;
+            if (icon) icon.classList.remove('spinning');
+            tmlockTbody.innerHTML = `<tr><td colspan="14" style="color:var(--danger); padding:20px; text-align:center;">데이터를 불러오는 데 실패했습니다: ${dbagentEsc(error.message)}</td></tr>`;
         }
     }
 
@@ -2001,7 +2055,7 @@ let layoutHTML = "";
             if (icon) icon.classList.add('spinning');
 
             const [response, extraResponse] = await Promise.all([
-                fetch(`/api/session?db_id=${req.dbId}&token=${encodeURIComponent(getToken())}`),
+                dbagentFetch(`/api/session?db_id=${req.dbId}&token=${encodeURIComponent(getToken())}`),
                 fetch(`/api/session_extra?db_id=${req.dbId}&token=${encodeURIComponent(getToken())}`)
             ]);
             if (req.isStale()) return;
@@ -2055,7 +2109,7 @@ let layoutHTML = "";
         } catch (error) {
             if (req.isStale()) return;
             console.error('Error fetching sessions:', error);
-            sessionTbody.innerHTML = `<tr><td colspan="7" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${error.message}</td></tr>`;
+            sessionTbody.innerHTML = `<tr><td colspan="7" style="color:#d03b3b; text-align:center; padding: 30px;">데이터를 불러오는 데 실패했습니다: ${dbagentEsc(error.message)}</td></tr>`;
         } finally {
             // 예전엔 성공할 때만 스피너를 내려 실패 시 계속 돌았다. 가장 최근 요청이 끝날 때 내린다.
             if (icon && req.isLatest()) icon.classList.remove('spinning');
@@ -2119,13 +2173,13 @@ let layoutHTML = "";
                 const durationPct = Math.min((durationVal / maxDuration) * 100, 100);
                 const durationHtml = session.duration_time !== null ? `<div style="display: flex; align-items: center; gap: 8px;"><div style="flex-grow: 1; background-color: var(--track-bg); height: 8px; border-radius: 4px; overflow: hidden; width: 60px;"><div style="width: ${durationPct}%; height: 100%; background-color: #3987e5; border-radius: 4px;"></div></div><span style="min-width: 30px; text-align: right;">${durationVal}</span></div>` : '-';
                 html += `
-                    <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${session.sid}" data-serial="${session.serial || ''}" data-sql_id="${session.sql_id || ''}">
-                        <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="session-checkbox" data-sid="${session.sid}" data-serial="${session.serial}"></td>
-                        <td>${session.db_name || '-'}</td>
-                        <td><span class="status-badge ${statusClass}">${session.status}</span></td>
-                        <td>${session.sid}</td>
-                        <td>${session.serial}</td>
-                        <td>${session.server_pid || '-'}</td>
+                    <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${dbagentEsc(session.sid)}" data-serial="${dbagentEsc(session.serial || '')}" data-sql_id="${dbagentEsc(session.sql_id || '')}">
+                        <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="session-checkbox" data-sid="${dbagentEsc(session.sid)}" data-serial="${dbagentEsc(session.serial)}"></td>
+                        <td>${dbagentEsc(session.db_name || '-')}</td>
+                        <td><span class="status-badge ${statusClass}">${dbagentEsc(session.status)}</span></td>
+                        <td>${dbagentEsc(session.sid)}</td>
+                        <td>${dbagentEsc(session.serial)}</td>
+                        <td>${dbagentEsc(session.server_pid || '-')}</td>
                         <td>${durationHtml}</td>
                         <td>${(() => {
                             let waitHtml = `<div style="color: var(--text-secondary);">-</div>`;
@@ -2137,14 +2191,14 @@ let layoutHTML = "";
                             }
                             return waitHtml;
                         })()}</td>
-                        <td>${session.sql_id || '-'}</td>
-                        <td>${session.event_name || '-'}</td>
-                        <td>${session.plan_hash_value || '-'}</td>
-                        <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${session.sql_text || ''}">${session.sql_text || '-'}</div></td>
-                        <td>${session.machine_name || '-'}</td>
-                        <td>${session.osuser || '-'}</td>
-                        <td>${session.username || '-'}</td>
-                        <td>${session.program_name || '-'}</td>
+                        <td>${dbagentEsc(session.sql_id || '-')}</td>
+                        <td>${dbagentEsc(session.event_name || '-')}</td>
+                        <td>${dbagentEsc(session.plan_hash_value || '-')}</td>
+                        <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${dbagentEsc(session.sql_text || '')}">${dbagentEsc(session.sql_text || '-')}</div></td>
+                        <td>${dbagentEsc(session.machine_name || '-')}</td>
+                        <td>${dbagentEsc(session.osuser || '-')}</td>
+                        <td>${dbagentEsc(session.username || '-')}</td>
+                        <td>${dbagentEsc(session.program_name || '-')}</td>
                     </tr>
                 `;
             });
@@ -2287,22 +2341,22 @@ let layoutHTML = "";
             // always painting the healthy "online" green.
             const statusClass = (r.status || '').toUpperCase() === 'ACTIVE' ? 'online' : 'offline';
             return `
-            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${r.sid}" data-serial="${r.serial || ''}" data-sql_id="${r.sql_id || ''}">
-                <td>${r.db_name || '-'}</td>
-                <td><span class="status-badge ${statusClass}">${r.status || '-'}</span></td>
-                <td>${r.sid}</td>
-                <td>${r.serial}</td>
-                <td>${r.server_pid || '-'}</td>
+            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${dbagentEsc(r.sid)}" data-serial="${dbagentEsc(r.serial || '')}" data-sql_id="${dbagentEsc(r.sql_id || '')}">
+                <td>${dbagentEsc(r.db_name || '-')}</td>
+                <td><span class="status-badge ${statusClass}">${dbagentEsc(r.status || '-')}</span></td>
+                <td>${dbagentEsc(r.sid)}</td>
+                <td>${dbagentEsc(r.serial)}</td>
+                <td>${dbagentEsc(r.server_pid || '-')}</td>
                 <td>${durationHtml}</td>
                 <td>${waitHtml}</td>
-                <td>${r.sql_id || '-'}</td>
-                <td>${r.event_name || '-'}</td>
-                <td>${r.plan_hash_value || '-'}</td>
-                <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${r.sql_text || ''}">${r.sql_text || '-'}</div></td>
-                <td>${r.machine_name || '-'}</td>
-                <td>${r.osuser || '-'}</td>
-                <td>${r.username || '-'}</td>
-                <td>${r.program_name || '-'}</td>
+                <td>${dbagentEsc(r.sql_id || '-')}</td>
+                <td>${dbagentEsc(r.event_name || '-')}</td>
+                <td>${dbagentEsc(r.plan_hash_value || '-')}</td>
+                <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${dbagentEsc(r.sql_text || '')}">${dbagentEsc(r.sql_text || '-')}</div></td>
+                <td>${dbagentEsc(r.machine_name || '-')}</td>
+                <td>${dbagentEsc(r.osuser || '-')}</td>
+                <td>${dbagentEsc(r.username || '-')}</td>
+                <td>${dbagentEsc(r.program_name || '-')}</td>
             </tr>
         `;
         }).join('');
@@ -2325,7 +2379,7 @@ let layoutHTML = "";
         }
         const esc = v => (v === null || v === undefined || v === '') ? '-' : String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         tbody.innerHTML = rows.map(r => `
-            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${esc(r.sid)}" data-serial="${esc(r.serial)}" data-sql_id="${r.sql_id || ''}">
+            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${esc(r.sid)}" data-serial="${esc(r.serial)}" data-sql_id="${dbagentEsc(r.sql_id || '')}">
                 <td><span class="status-badge ${r.direction === 'OUT' ? 'remote-out' : 'online'}" title="${r.direction === 'OUT' ? '이 DB → 원격 DB 호출 중' : '원격 DB → 이 DB 접속'}">${esc(r.direction)}</span></td>
                 <td>${esc(r.db_name)}</td>
                 <td>${esc(r.status)}</td>
@@ -2355,18 +2409,18 @@ let layoutHTML = "";
             return;
         }
         tbody.innerHTML = rows.map(r => `
-            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${r.sid}" data-serial="${r.serial || ''}" data-sql_id="">
-                <td>${r.qcsid != null ? r.qcsid : '-'}</td>
-                <td>${r.qcserial != null ? r.qcserial : '-'}</td>
-                <td>${r.sid}</td>
-                <td>${r.serial}</td>
-                <td>${r.server_number != null ? r.server_number : '-'}</td>
-                <td>${r.degree != null ? r.degree : '-'}</td>
-                <td>${r.req_degree != null ? r.req_degree : '-'}</td>
-                <td>${r.username || '-'}</td>
-                <td>${r.status || '-'}</td>
-                <td>${r.program || '-'}</td>
-                <td>${r.machine || '-'}</td>
+            <tr class="clickable-session-row" style="cursor:pointer;" data-sid="${dbagentEsc(r.sid)}" data-serial="${dbagentEsc(r.serial || '')}" data-sql_id="">
+                <td>${r.qcsid != null ? dbagentEsc(r.qcsid) : '-'}</td>
+                <td>${r.qcserial != null ? dbagentEsc(r.qcserial) : '-'}</td>
+                <td>${dbagentEsc(r.sid)}</td>
+                <td>${dbagentEsc(r.serial)}</td>
+                <td>${r.server_number != null ? dbagentEsc(r.server_number) : '-'}</td>
+                <td>${r.degree != null ? dbagentEsc(r.degree) : '-'}</td>
+                <td>${r.req_degree != null ? dbagentEsc(r.req_degree) : '-'}</td>
+                <td>${dbagentEsc(r.username || '-')}</td>
+                <td>${dbagentEsc(r.status || '-')}</td>
+                <td>${dbagentEsc(r.program || '-')}</td>
+                <td>${dbagentEsc(r.machine || '-')}</td>
             </tr>
         `).join('');
         fitSessListScroll(tbody);
@@ -2387,15 +2441,15 @@ let layoutHTML = "";
         }
         tbody.innerHTML = rows.map(r => `
             <tr>
-                <td>${r.local_tran_id || '-'}</td>
-                <td>${r.global_tran_id || '-'}</td>
-                <td>${r.state || '-'}</td>
-                <td>${r.mixed || '-'}</td>
-                <td>${r.tran_comment || '-'}</td>
-                <td>${r.host || '-'}</td>
-                <td>${r.fail_time || '-'}</td>
-                <td>${r.retry_time || '-'}</td>
-                <td>${r.os_user || '-'}</td>
+                <td>${dbagentEsc(r.local_tran_id || '-')}</td>
+                <td>${dbagentEsc(r.global_tran_id || '-')}</td>
+                <td>${dbagentEsc(r.state || '-')}</td>
+                <td>${dbagentEsc(r.mixed || '-')}</td>
+                <td>${dbagentEsc(r.tran_comment || '-')}</td>
+                <td>${dbagentEsc(r.host || '-')}</td>
+                <td>${dbagentEsc(r.fail_time || '-')}</td>
+                <td>${dbagentEsc(r.retry_time || '-')}</td>
+                <td>${dbagentEsc(r.os_user || '-')}</td>
             </tr>
         `).join('');
         fitSessListScroll(tbody);
@@ -2983,9 +3037,9 @@ let layoutHTML = "";
         container.innerHTML = items.map((it, i) => {
             const hidden = ashTopSqlHiddenSqlIds.has(sqlCategories[i].sql_id);
             return `
-            <span class="ash-topsql-legend-item" data-sql-id="${sqlCategories[i].sql_id}" title="SQL_ID ${sqlCategories[i].sql_id} - 클릭: 이 SQL 숨기기/보이기 (드래그 조회에서도 제외)" style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; cursor:pointer; user-select:none; color: ${hidden ? 'var(--text-muted)' : 'var(--text-main)'}; opacity:${hidden ? '0.45' : '1'};">
+            <span class="ash-topsql-legend-item" data-sql-id="${dbagentEsc(sqlCategories[i].sql_id)}" title="SQL_ID ${dbagentEsc(sqlCategories[i].sql_id)} - 클릭: 이 SQL 숨기기/보이기 (드래그 조회에서도 제외)" style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; cursor:pointer; user-select:none; color: ${hidden ? 'var(--text-muted)' : 'var(--text-main)'}; opacity:${hidden ? '0.45' : '1'};">
                 <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${it.color}; flex:none;"></span>
-                ${it.label}
+                ${dbagentEsc(it.label)}
             </span>`;
         }).join('') + `
             <span id="ash-topsql-other-legend" style="display:flex; align-items:center; gap:5px; font-size:0.78rem; font-weight:600; color: var(--text-main); cursor:pointer;">
@@ -3158,12 +3212,12 @@ let layoutHTML = "";
                     <div style="display:flex; align-items:center; gap:8px; padding:4px 0; font-size:0.82rem;">
                         <span style="width:20px; color: var(--text-muted); text-align:right;">${i + 1}.</span>
                         <span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:${color}; flex:none;"></span>
-                        <span style="width:90px; color: var(--text-main); font-family: monospace;">${it.label}</span>
+                        <span style="width:90px; color: var(--text-main); font-family: monospace;">${dbagentEsc(it.label)}</span>
                         <span style="flex:1; background: var(--bg-card); border-radius:3px; height:14px; overflow:hidden;">
                             <span style="display:block; width:${barPct}%; height:100%; background:${color};"></span>
                         </span>
                         <span style="width:50px; text-align:right; color: var(--text-main);">${it.pct.toFixed(1)}%</span>
-                        <span style="width:70px; color: var(--text-secondary);">${it.category}</span>
+                        <span style="width:70px; color: var(--text-secondary);">${dbagentEsc(it.category)}</span>
                     </div>
                 `;
             }).join('');
@@ -3445,23 +3499,23 @@ let layoutHTML = "";
                     waitHtml = `<div style="display: flex; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; background-color: var(--track-bg);" title="CPU: ${cpu}%, User I/O: ${uio}%, Sys I/O: ${sio}%, Latch: ${latch}%, TX Lock: ${txlock}%, TM Lock: ${tmlock}%, Other: ${other}%"><div style="width: ${cpu}%; background-color: #22d3ee;" title="CPU: ${cpu}%"></div><div style="width: ${uio}%; background-color: #2ecc71;" title="User I/O: ${uio}%"></div><div style="width: ${sio}%; background-color: #e67e22;" title="Sys I/O: ${sio}%"></div><div style="width: ${latch}%; background-color: #808000;" title="Latch: ${latch}%"></div><div style="width: ${txlock}%; background-color: #7c3aed;" title="TX Lock: ${txlock}%"></div><div style="width: ${tmlock}%; background-color: #be123c;" title="TM Lock: ${tmlock}%"></div><div style="width: ${other}%; background-color: var(--text-muted);" title="Other: ${other}%"></div></div>`;
                 }
             }
-            return `<tr class="clickable-session-row" style="cursor:pointer;" data-sid="${s.sid}" data-serial="${s.serial || ''}" data-sql_id="${s.sql_id || ''}">
-                <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="${checkboxClass}" data-sid="${s.sid}" data-serial="${s.serial}"></td>
-                <td>${s.db_name || '-'}</td>
-                <td><span class="status-badge online">${s.status}</span></td>
-                <td>${s.sid}</td>
-                <td>${s.serial}</td>
-                <td>${s.server_pid || '-'}</td>
+            return `<tr class="clickable-session-row" style="cursor:pointer;" data-sid="${dbagentEsc(s.sid)}" data-serial="${dbagentEsc(s.serial || '')}" data-sql_id="${dbagentEsc(s.sql_id || '')}">
+                <td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="${checkboxClass}" data-sid="${dbagentEsc(s.sid)}" data-serial="${dbagentEsc(s.serial)}"></td>
+                <td>${dbagentEsc(s.db_name || '-')}</td>
+                <td><span class="status-badge online">${dbagentEsc(s.status)}</span></td>
+                <td>${dbagentEsc(s.sid)}</td>
+                <td>${dbagentEsc(s.serial)}</td>
+                <td>${dbagentEsc(s.server_pid || '-')}</td>
                 <td>${durationHtml}</td>
                 <td>${waitHtml}</td>
-                <td>${s.sql_id || '-'}</td>
-                <td>${s.event_name || '-'}</td>
-                <td>${s.plan_hash_value || '-'}</td>
-                <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${s.sql_text || ''}">${s.sql_text || '-'}</div></td>
-                <td>${s.machine_name || '-'}</td>
-                <td>${s.osuser || '-'}</td>
-                <td>${s.username || '-'}</td>
-                <td>${s.program_name || '-'}</td>
+                <td>${dbagentEsc(s.sql_id || '-')}</td>
+                <td>${dbagentEsc(s.event_name || '-')}</td>
+                <td>${dbagentEsc(s.plan_hash_value || '-')}</td>
+                <td><div style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${dbagentEsc(s.sql_text || '')}">${dbagentEsc(s.sql_text || '-')}</div></td>
+                <td>${dbagentEsc(s.machine_name || '-')}</td>
+                <td>${dbagentEsc(s.osuser || '-')}</td>
+                <td>${dbagentEsc(s.username || '-')}</td>
+                <td>${dbagentEsc(s.program_name || '-')}</td>
             </tr>`;
         }).join('');
     }
@@ -3641,7 +3695,7 @@ let layoutHTML = "";
             if (fetchingHealthForDbId === dbId) return true; // 이전 호출 진행 중 - 판단 보류, 나머지는 평소대로 진행
             fetchingHealthForDbId = dbId;
             try {
-                const hRes = await fetch(`/api/health?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+                const hRes = await dbagentFetch(`/api/health?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
                 if (dbId !== window.currentDbId) return true; // stale: user switched DBs while this was in flight
                 if (hRes.ok) {
                     const hData = await hRes.json();
@@ -3708,16 +3762,20 @@ let layoutHTML = "";
             fetchingLocksForDbId = dbId;
             try {
                 const [tmResponse, failResponse] = await Promise.all([
-                    fetch(`/api/tmlock?db_id=${dbId}&token=${encodeURIComponent(getToken())}`),
-                    fetch(`/api/failure_prob?db_id=${dbId}&token=${encodeURIComponent(getToken())}`)
+                    dbagentFetch(`/api/tmlock?db_id=${dbId}&token=${encodeURIComponent(getToken())}`),
+                    dbagentFetch(`/api/failure_prob?db_id=${dbId}&token=${encodeURIComponent(getToken())}`)
                 ]);
                 if (dbId !== window.currentDbId) return; // stale: user switched DBs while this was in flight
 
-                let tmLockCount = 0;
-                let txLockCount = 0;
+                // 조회 실패를 0으로 내리지 않는다(2026-10-09 점검 수정 F-8) - Lock 건수는 null(= "--"), 장애확률은 null(= "판단 보류").
+                let tmLockCount = null;
+                let txLockCount = null;
                 if (tmResponse.ok) {
                     const tmData = await tmResponse.json();
-                    if (tmData && !tmData.error) {
+                    if (dbId !== window.currentDbId) return;
+                    if (Array.isArray(tmData)) {
+                        tmLockCount = 0;
+                        txLockCount = 0;
                         tmData.forEach(h => {
                             if (h.lock_type === 'TM') tmLockCount++;
                             else if (h.lock_type === 'TX') txLockCount++;
@@ -3731,15 +3789,17 @@ let layoutHTML = "";
                     }
                 }
 
-                let count = 0;
+                let count = null;
                 if (failResponse.ok) {
                     const failData = await failResponse.json();
-                    if (failData && failData.count !== undefined) {
+                    if (dbId !== window.currentDbId) return;
+                    if (failData && !failData.error && failData.count !== undefined) {
                         count = failData.count;
                     }
                 }
-                
-                let percentage = 0;
+
+                // count가 null이면 조회 실패 - 0%로 내리지 않고 "판단 보류"
+                let percentage = count === null ? null : 0;
                 if (count === 1) percentage = 30;
                 else if (count === 2) percentage = 40;
                 else if (count === 3) percentage = 50;
@@ -3747,34 +3807,41 @@ let layoutHTML = "";
                 else if (count === 5) percentage = 70;
                 else if (count === 6) percentage = 80;
                 else if (count >= 7) percentage = 90;
-                
+
                 const failCtx = document.getElementById('dash-fail-chart');
                 const failVal = document.getElementById('dash-fail-val');
                 const failCountLabel = document.getElementById('dash-fail-count');
-                
+
                 if (failCtx && failVal) {
-                    failVal.textContent = percentage + '%';
+                    failVal.textContent = percentage === null ? '판단 보류' : percentage + '%';
                     if (failCountLabel) {
-                        failCountLabel.textContent = `[TM Lock ${tmLockCount} EA / TX Lock ${txLockCount} EA]`;
+                        const tmTxt = tmLockCount === null ? '--' : tmLockCount;
+                        const txTxt = txLockCount === null ? '--' : txLockCount;
+                        failCountLabel.textContent = `[TM Lock ${tmTxt} EA / TX Lock ${txTxt} EA]`;
                     }
-                    if (percentage >= 80) document.body.classList.add('alert-blink');
-                    else document.body.classList.remove('alert-blink');
+                    // 판단 보류일 때 alert-blink는 이전 상태를 그대로 둔다(끄지도 켜지도 않음)
+                    if (percentage !== null) {
+                        if (percentage >= 80) document.body.classList.add('alert-blink');
+                        else document.body.classList.remove('alert-blink');
+                    }
 
                     const incidentBtn = document.getElementById('dash-incident-action-btn');
-                    if (incidentBtn) incidentBtn.style.display = (percentage >= 80 && isAdmin()) ? 'block' : 'none';
+                    if (incidentBtn) incidentBtn.style.display = (percentage !== null && percentage >= 80 && isAdmin()) ? 'block' : 'none';
 
 
+                    const shown = percentage === null ? 0 : percentage;
                     let failColor = '#0ca30c';
-                    if (percentage >= 70) failColor = '#d03b3b';
-                    else if (percentage >= 50) failColor = '#fab219';
-                    
+                    if (percentage === null) failColor = 'var(--text-muted)';
+                    else if (shown >= 70) failColor = '#d03b3b';
+                    else if (shown >= 50) failColor = '#fab219';
+
                     const segments = 10;
-                    const activeSegments = Math.round((percentage / 100) * segments);
+                    const activeSegments = Math.round((shown / 100) * segments);
                     const bgColors = Array(segments).fill(chartLineColor(0.1));
                     for(let i=0; i<activeSegments; i++) bgColors[i] = failColor;
                     
                     if (!dashFailChart) {
-                        dashFailChart = createSegmentedDoughnutChart(failCtx, percentage, failColor);
+                        dashFailChart = createSegmentedDoughnutChart(failCtx, shown, failColor);
                     } else {
                         dashFailChart.data.datasets[0].backgroundColor = bgColors;
                         dashFailChart.update();
@@ -3782,6 +3849,13 @@ let layoutHTML = "";
                 }
             } catch (e) {
                 console.error('Dashboard fetchLocks error:', e);
+                // 예외도 0%로 두지 않는다 - 판단 보류 표시(alert-blink는 이전 상태 유지)
+                if (dbId === window.currentDbId) {
+                    const fv = document.getElementById('dash-fail-val');
+                    const fc = document.getElementById('dash-fail-count');
+                    if (fv) fv.textContent = '판단 보류';
+                    if (fc) fc.textContent = '[TM Lock -- EA / TX Lock -- EA]';
+                }
             } finally {
                 if (fetchingLocksForDbId === dbId) fetchingLocksForDbId = null;
             }
@@ -3792,7 +3866,7 @@ let layoutHTML = "";
             if (fetchingSessionDataForDbId === dbId) return;
             fetchingSessionDataForDbId = dbId;
             try {
-                const sessResponse = await fetch(`/api/session?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
+                const sessResponse = await dbagentFetch(`/api/session?db_id=${dbId}&token=${encodeURIComponent(getToken())}`);
                 if (dbId !== window.currentDbId) return; // stale: user switched DBs while this was in flight
                 if (sessResponse.ok) {
                     const sessData = await sessResponse.json();
@@ -3843,8 +3917,8 @@ let layoutHTML = "";
                                 let html = '';
                                 eventData.forEach(e => {
                                     html += `<tr>
-                                        <td>${e.event}</td>
-                                        <td>${e.count}</td>
+                                        <td>${dbagentEsc(e.event)}</td>
+                                        <td>${dbagentEsc(e.count)}</td>
                                     </tr>`;
                                 });
                                 tbody.innerHTML = html;
@@ -3921,9 +3995,19 @@ let layoutHTML = "";
         console.error('Failed to load polling interval, using default:', e);
     }
 
+    // 탭이 가려져 있으면 폴링을 건너뛴다(2026-10-09 점검 수정 F-10) - 가려진 탭에서 2초마다 5종을 조회하던 운영 DB 부하 방지.
+    function fetchDashboardIfVisible() {
+        if (document.hidden) return;
+        fetchDashboard();
+    }
+    // 탭이 다시 보이면 기다리지 않고 즉시 한 번 갱신(자동 갱신 중일 때만)
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && isDashboardAutoRefreshing) fetchDashboard();
+    });
+
     function startDashboardPolling() {
         fetchDashboard();
-        dashboardPollingTimer = setInterval(fetchDashboard, dashboardPollingIntervalMs);
+        dashboardPollingTimer = setInterval(fetchDashboardIfVisible, dashboardPollingIntervalMs);
         isDashboardAutoRefreshing = true;
         if (dashToggleBtn) {
             dashToggleBtn.textContent = '자동 갱신 중지';
@@ -4683,6 +4767,8 @@ setInterval(() => {
     // "1. ..." 이나 소수점 "2.5")는 문장 끝이 아니므로 lookbehind로 제외.
     function formatSqlTuningAnswer(text) {
         if (!text) return '';
+        // LLM 답변을 먼저 이스케이프한다(2026-10-09 점검 수정 F-4) - &,<,>,",'는 마침표·숫자와 무관해 아래 치환 규칙에 영향이 없다.
+        text = dbagentEsc(text);
         if (text.indexOf('\n') !== -1) {
             return text.replace(/\n/g, '<br/>');
         }
@@ -4707,7 +4793,7 @@ setInterval(() => {
             .then(data => {
                 sqlTuningBtn.disabled = false;
                 if (data.success === false) {
-                    sqlTuningResult.innerHTML = `<div style="color: #d03b3b;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
+                    sqlTuningResult.innerHTML = `<div style="color: #d03b3b;">${dbagentEsc(data.message || '분석 중 오류가 발생했습니다.')}</div>`;
                     return;
                 }
                 const formatted = formatSqlTuningAnswer(data.answer);
@@ -4882,7 +4968,7 @@ setInterval(() => {
             const data = await res.json();
             const accounts = data.accounts || [];
             const previous = tunnerCurrentAccountSelect.value;
-            tunnerCurrentAccountSelect.innerHTML = accounts.map(a => `<option value="${a}">${a}</option>`).join('');
+            tunnerCurrentAccountSelect.innerHTML = accounts.map(a => `<option value="${dbagentEsc(a)}">${dbagentEsc(a)}</option>`).join('');
             if (accounts.includes(previous)) {
                 tunnerCurrentAccountSelect.value = previous;
             }
@@ -4930,7 +5016,7 @@ setInterval(() => {
             .then(data => {
                 tunnerCurrentQuickCheckBtn.disabled = false;
                 if (data.success === false) {
-                    tunnerCurrentResult.innerHTML = `<div style="color: #d03b3b;">${data.message || '점검 중 오류가 발생했습니다.'}</div>`;
+                    tunnerCurrentResult.innerHTML = `<div style="color: #d03b3b;">${dbagentEsc(data.message || '점검 중 오류가 발생했습니다.')}</div>`;
                     return;
                 }
                 tunnerCurrentLastPlan = data.plan;
@@ -4975,7 +5061,7 @@ setInterval(() => {
             .then(data => {
                 tunnerCurrentAnalyzeBtn.disabled = false;
                 if (data.success === false) {
-                    analysisEl.innerHTML = `<div style="color: #d03b3b; margin-top: 16px;">${data.message || '분석 중 오류가 발생했습니다.'}</div>`;
+                    analysisEl.innerHTML = `<div style="color: #d03b3b; margin-top: 16px;">${dbagentEsc(data.message || '분석 중 오류가 발생했습니다.')}</div>`;
                     return;
                 }
                 // current-sql.md 는 "### 1. 실측 요약" 같은 마크다운 4단 구조를 강제하므로 줄바꿈만
@@ -5390,7 +5476,7 @@ setInterval(() => {
             const data = await res.json();
             const accounts = data.accounts || [];
             const previous = sqlWriterAccountSelect.value;
-            sqlWriterAccountSelect.innerHTML = accounts.map(a => `<option value="${a}">${a}</option>`).join('');
+            sqlWriterAccountSelect.innerHTML = accounts.map(a => `<option value="${dbagentEsc(a)}">${dbagentEsc(a)}</option>`).join('');
             if (accounts.includes(previous)) sqlWriterAccountSelect.value = previous;
         } catch (e) {
             console.error('Failed to load AI SQL 작성기 accounts:', e);
@@ -5689,7 +5775,7 @@ setInterval(() => {
             .then(data => {
                 sqlWriterGenerateBtn.disabled = false;
                 if (data.success === false) {
-                    sqlWriterResult.innerHTML = `<div style="color: #d03b3b;">${data.message || 'SQL 생성 중 오류가 발생했습니다.'}</div>`;
+                    sqlWriterResult.innerHTML = `<div style="color: #d03b3b;">${dbagentEsc(data.message || 'SQL 생성 중 오류가 발생했습니다.')}</div>`;
                     return;
                 }
                 const sql = extractSqlWriterCode(data.answer);
@@ -5789,9 +5875,9 @@ setInterval(() => {
                         </div>
                     `;
                 } else if (data.error) {
-                    errorSearchResult.innerHTML = `<div style="color: #d03b3b; text-align: center; margin-top: 50px;">오류: ${data.error}</div>`;
+                    errorSearchResult.innerHTML = `<div style="color: #d03b3b; text-align: center; margin-top: 50px;">오류: ${dbagentEsc(data.error)}</div>`;
                 } else {
-                    errorSearchResult.innerHTML = `<div style="color: var(--text-secondary); text-align: center; margin-top: 50px;">${data.message || '결과를 찾을 수 없습니다.'}</div>`;
+                    errorSearchResult.innerHTML = `<div style="color: var(--text-secondary); text-align: center; margin-top: 50px;">${dbagentEsc(data.message || '결과를 찾을 수 없습니다.')}</div>`;
                 }
             } catch (err) {
                 errorSearchResult.innerHTML = `<div style="color: #d03b3b; text-align: center; margin-top: 50px;">서버 통신 오류가 발생했습니다.</div>`;
@@ -5942,7 +6028,7 @@ setInterval(() => {
             const data = await res.json();
             const accounts = data.accounts || [];
             const previous = sqlRunnerAccountSelect.value;
-            sqlRunnerAccountSelect.innerHTML = accounts.map(a => `<option value="${a}">${a}</option>`).join('');
+            sqlRunnerAccountSelect.innerHTML = accounts.map(a => `<option value="${dbagentEsc(a)}">${dbagentEsc(a)}</option>`).join('');
             if (accounts.includes(previous)) {
                 sqlRunnerAccountSelect.value = previous;
             }

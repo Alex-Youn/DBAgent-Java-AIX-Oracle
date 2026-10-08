@@ -142,8 +142,13 @@ public class InstanceMetricSamplerService {
         // 병렬 스레드 여러 개가 동시에 SQLite에 쓰면 그 순간 들어온 사용자 요청이 뒤에 줄을 선다
         // (오케스트레이터 실측: 신규 대시보드 → 기존 대시보드 전환 시 busy, 2026-09-18). 순차로 쓰면
         // 병렬화 이전과 동일하게 샘플러가 SQLite 커넥션을 한 번에 하나씩만 잡는다.
+        // (2026-10-09 점검 수정 A2-2) DB별로 격리 - 한 DB의 기록 예외(SQLite busy 등)가 뒤 DB들의 이번 사이클 기록을 통째로 버리지 않게 한다.
         for (CompletableFuture<SampleResult> f : futures) {
-            recordIfPresent(f.join());
+            try {
+                recordIfPresent(f.join());
+            } catch (Exception e) {
+                log.warn("Instance metric record failed (next DB continues): {}", e.toString());
+            }
         }
     }
 
@@ -231,8 +236,20 @@ public class InstanceMetricSamplerService {
 
     private void recordIfPresent(SampleResult r) {
         if (r == null) return;
-        historyService.record(r.instanceId, "cpu_pct", r.sampledAt, r.cpuPct);
-        historyService.record(r.instanceId, "db_time_aas", r.sampledAt, r.dbTimeAas);
+        // 시계열(history) 기록이 예외로 끝나도 성능 분석 저장(savePerf)은 이어서 한다 - ASH watermark는 이미 전진해 있어서
+        // 여기서 중단하면 그 구간의 perf 데이터가 영구 유실된다(2026-10-09 점검 수정 A2-2).
+        try {
+            recordHistory(r);
+        } catch (Exception e) {
+            log.warn("Instance metric history write failed for db_id={}: {}", r.instanceId, e.toString());
+        }
+        savePerf(r.instanceId, r.perf, r.sampledAt);
+    }
+
+    private void recordHistory(SampleResult r) {
+        // 값이 없으면(조회 실패, 행 없음) 기록하지 않는다 - 0으로 남기면 부하 없음처럼 보인다(2026-10-09 점검 수정 A2-3)
+        if (r.cpuPct != null) historyService.record(r.instanceId, "cpu_pct", r.sampledAt, r.cpuPct);
+        if (r.dbTimeAas != null) historyService.record(r.instanceId, "db_time_aas", r.sampledAt, r.dbTimeAas);
         if (r.tmLockWaiting >= 0) { // -1 = 락 스캔 실패(sampleOne)
             historyService.record(r.instanceId, "tm_lock_waiting", r.sampledAt, r.tmLockWaiting);
             historyService.record(r.instanceId, "tx_lock_waiting", r.sampledAt, r.txLockWaiting);
@@ -251,7 +268,6 @@ public class InstanceMetricSamplerService {
                 historyService.record(r.instanceId, ASH_WC_METRIC_NAMES[i], r.sampledAt, r.ashWaitClassAas[i]);
             }
         }
-        savePerf(r.instanceId, r.perf, r.sampledAt);
     }
 
     /** 성능 분석 저장소 기록 - 실패해도 다른 수집값에는 영향 없게 삼킨다. */
@@ -275,15 +291,26 @@ public class InstanceMetricSamplerService {
 
     private SampleResult sampleOne(TargetDbConfig target, long sampledAt) {
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
-            double numCpus = 1;
+            // (2026-10-09 점검 수정 A2-14) v$osstat, v$sysmetric 등 가벼운 조회에도 타임아웃 - 락 스캔 직전에 락 전용 값으로 다시 건다.
+            st.setQueryTimeout(settings.getInt(SettingKey.SCREEN_QUERY_TIMEOUT_SECONDS));
+            // (2026-10-09 점검 수정 A2-3) 값이 없으면 기본값(numCpus=1, 0)으로 계산하지 않고 null - 기록하지 않는다.
+            // v$sysmetric은 group_id=2(60초 구간) 한 종류만 읽는다(15초 구간 group_id=3과 섞이면 첫 행이 불확정).
+            Double numCpus = null;
             try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
-                if (rs.next()) numCpus = rs.getDouble(1);
+                if (rs.next()) {
+                    double v = rs.getDouble(1);
+                    if (!rs.wasNull()) numCpus = v;
+                }
             }
-            double cpuUsage = 0;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'CPU Usage Per Sec'")) {
-                if (rs.next()) cpuUsage = rs.getDouble(1);
+            Double cpuUsage = null;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'CPU Usage Per Sec' AND group_id = 2 ORDER BY end_time DESC")) {
+                if (rs.next()) {
+                    double v = rs.getDouble(1);
+                    if (!rs.wasNull()) cpuUsage = v;
+                }
             }
-            double cpuPct = numCpus > 0 ? Math.round((cpuUsage / numCpus) * 100.0) / 100.0 : 0;
+            Double cpuPct = (numCpus != null && cpuUsage != null && numCpus > 0)
+                    ? Double.valueOf(Math.round((cpuUsage / numCpus) * 100.0) / 100.0) : null;
             // 차트의 CPU 기준선(ash_cpu_cores)도 CPU%의 분모와 같은 NUM_CPUS - 2026-09-28 NUM_CPU_CORES에서 변경,
             // 이유는 CpuCores 주석 참고.
             double cpuCores = CpuCores.query(conn);
@@ -294,9 +321,12 @@ public class InstanceMetricSamplerService {
             } catch (SQLException ignored) {
             }
 
-            double dbTimeAas = 0;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'Average Active Sessions'")) {
-                if (rs.next()) dbTimeAas = rs.getDouble(1);
+            Double dbTimeAas = null;
+            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'Average Active Sessions' AND group_id = 2 ORDER BY end_time DESC")) {
+                if (rs.next()) {
+                    double v = rs.getDouble(1);
+                    if (!rs.wasNull()) dbTimeAas = v;
+                }
             }
 
             int tmLockWaiting = 0;
@@ -351,13 +381,16 @@ public class InstanceMetricSamplerService {
     /** "SELECT SYSDATE"로 DB 시각과 앱 시각 차이를 잰다(쿼리 전후 시각의 중간값 기준). */
     private long refreshClockOffset(Connection conn, String dbId) throws SQLException {
         long before = System.currentTimeMillis();
-        try (Statement s = conn.createStatement(); ResultSet rs = s.executeQuery("SELECT SYSDATE FROM dual")) {
-            if (rs.next()) {
-                long after = System.currentTimeMillis();
-                Timestamp dbNow = rs.getTimestamp(1);
-                long offset = dbNow.getTime() - (before + after) / 2;
-                dbClockOffsetMs.put(dbId, offset);
-                return offset;
+        try (Statement s = conn.createStatement()) {
+            s.setQueryTimeout(AshRange.META_QUERY_TIMEOUT_SECONDS); // 2026-10-09 점검 수정 A2-14
+            try (ResultSet rs = s.executeQuery("SELECT SYSDATE FROM dual")) {
+                if (rs.next()) {
+                    long after = System.currentTimeMillis();
+                    Timestamp dbNow = rs.getTimestamp(1);
+                    long offset = dbNow.getTime() - (before + after) / 2;
+                    dbClockOffsetMs.put(dbId, offset);
+                    return offset;
+                }
             }
         }
         Long cached = dbClockOffsetMs.get(dbId);
@@ -366,8 +399,11 @@ public class InstanceMetricSamplerService {
 
     /** 현재 ASH의 최신 sample_id(v$ash_info), 못 읽으면 -1. 활성 세션이 없던 초도 번호는 올라가므로 분모로 쓸 수 있다. */
     private long latestAshSampleId(Connection conn) {
-        try (Statement s = conn.createStatement(); ResultSet rs = s.executeQuery("SELECT latest_sample_id FROM v$ash_info")) {
-            return rs.next() ? rs.getLong(1) : -1L;
+        try (Statement s = conn.createStatement()) {
+            s.setQueryTimeout(AshRange.META_QUERY_TIMEOUT_SECONDS); // 2026-10-09 점검 수정 A2-14
+            try (ResultSet rs = s.executeQuery("SELECT latest_sample_id FROM v$ash_info")) {
+                return rs.next() ? rs.getLong(1) : -1L;
+            }
         } catch (SQLException e) {
             return -1L;
         }
@@ -502,6 +538,7 @@ public class InstanceMetricSamplerService {
     private Map<Long, String> resolveUsernames(Connection conn, String dbId, java.util.Set<Long> ids) {
         ConcurrentHashMap<Long, String> cache = usernameCache.computeIfAbsent(dbId, k -> new ConcurrentHashMap<>());
         try (PreparedStatement ps = conn.prepareStatement("SELECT username FROM dba_users WHERE user_id = ?")) {
+            ps.setQueryTimeout(AshRange.META_QUERY_TIMEOUT_SECONDS); // 2026-10-09 점검 수정 A2-14
             for (Long id : ids) {
                 if (cache.containsKey(id)) continue;
                 ps.setLong(1, id);
@@ -569,14 +606,16 @@ public class InstanceMetricSamplerService {
             long offset = refreshClockOffset(conn, target.id());
             String dbNowMinute;
             String oldestMinute;
-            try (Statement s = conn.createStatement();
-                 ResultSet rs = s.executeQuery(
-                         "SELECT TO_CHAR(TRUNC(SYSDATE, 'MI'), 'YYYY-MM-DD HH24:MI'), " +
-                                 "TO_CHAR(TRUNC(CAST(MIN(sample_time) AS DATE), 'MI') + 1/1440, 'YYYY-MM-DD HH24:MI') " +
-                                 "FROM v$active_session_history")) {
-                if (!rs.next() || rs.getString(1) == null) return;
-                dbNowMinute = rs.getString(1);
-                oldestMinute = rs.getString(2); // 가장 오래된 샘플이 속한 분의 다음 분 - 그 분부터 온전하다
+            try (Statement s = conn.createStatement()) {
+                s.setQueryTimeout(BACKFILL_QUERY_TIMEOUT_SECONDS); // 2026-10-09 점검 수정 A2-14
+                try (ResultSet rs = s.executeQuery(
+                        "SELECT TO_CHAR(TRUNC(SYSDATE, 'MI'), 'YYYY-MM-DD HH24:MI'), " +
+                                "TO_CHAR(TRUNC(CAST(MIN(sample_time) AS DATE), 'MI') + 1/1440, 'YYYY-MM-DD HH24:MI') " +
+                                "FROM v$active_session_history")) {
+                    if (!rs.next() || rs.getString(1) == null) return;
+                    dbNowMinute = rs.getString(1);
+                    oldestMinute = rs.getString(2); // 가장 오래된 샘플이 속한 분의 다음 분 - 그 분부터 온전하다
+                }
             }
             // 이 분은 아직 진행 중이라 제외, lagMinutes만큼 최근 분도 제외(fillGaps - 정기 샘플 기록 전일 수 있음)
             LocalDateTime end = LocalDateTime.parse(dbNowMinute, BUCKET_FORMAT).minusMinutes(lagMinutes);
@@ -709,8 +748,8 @@ public class InstanceMetricSamplerService {
     private static final class SampleResult {
         final String instanceId;
         final long sampledAt;
-        final double cpuPct;
-        final double dbTimeAas;
+        final Double cpuPct; // 값 없음/조회 실패 시 null (2026-10-09 점검 수정 A2-3)
+        final Double dbTimeAas;
         final int tmLockWaiting;
         final int txLockWaiting;
         final double cpuCores;
@@ -719,7 +758,7 @@ public class InstanceMetricSamplerService {
         final double[] ashWaitClassAas; // 8분류(AshCategories.KEYS8 순서), ASH 조회 실패 시 null (2026-09-25)
         final PerfSample perf; // 성능 분석 수집, 실패 시 null (2026-09-26)
 
-        SampleResult(String instanceId, long sampledAt, double cpuPct, double dbTimeAas,
+        SampleResult(String instanceId, long sampledAt, Double cpuPct, Double dbTimeAas,
                      int tmLockWaiting, int txLockWaiting, double cpuCores, double cpuCoresPhys, double[] ashCategoryAas,
                      double[] ashWaitClassAas, PerfSample perf) {
             this.instanceId = instanceId;

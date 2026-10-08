@@ -76,6 +76,15 @@ public class DbConfigAdminController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Maps.of("success", false, "message", "관리자만 DB를 추가할 수 있습니다."));
         }
+        // 입력 검증 실패는 400 + 한국어 메시지 (2026-10-09 점검 수정 B-3/B-7). 서비스도 같은 검증을 한 번 더 한다.
+        String invalid = DatabaseConfigService.validateNewDbId(req.id());
+        if (invalid == null) {
+            invalid = DatabaseConfigService.validateConnectionFields(req.dbType(), req.port(), req.connectMode(),
+                    req.poolMinIdle(), req.poolMaxSize());
+        }
+        if (invalid != null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("success", false, "message", invalid));
+        }
         Map<String, Object> result = configService.createInstance(req.groupName(), req.id(), req.name(), req.dbType(),
                 req.host(), req.port(), req.sid(), req.user(), req.password(), req.connectMode(),
                 req.expectedInstanceName(), req.poolMinIdle(), req.poolMaxSize(), req.accounts(),
@@ -96,6 +105,12 @@ public class DbConfigAdminController {
         if (!authService.isAdmin(req.token())) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Maps.of("success", false, "message", "관리자만 DB를 수정할 수 있습니다."));
+        }
+        // 포트·풀 크기·DB 종류 검증 실패는 400 (2026-10-09 점검 수정 B-7). id 형식은 기존 등록분 호환을 위해 검사하지 않는다.
+        String invalid = DatabaseConfigService.validateConnectionFields(req.dbType(), req.port(), req.connectMode(),
+                req.poolMinIdle(), req.poolMaxSize());
+        if (invalid != null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("success", false, "message", invalid));
         }
         Map<String, Object> result = configService.updateInstance(id, req.name(), req.dbType(), req.host(),
                 req.port(), req.sid(), req.user(), req.password(), req.connectMode(), req.expectedInstanceName(),

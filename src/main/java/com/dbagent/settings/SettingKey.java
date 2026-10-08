@@ -154,7 +154,7 @@ public enum SettingKey {
     ACTIVE_ALERTS_TIMEOUT_SECONDS(d("dbagent.monitor.active-alerts-timeout-seconds", INT, "5", TIMEOUT, "활성 알림 조회 제한 시간",
             "활성 알림 집계 조회의 최대 대기 시간입니다.").unit("초").range(1, 120)),
     ORACLE_CONNECT_TIMEOUT_MS(d("dbagent.oracle.connect-timeout-ms", INT, "3000", TIMEOUT, "Oracle 접속 제한 시간",
-            "Oracle 새 커넥션을 수립하는 최대 시간입니다.").unit("ms").range(100, 60000)
+            "Oracle 새 커넥션을 수립하는 최대 시간입니다.").unit("ms").range(250, 60000)
             .danger().detail("저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫음). 너무 짧으면 실제 네트워크 지연에 정상 DB 를 접속 불가로 오인합니다.")
             .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 진행 중인 조회가 끝나도록 응답 대기 시간+30초(최소 60초) 뒤에 닫습니다.")),
     ORACLE_READ_TIMEOUT_MS(d("dbagent.oracle.read-timeout-ms", INT, "60000", TIMEOUT, "Oracle 응답 대기 시간",
@@ -163,7 +163,7 @@ public enum SettingKey {
                     + "저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫음).")
             .danger().warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 진행 중인 조회가 끝나도록 응답 대기 시간+30초(최소 60초) 뒤에 닫습니다.")),
     RDB_CONNECT_TIMEOUT_MS(d("dbagent.rdb.connect-timeout-ms", INT, "2000", TIMEOUT, "RDB 접속 제한 시간",
-            "MySQL·PostgreSQL 등 새 커넥션을 수립하는 최대 시간입니다.").unit("ms").range(100, 60000).danger()
+            "MySQL·PostgreSQL 등 새 커넥션을 수립하는 최대 시간입니다.").unit("ms").range(250, 60000).danger()
             .detail("저장하면 풀을 다시 만들어 다음 조회부터 적용됩니다(기존 풀은 진행 중인 조회가 끝날 시간을 준 뒤 닫음).")
             .warning("저장하면 풀을 다시 만듭니다: 다음 조회부터 새 설정으로 대상 DB 에 새로 접속하고, 기존 풀은 진행 중인 조회가 끝나도록 응답 대기 시간+30초(최소 60초) 뒤에 닫습니다.")),
     RDB_READ_TIMEOUT_MS(d("dbagent.rdb.read-timeout-ms", INT, "60000", TIMEOUT, "RDB 응답 대기 시간",
@@ -382,7 +382,9 @@ public enum SettingKey {
                 return ("true".equalsIgnoreCase(v) || "false".equalsIgnoreCase(v)) ? null : "true 또는 false 여야 합니다.";
             case URL:
                 // 스킴은 생략 가능(서비스가 normalizeUrl 에서 http:// 를 붙인다). 공백·제어문자만 막는다.
-                return v.matches("\\S+") ? null : "공백 없는 서버 주소를 입력하세요. 예) http://서버IP:9300";
+                // (2026-10-09 점검 수정) 스킴이 있으면 http/https 만 허용 - 공백만 없으면 어떤 스킴이든 통과하던 것을 좁힌다.
+                return (v.matches("^(https?://)?\\S+$") && (!v.contains("://") || v.matches("(?i)^https?://\\S+$")))
+                        ? null : "공백 없는 http:// 또는 https:// 서버 주소를 입력하세요. 예) http://서버IP:9300";
             case CSV:
                 if (this == CHECK_EXCLUDE_OWNERS) {
                     // CheckCollector 가 항목마다 [A-Za-z0-9_$#]+ 만 SQL 에 넣고 나머지는 조용히 빼므로, 저장 때부터 같은 규칙으로 막는다.

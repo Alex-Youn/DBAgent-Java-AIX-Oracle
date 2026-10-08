@@ -480,6 +480,21 @@ public class DatabaseConfigService {
         return new LinkedHashMap<>(unreadableInstances);
     }
 
+    /**
+     * db_id 정규화 규칙의 단일 출처 - 첫 쉼표 앞만 취하고 앞뒤 공백을 제거한다. 실제 DB를 찾는 findRow 와 권한 검사
+     * (AuthService.canAccessDb)가 반드시 같은 값을 쓰게 하려고 공용으로 뒀다. 검사값과 해석값이 다르면 "SECRET,x" 처럼
+     * 쉼표를 붙여 hidden_dbs 검사를 우회할 수 있다(2026-10-09 점검 수정 B-1).
+     * null 이면 빈 문자열을 돌려준다.
+     */
+    public static String normalizeDbId(String dbId) {
+        if (dbId == null) {
+            return "";
+        }
+        int comma = dbId.indexOf(',');
+        String first = comma >= 0 ? dbId.substring(0, comma) : dbId;
+        return first.trim();
+    }
+
     private Map<String, Object> findRow(String dbId) {
         if (dbId == null) {
             return null;
@@ -487,8 +502,8 @@ public class DatabaseConfigService {
         // Defensive: a request with a duplicated db_id query param (?db_id=x&db_id=x) gets bound by
         // Spring as a single comma-joined string ("x,x"), which would otherwise silently match no
         // instance and return null instead of resolving the one actually picked.
-        String normalized = dbId.indexOf(',') >= 0 ? dbId.substring(0, dbId.indexOf(',')) : dbId;
-        if (Strings.isBlank(normalized)) {
+        String normalized = normalizeDbId(dbId);
+        if (normalized.isEmpty()) {
             return null;
         }
         List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM db_instances WHERE id = ?", normalized);
@@ -605,13 +620,66 @@ public class DatabaseConfigService {
         return cipher.encrypt(plain);
     }
 
+    /** 지원하는 db_type - 풀 매니저(Oracle/Rdb)와 모니터 코드가 실제로 분기하는 값만 허용한다. */
+    private static final java.util.Set<String> SUPPORTED_DB_TYPES = new java.util.HashSet<String>(
+            java.util.Arrays.asList("oracle", "mysql", "mariadb", "postgres", "mssql", "cubrid"));
+    private static final java.util.regex.Pattern DB_ID_PATTERN = java.util.regex.Pattern.compile("^[A-Za-z0-9._-]{1,64}$");
+
+    /**
+     * 새로 등록하는 DB id 검증(2026-10-09 점검 수정 B-3). 쉼표가 들어가면 findRow 가 첫 쉼표 앞만 취해 엉뚱한 DB에 붙고,
+     * 공백·슬래시는 URL 경로에서 깨진다. 이미 등록된 id 는 건드리지 않는다(수정·삭제 경로는 검증하지 않음).
+     * 문제가 없으면 null, 있으면 사용자용 한국어 메시지.
+     */
+    public static String validateNewDbId(String id) {
+        if (id == null || id.isEmpty()) {
+            return "ID는 필수입니다.";
+        }
+        if (!DB_ID_PATTERN.matcher(id).matches()) {
+            return "ID는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)만 사용할 수 있고 1~64자여야 합니다 (쉼표·공백·슬래시 불가).";
+        }
+        return null;
+    }
+
+    /**
+     * db_type / port / 풀 크기 검증(2026-10-09 점검 수정 B-7). 풀 크기가 0 이하이거나 min > max 면 Hikari 가 예외를 던져 그 DB의
+     * 모든 요청이 500 이 되고 화면에서 고칠 수도 없다. null 인 값(미지정)은 기본값을 쓰므로 통과시킨다.
+     * 문제가 없으면 null, 있으면 사용자용 한국어 메시지.
+     */
+    public static String validateConnectionFields(String dbType, int port, String connectMode,
+            Integer poolMinIdle, Integer poolMaxSize) {
+        String type = Strings.isBlank(dbType) ? "oracle" : dbType;
+        if (!SUPPORTED_DB_TYPES.contains(type)) {
+            return "지원하지 않는 DB 종류입니다: oracle, mysql, mariadb, postgres, mssql, cubrid 중에서 선택하세요.";
+        }
+        // 전체 커넥트 디스크립터는 host/port 를 쓰지 않으므로 포트 검사에서 제외한다.
+        boolean descriptor = "oracle".equals(type) && "descriptor".equals(connectMode);
+        if (!descriptor && (port < 1 || port > 65535)) {
+            return "포트는 1~65535 사이여야 합니다.";
+        }
+        if (poolMinIdle != null && poolMinIdle < 1) {
+            return "풀 최소 유휴 연결 수(pool_min_idle)는 1 이상이어야 합니다.";
+        }
+        if (poolMaxSize != null && poolMaxSize < 1) {
+            return "풀 최대 크기(pool_max_size)는 1 이상이어야 합니다.";
+        }
+        if (poolMinIdle != null && poolMaxSize != null && poolMinIdle > poolMaxSize) {
+            return "풀 최소 유휴 연결 수는 최대 크기보다 클 수 없습니다.";
+        }
+        return null;
+    }
+
     /** Admin UI: add a new DB instance under groupName (created if it doesn't already exist). */
     public Map<String, Object> createInstance(String groupName, String id, String name, String dbType, String host,
             int port, String sid, String user, String password, String connectMode, String expectedInstanceName,
             Integer poolMinIdle, Integer poolMaxSize, List<Map<String, String>> accounts,
             List<Integer> sessionThresholds, Boolean oracleCdb) {
-        if (Strings.isBlank(id)) {
-            return Maps.of("success", false, "message", "ID는 필수입니다.");
+        String idError = validateNewDbId(id);
+        if (idError != null) {
+            return Maps.of("success", false, "message", idError);
+        }
+        String fieldError = validateConnectionFields(dbType, port, connectMode, poolMinIdle, poolMaxSize);
+        if (fieldError != null) {
+            return Maps.of("success", false, "message", fieldError);
         }
         if (Strings.isBlank(groupName)) {
             return Maps.of("success", false, "message", "그룹명은 필수입니다.");
@@ -665,6 +733,10 @@ public class DatabaseConfigService {
             String sid, String user, String password, String connectMode, String expectedInstanceName,
             Integer poolMinIdle, Integer poolMaxSize, List<Map<String, String>> accounts,
             List<Integer> sessionThresholds, Boolean oracleCdb) {
+        String fieldError = validateConnectionFields(dbType, port, connectMode, poolMinIdle, poolMaxSize);
+        if (fieldError != null) {
+            return Maps.of("success", false, "message", fieldError);
+        }
         String resolvedDbType = Strings.isBlank(dbType) ? "oracle" : dbType;
         if ("oracle".equals(resolvedDbType) && Strings.isBlank(host)) {
             return Maps.of("success", false, "message", "Host는 필수입니다.");

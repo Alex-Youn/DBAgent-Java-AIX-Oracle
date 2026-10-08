@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>테이블 정보</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="style.css?v=78">
     <link rel="stylesheet" href="popup.css?v=3">
     <script src="lib/lucide.js"></script>
     <script>
@@ -57,11 +57,11 @@
                     const colsHtml = (data.columns && data.columns.length > 0)
                         ? data.columns.map(c => `
                             <tr>
-                                <td style="font-weight: 500; color: var(--primary-color);">${c.column_name}</td>
-                                <td>${c.data_type}</td>
-                                <td>${c.data_length || '-'}</td>
+                                <td style="font-weight: 500; color: var(--primary-color);">${esc(c.column_name)}</td>
+                                <td>${esc(c.data_type)}</td>
+                                <td>${esc(c.data_length || '-')}</td>
                                 <td>${c.nullable === 'Y' ? '<span style="color:#d03b3b; font-weight:bold;">Y</span>' : 'N'}</td>
-                                <td style="color: var(--text-secondary); font-size: 0.9em;">${c.comments || '-'}</td>
+                                <td style="color: var(--text-secondary); font-size: 0.9em;">${esc(c.comments || '-')}</td>
                             </tr>
                         `).join('')
                         : '<tr><td colspan="5" style="text-align:center;">컬럼 정보가 없습니다.</td></tr>';
@@ -69,9 +69,9 @@
                     const idxsHtml = (data.indexes && data.indexes.length > 0)
                         ? data.indexes.map(i => `
                             <tr>
-                                <td>${i.index_name}</td>
-                                <td>${i.index_type}</td>
-                                <td>${i.column_name}</td>
+                                <td>${esc(i.index_name)}</td>
+                                <td>${esc(i.index_type)}</td>
+                                <td>${esc(i.column_name)}</td>
                                 <td>${i.is_pk ? '<span style="background:#0ca30c; color:white; padding: 2px 6px; border-radius:4px; font-size:0.8em; font-weight:bold;">PK</span>' : '-'}</td>
                             </tr>
                         `).join('')
@@ -81,7 +81,7 @@
                         <div style="color: var(--text-main); text-align: left;">
                             <h2 class="pp-title" style="margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; font-size: 1.5rem; color: var(--primary-color);">${esc(fullName)} 상세정보</h2>
                             <div style="margin-bottom: 20px; font-size: 1.1rem; font-weight: 500; padding: 10px; background-color: rgba(59, 130, 246, 0.1); border-radius: 6px;">
-                                ${data.table_comment ? `📝 ${data.table_comment}` : '등록된 테이블 코멘트가 없습니다.'}
+                                ${data.table_comment ? `📝 ${esc(data.table_comment)}` : '등록된 테이블 코멘트가 없습니다.'}
                             </div>
 
                             <h3 style="margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem; display: flex; align-items: center; gap: 8px;"><i data-lucide="columns"></i> 컬럼 정보</h3>
@@ -120,7 +120,7 @@
                     if (typeof lucide !== 'undefined') lucide.createIcons();
                 })
                 .catch(err => {
-                    contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${err.message}</p>`;
+                    contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${esc(err.message)}</p>`;
                 });
         })();
     </script>

@@ -4,6 +4,8 @@ import com.dbagent.auth.AuthService;
 import com.dbagent.oracle.DatabaseConfigService;
 import com.dbagent.oracle.TargetDbConfig;
 import com.dbagent.util.Maps;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,13 +18,19 @@ import org.springframework.web.bind.annotation.RestController;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** MySQL/MariaDB/PostgreSQL counterpart of MonitorController's session/tablespace endpoints. */
 @RestController
 @RequestMapping("/api/rdb")
 public class RdbMonitorController {
+
+    private static final Logger log = LoggerFactory.getLogger(RdbMonitorController.class);
+    /** 한 번의 kill_session 요청이 종료할 수 있는 최대 세션 수(Oracle kill_session 과 같은 200건, 2026-10-09 점검 수정 D-2). */
+    private static final int MAX_KILL_SESSIONS = 200;
 
     private final AuthService authService;
     private final DatabaseConfigService configService;
@@ -122,6 +130,11 @@ public class RdbMonitorController {
         } catch (NumberFormatException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(Maps.of("error", "세션 ID가 올바르지 않습니다."));
+        }
+        // 서비스가 pg/MSSQL/CUBRID 에서 int 로 바인딩하므로 범위를 벗어난 값은 여기서 막는다(2026-10-09 점검 수정 D-1).
+        if (sessionId < 1 || sessionId > Integer.MAX_VALUE) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Maps.of("error", "세션 ID가 허용 범위를 벗어났습니다. (1 ~ " + Integer.MAX_VALUE + ")"));
         }
         try {
             return ResponseEntity.ok(engineFor(target).getSessionDetail(target, sessionId));
@@ -231,20 +244,53 @@ public class RdbMonitorController {
         // 한 건이 실패해도 나머지는 계속 진행한다 - 화면은 건별 성공/실패를 함께 보여준다.
         // 숫자가 아닌 값은 DB 까지 보내지 않고 여기서 잘라낸다(KILL 은 바인드 파라미터를 못 받는
         // 명령이라, 검증되지 않은 값이 문자열로 조립되면 그대로 주입 통로가 된다).
-        List<Map<String, Object>> results = new ArrayList<>();
+        // 중복 제거(같은 세션을 여러 번 KILL 하지 않도록) 후 건수 상한을 건다(2026-10-09 점검 수정 D-2).
+        // 숫자로 읽히는 값은 값 기준으로 중복을 걷고, 범위(1 ~ Integer.MAX_VALUE) 밖이면 요청 전체를 400 으로 막는다(D-1) -
+        // 서비스의 (int) 캐스트가 큰 값을 다른 세션 번호로 잘라 엉뚱한 세션을 종료하는 것을 막기 위해서다.
+        Set<String> seenKeys = new LinkedHashSet<>();
+        List<String> unique = new ArrayList<>();
         for (String raw : requested) {
+            String text = String.valueOf(raw).trim();
+            String key = text;
+            try {
+                long v = Long.parseLong(text);
+                if (v < 1 || v > Integer.MAX_VALUE) {
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                            .body(Maps.of("error", "세션 ID가 허용 범위를 벗어났습니다. (1 ~ " + Integer.MAX_VALUE + ")"));
+                }
+                key = Long.toString(v);
+            } catch (NumberFormatException ignore) {
+                // 숫자가 아닌 값은 아래 반복에서 건별 오류로 처리한다(기존 동작 유지).
+            }
+            if (seenKeys.add(key)) {
+                unique.add(text);
+            }
+        }
+        if (unique.size() > MAX_KILL_SESSIONS) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Maps.of("error", "한 번에 종료할 수 있는 세션은 최대 " + MAX_KILL_SESSIONS + "건입니다."));
+        }
+
+        String executedBy = authService.sessionForToken(token).map(AuthService.AuthSession::username).orElse("?");
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (String raw : unique) {
             long sessionId;
             try {
-                sessionId = Long.parseLong(String.valueOf(raw).trim());
+                sessionId = Long.parseLong(raw);
             } catch (NumberFormatException e) {
                 Map<String, Object> bad = new LinkedHashMap<>();
                 bad.put("session_id", raw);
                 bad.put("status", "error");
                 bad.put("message", "세션 ID가 올바르지 않습니다.");
                 results.add(bad);
+                log.info("RDB KILL audit: by={} db={} type={} session={} result=invalid", executedBy, db_id, target.dbType(), raw);
                 continue;
             }
-            results.add(engineFor(target).killSession(target, sessionId));
+            Map<String, Object> r = engineFor(target).killSession(target, sessionId);
+            results.add(r);
+            // 감사 기록: mon_kill_audit 은 Oracle(sid+serial#) 전용 스키마라 맞지 않아 로그로 남긴다(2026-10-09 점검 수정 D-2).
+            log.info("RDB KILL audit: by={} db={} type={} session={} result={} message={}",
+                    executedBy, db_id, target.dbType(), sessionId, r.get("status"), r.get("message"));
         }
         return ResponseEntity.ok(Maps.of("results", results));
     }
@@ -413,7 +459,11 @@ public class RdbMonitorController {
     }
 
     private ResponseEntity<Object> dbError(SQLException e) {
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Maps.of("error", e.getMessage()));
+        // 드라이버 원문(호스트·포트, 영어 오류)은 화면에 내리지 않고 로그에만 남긴다(2026-10-09 점검 수정 D-9).
+        // 프론트는 이 문구를 파싱하지 않고 그대로 표시만 한다(rdb-session-views.js 확인).
+        log.warn("RDB 조회 실패: {}", e.toString());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Maps.of("error", "대상 DB 조회 중 오류가 발생했습니다. 서버 로그를 확인해 주세요."));
     }
 
     private ResponseEntity<Object> dbAccessDenied() {

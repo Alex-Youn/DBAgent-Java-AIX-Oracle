@@ -17,6 +17,8 @@ import java.util.Map;
 @RestController
 public class PoolTestController {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PoolTestController.class);
+
     private final DatabaseConfigService configService;
     private final OracleConnectionPoolManager poolManager;
     private final AuthService authService;
@@ -55,12 +57,13 @@ public class PoolTestController {
                      ResultSet instRs = instSt.executeQuery("SELECT instance_name FROM v$instance")) {
                     String actual = instRs.next() ? instRs.getString(1) : null;
                     if (actual == null || !expected.trim().equalsIgnoreCase(actual.trim())) {
+                        // 기대·실제 인스턴스명은 응답에 싣지 않고 로그에만 남긴다(2026-10-09 점검 수정 B-8).
+                        log.warn("pool test {}: 인스턴스명 불일치 (기대: {}, 실제: {})", target.id(), expected, actual);
                         return ResponseEntity.status(HttpStatus.CONFLICT).body(Maps.of(
                                 "success", false,
                                 "db_id", target.id(),
                                 "name", target.name(),
-                                "message", "접속은 성공했지만 등록된 인스턴스가 아닙니다 (기대: " + expected
-                                        + ", 실제: " + actual + ") - host/port 설정을 다시 확인하세요."));
+                                "message", "접속은 성공했지만 등록된 인스턴스가 아닙니다. host/port 설정을 다시 확인하세요."));
                     }
                 }
             }
@@ -71,8 +74,10 @@ public class PoolTestController {
                     "name", target.name(),
                     "result", result));
         } catch (Exception e) {
+            // 예외 메시지(ORA-12514 등)에는 host/port 가 들어갈 수 있어 응답에는 고정 문구만 쓴다(2026-10-09 점검 수정 B-8).
+            log.warn("pool test {} 실패: {}", dbId, e.toString());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Maps.of("success", false, "message", String.valueOf(e.getMessage())));
+                    .body(Maps.of("success", false, "message", "DB 접속 확인에 실패했습니다. 서버 로그를 확인하세요."));
         }
     }
 }

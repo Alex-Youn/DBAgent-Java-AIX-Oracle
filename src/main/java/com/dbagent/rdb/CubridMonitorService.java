@@ -242,6 +242,7 @@ public class CubridMonitorService implements EngineMonitorService {
             result.put("uptimeLabel", null);
             result.put("uptimeNote", "CUBRID는 서버 기동 시각을 SQL로 제공하지 않아 가동 시간을 표시할 수 없습니다.");
         } catch (SQLException e) {
+            log.warn("CUBRID 개요/상태 조회 실패 (db={}): {}", target.id(), e.toString()); // 원인을 남긴다(2026-10-09 점검 수정 D-5)
             result.put("error", "DB에 연결할 수 없습니다.");
         }
         return result;
@@ -311,6 +312,7 @@ public class CubridMonitorService implements EngineMonitorService {
             }
             result.put("accessStatus", access);
         } catch (SQLException e) {
+            log.warn("CUBRID 개요/상태 조회 실패 (db={}): {}", target.id(), e.toString()); // 원인을 남긴다(2026-10-09 점검 수정 D-5)
             result.put("error", "DB에 연결할 수 없습니다.");
         }
         return result;
@@ -376,7 +378,8 @@ public class CubridMonitorService implements EngineMonitorService {
         try (Connection conn = poolManager.getConnection(target);
              // SHOW 구문도 바인드 파라미터를 받는다(실측 확인) - 세션 id 를 문자열로 붙이지 않는다.
              PreparedStatement ps = conn.prepareStatement("SHOW TRANSACTION TABLES WHERE Tran_index = ?")) {
-            ps.setInt(1, (int) sessionId);
+            // (int) 캐스트는 큰 값을 다른 Tran_index 로 잘라 엉뚱한 세션을 보여 준다 - 범위 밖이면 예외(2026-10-09 점검 수정 D-1).
+            ps.setInt(1, Math.toIntExact(sessionId));
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
                     result.put("found", false);
@@ -542,14 +545,22 @@ public class CubridMonitorService implements EngineMonitorService {
     public Map<String, Object> killSession(TargetDbConfig target, long sessionId) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("session_id", sessionId);
-        try (Connection conn = poolManager.getConnection(target);
+        if (sessionId < 1 || sessionId > Integer.MAX_VALUE) {
+            // 범위 밖 값은 Tran_index 로 쓸 수 없다(2026-10-09 점검 수정 D-1).
+            result.put("status", "error");
+            result.put("message", "세션 ID가 올바르지 않습니다.");
+            return result;
+        }
+        try (Connection conn = poolManager.getKillConnection(target);
              Statement st = conn.createStatement()) {
             int killed = st.executeUpdate("KILL " + sessionId);
             result.put("status", killed > 0 ? "killed" : "error");
             result.put("message", killed > 0 ? null : "이미 종료된 세션입니다.");
         } catch (SQLException e) {
+            // 드라이버 원문은 화면에 내리지 않고 로그에만 남긴다(2026-10-09 점검 수정 D-9).
+            log.warn("CUBRID 세션 종료 실패 (db={}, tran={}): {}", target.id(), sessionId, e.toString());
             result.put("status", "error");
-            result.put("message", e.getMessage());
+            result.put("message", "세션 종료에 실패했습니다. 서버 로그를 확인해 주세요.");
         }
         return result;
     }

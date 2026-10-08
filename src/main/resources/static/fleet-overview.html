@@ -667,9 +667,14 @@
             const STATUS_META = {
                 alive: { label: 'ALIVE', color: 'var(--status-good)', pulse: true },
                 degraded: { label: 'DEGRADED', color: 'var(--status-warning)', pulse: true },
-                down: { label: 'NOT ALIVE', color: 'var(--status-critical)', pulse: false }
+                down: { label: 'NOT ALIVE', color: 'var(--status-critical)', pulse: false },
+                // fleet_status 조회 자체가 실패해 상태를 알 수 없음 - NOT ALIVE로 잡지 않는다(2026-10-09 점검 수정, G-4)
+                unknown: { label: '판단 보류', color: 'var(--text-muted)', pulse: false }
             };
-            const STATUS_RANK = { down: 0, degraded: 1, alive: 2 };
+            const STATUS_RANK = { down: 0, degraded: 1, alive: 2, unknown: 3 };
+
+            // 서버/저장소 문자열을 innerHTML에 넣기 전 이스케이프(2026-10-09 점검 수정, G-12).
+            function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (ch) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]; }); }
 
             // DB 정보(SID)/DB 종류/버전 표시줄 (사용자 요청, 2026-08-29/30/31) - "SID : ORCL[Oracle 21c]"
             // 형식. SID는 d.sid - 로딩 중엔 /api/config의 설정값, 접속에 성공하면 /api/fleet_status가
@@ -684,8 +689,9 @@
                 if (!d.sid) return '';
                 const engine = ENGINE_LABEL[d.db_type] || 'Oracle';
                 const codename = d.versionCodename || d.version;
-                if (codename) return `SID : ${d.sid}[${engine} ${codename}]`;
-                return withType ? `SID : ${d.sid}[${engine}]` : `SID : ${d.sid}`;
+                // innerHTML로 들어가므로 이스케이프(2026-10-09 점검 수정, G-12)
+                if (codename) return esc(`SID : ${d.sid}[${engine} ${codename}]`);
+                return esc(withType ? `SID : ${d.sid}[${engine}]` : `SID : ${d.sid}`);
             }
 
             function barColor(pct) {
@@ -755,7 +761,7 @@
                 });
                 render();
 
-                await refreshFleetStatus();
+                await refreshFleetStatus(true);
             }
 
             // Re-polls just the live status/CPU/MEM/etc for the already-loaded DB list - no /api/config
@@ -763,7 +769,23 @@
             // the existing cards in place instead of flashing them back to loading every cycle. Used by
             // both loadDbs()'s initial fetch and the visibility-gated setInterval below (사용자 요청:
             // 화면이 실제로 열려있을 때만 자동 갱신, 주기는 dbagent.fleet-overview.polling-interval-ms).
-            async function refreshFleetStatus() {
+            // 2026-10-09 점검 수정(G-5): 3초 폴링이 겹쳐 쌓이거나 오래된 응답이 최신을 덮지 않게 한다.
+            //  - fleetInFlightGen: 진행 중인 조회의 세대 번호(0이면 없음). 폴링은 진행 중이면 건너뛴다.
+            //  - fleetGen: 가장 최근에 시작한 조회의 세대 번호. 응답 시점에 내 번호가 아니면 버린다.
+            //  수동 새로고침(loadDbs)은 force로 들어와 이전 조회를 무효화하고 새로 시작한다.
+            let fleetGen = 0;
+            let fleetInFlightGen = 0;
+            async function refreshFleetStatus(force) {
+                if (fleetInFlightGen && !force) return;
+                const myGen = ++fleetGen;
+                fleetInFlightGen = myGen;
+                try {
+                    await doRefreshFleetStatus(myGen);
+                } finally {
+                    if (fleetInFlightGen === myGen) fleetInFlightGen = 0;
+                }
+            }
+            async function doRefreshFleetStatus(myGen) {
                 const token = sessionStorage.getItem('dbagent_token') || '';
                 // Distinguish "this whole tab isn't logged in yet" (all instances missing - see the
                 // banner above) from "this specific DB is restricted for the logged-in account" -
@@ -773,14 +795,35 @@
                     ? '상태 조회 실패 - 이 계정에 접근 권한이 없는 DB일 수 있습니다.'
                     : '로그인이 필요합니다.';
                 let statusById = {};
+                // G-4(2026-10-09 점검 수정): 호출 자체가 실패(401/403/500/네트워크 오류)하면 모든 DB를 down으로 만들지
+                // 않고 이전 상태를 유지한다. 처음부터 실패면 판단 보류(unknown)로 표시하고 NOT ALIVE 집계에서 뺀다.
+                let listOk = false;
+                let failMessage = '';
                 try {
                     const statusRes = await fetch(`/api/fleet_status?token=${encodeURIComponent(token)}`);
-                    const statusList = statusRes.ok ? await statusRes.json() : [];
-                    statusList.forEach(s => { statusById[s.id] = s; });
+                    if (statusRes.ok) {
+                        const statusList = await statusRes.json();
+                        if (Array.isArray(statusList)) {
+                            statusList.forEach(s => { statusById[s.id] = s; });
+                            listOk = true;
+                        } else {
+                            failMessage = '상태 조회 응답 형식이 올바르지 않습니다.';
+                        }
+                    } else if (statusRes.status === 401) {
+                        failMessage = '로그인이 필요하거나 세션이 만료되었습니다.';
+                    } else {
+                        failMessage = `상태 조회 실패(HTTP ${statusRes.status}) - 다음 갱신 때 다시 시도합니다.`;
+                    }
                 } catch (e) {
-                    // leave statusById empty - every instance falls back to fallbackMessage below
+                    failMessage = '서버에 연결할 수 없어 상태를 확인하지 못했습니다.';
                 }
+                // 더 새로운 조회가 시작됐으면(수동 새로고침 등) 이 응답은 버린다.
+                if (myGen !== fleetGen) return;
                 allDbs = allDbs.map(d => {
+                    if (!listOk) {
+                        if (d.status) return Object.assign({}, d, { loading: false }); // 이전 상태 유지
+                        return Object.assign({}, d, { status: 'unknown', errorMessage: failMessage, loading: false });
+                    }
                     const status = statusById[d.id] || { status: 'down', errorMessage: fallbackMessage };
                     return Object.assign({}, d, status, { loading: false });
                 });
@@ -822,11 +865,11 @@
                     return;
                 }
                 el.innerHTML = top5.map((d, i) => `
-                    <div class="rank-row" data-db-id="${d.id}">
+                    <div class="rank-row" data-db-id="${esc(d.id)}">
                         <div class="rank-num">${i + 1}</div>
                         <div class="rank-info">
-                            <div class="rank-name">${d.name}</div>
-                            <div class="rank-sub">${d.group_name}</div>
+                            <div class="rank-name">${esc(d.name)}</div>
+                            <div class="rank-sub">${esc(d.group_name)}</div>
                             <div class="rank-meta">${metaText(d, true)}</div>
                         </div>
                         <div class="rank-cpu" style="color:${barColor(d.cpuPct)}">${d.cpuPct}%</div>
@@ -844,16 +887,16 @@
             function cardHtml(d) {
                 if (d.loading) {
                     return `
-                        <div class="db-card" data-db-id="${d.id}" style="border-left-color: var(--border);">
+                        <div class="db-card" data-db-id="${esc(d.id)}" style="border-left-color: var(--border);">
                             <div class="card-head">
                                 <div class="card-head-left">
                                     <div class="engine-icon pulse">${ENGINE_ICON_SVG}</div>
                                     <div class="card-name-block">
-                                        <div class="db-name">${d.name}</div>
+                                        <div class="db-name">${esc(d.name)}</div>
                                         <div class="db-meta">${metaText(d)}</div>
                                     </div>
                                 </div>
-                                <div class="group-badge">${d.group_name}</div>
+                                <div class="group-badge">${esc(d.group_name)}</div>
                             </div>
                             <div class="loading-row"><div class="spinner"></div><span>접속중...</span></div>
                         </div>
@@ -867,42 +910,52 @@
                 const txnCell = d.txnPerMin != null
                     ? `<div class="stat-value">${d.txnPerMin}</div>`
                     : `<div class="stat-value muted" title="조회 실패 - 다음 갱신 때 다시 시도합니다">—</div>`;
-                const statCells = d.status === 'down'
+                // 상태를 모르거나(unknown) 내려간(down) 카드는 수치를 대시로 표시
+                const noMetric = d.status === 'down' || d.status === 'unknown';
+                const cpuTxt = d.cpuPct != null ? `${d.cpuPct}%` : '—';
+                const memTxt = d.memPct != null ? `${d.memPct}%` : '—';
+                // 값이 null이면 width:null% 이 되지 않게 0으로(2026-10-09 점검 수정, G-11)
+                const cpuW = d.cpuPct != null ? d.cpuPct : 0;
+                const memW = d.memPct != null ? d.memPct : 0;
+                const actTxt = d.activeSession != null ? esc(d.activeSession) : '—';
+                const statCells = noMetric
                     ? `<div class="stat-cell"><div class="stat-label">Active Session</div><div class="stat-value muted">—</div></div>
                        <div class="stat-cell"><div class="stat-label">분당 트랜잭션</div><div class="stat-value muted">—</div></div>`
-                    : `<div class="stat-cell"><div class="stat-label">Active Session</div><div class="stat-value">${d.activeSession}</div></div>
+                    : `<div class="stat-cell"><div class="stat-label">Active Session</div><div class="stat-value${d.activeSession != null ? "" : " muted"}">${actTxt}</div></div>
                        <div class="stat-cell"><div class="stat-label">분당 트랜잭션</div>${txnCell}</div>`;
                 // Card shows a short generic label, not the full ORA-/tnsnames detail (사용자 피드백:
                 // 카드에 너무 상세한 에러 문구가 떠 있음) - the full backend message is still there as
                 // a native tooltip (title attr) for anyone who hovers to check.
-                const bars = d.status === 'down'
-                    ? `<div class="down-banner" title="${(d.errorMessage || '').replace(/"/g, '&quot;')}">${WARNING_ICON_SVG}<span>${d.reason === 'credential' ? '비밀번호 확인 필요' : '연결할 수 없습니다'}</span></div>`
+                const bars = d.status === 'unknown'
+                    ? `<div class="down-banner" style="background:none; color:var(--text-muted);" title="${esc(d.errorMessage || '')}">${WARNING_ICON_SVG}<span>상태를 확인하지 못했습니다 (판단 보류)</span></div>`
+                    : d.status === 'down'
+                    ? `<div class="down-banner" title="${esc(d.errorMessage || '')}">${WARNING_ICON_SVG}<span>${d.reason === 'credential' ? '비밀번호 확인 필요' : '연결할 수 없습니다'}</span></div>`
                     : `<div class="mini-bar-row">
                            <span class="mb-label">CPU</span>
-                           <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${d.cpuPct}%; background:${barColor(d.cpuPct)};"></div></div>
-                           <span class="mb-pct">${d.cpuPct}%</span>
+                           <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${cpuW}%; background:${d.cpuPct != null ? barColor(d.cpuPct) : "var(--text-muted)"};"></div></div>
+                           <span class="mb-pct">${cpuTxt}</span>
                        </div>
                        <div class="mini-bar-row">
                            <span class="mb-label">MEM</span>
-                           <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${d.memPct}%; background:${barColor(d.memPct)};"></div></div>
-                           <span class="mb-pct">${d.memPct}%</span>
+                           <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${memW}%; background:${d.memPct != null ? barColor(d.memPct) : "var(--text-muted)"};"></div></div>
+                           <span class="mb-pct">${memTxt}</span>
                        </div>`;
                 return `
-                    <div class="db-card status-${d.status}" data-db-id="${d.id}">
+                    <div class="db-card status-${esc(d.status)}" data-db-id="${esc(d.id)}">
                         <div class="card-head">
                             <div class="card-head-left">
                                 <div class="engine-icon${d.status === 'down' ? '' : ' pulse'}">${ENGINE_ICON_SVG}</div>
                                 <div class="card-name-block">
-                                    <div class="db-name">${d.name}</div>
+                                    <div class="db-name">${esc(d.name)}</div>
                                     <div class="db-meta">${metaText(d)}</div>
                                 </div>
                             </div>
-                            <div class="group-badge">${d.group_name}</div>
+                            <div class="group-badge">${esc(d.group_name)}</div>
                         </div>
                         <div class="status-row">
                             <span class="status-dot ${meta.pulse ? 'pulse' : ''}" style="background:${meta.color}; color:${meta.color};"></span>
                             <span class="status-label" style="color:${meta.color};">${meta.label}</span>
-                            ${d.statusNote ? `<span class="status-note">${d.statusNote}</span>` : ''}
+                            ${d.statusNote ? `<span class="status-note">${esc(d.statusNote)}</span>` : ''}
                         </div>
                         <div class="uptime-row">
                             ${uptimeRingSvg(d)}
@@ -920,9 +973,9 @@
             function tableRowHtml(d) {
                 if (d.loading) {
                     return `
-                        <tr data-db-id="${d.id}">
+                        <tr data-db-id="${esc(d.id)}">
                             <td colspan="2"><div class="loading-row" style="padding:0;"><div class="spinner"></div><span>접속중...</span></div></td>
-                            <td>${d.group_name}</td>
+                            <td>${esc(d.group_name)}</td>
                             <td>—</td><td>—</td><td>—</td><td>—</td>
                         </tr>
                     `;
@@ -932,10 +985,10 @@
                 const cpuColor = d.cpuPct == null ? 'var(--text-muted)' : barColor(d.cpuPct);
                 const uptimeText = d.uptimePct != null ? `${d.uptimePct.toFixed(2)}%` : '—';
                 return `
-                    <tr data-db-id="${d.id}">
+                    <tr data-db-id="${esc(d.id)}">
                         <td><span class="table-status" style="color:${meta.color}"><span class="status-dot ${meta.pulse ? 'pulse' : ''}" style="background:${meta.color}; color:${meta.color};"></span>${meta.label}</span></td>
-                        <td><div class="table-name">${d.name}</div></td>
-                        <td>${d.group_name}</td>
+                        <td><div class="table-name">${esc(d.name)}</div></td>
+                        <td>${esc(d.group_name)}</td>
                         <td>${d.activeSession != null ? d.activeSession : '—'}</td>
                         <td>${d.txnPerMin != null ? d.txnPerMin : '—'}</td>
                         <td style="color:${cpuColor}; font-family:var(--font-mono); font-weight:600;">${cpuText}</td>

@@ -23,6 +23,11 @@ public class AuthController {
 
     @PostMapping("/api/login")
     public ResponseEntity<Map<String, Object>> login(@RequestBody LoginRequest req) {
+        // 아이디·비밀번호가 비어 있으면 500 대신 400 (2026-10-09 점검 수정 B-9)
+        if (req.username() == null || Strings.isBlank(req.username()) || req.password() == null || req.password().isEmpty()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Maps.of("success", false, "message", "아이디와 비밀번호를 입력하세요."));
+        }
         Optional<AuthService.AuthSession> session = authService.login(req.username(), req.password());
         if (session.isPresent()) {
             Map<String, Object> body = new LinkedHashMap<>();
@@ -90,6 +95,12 @@ public class AuthController {
 
     @PostMapping("/api/change-password")
     public ResponseEntity<Map<String, Object>> changePassword(@RequestBody ChangePasswordRequest req) {
+        // 현재/새 비밀번호가 없으면 BCrypt 예외(500) 대신 400 (2026-10-09 점검 수정 B-9). 최소 길이 정책은 아직 없음.
+        if (req.currentPassword() == null || req.currentPassword().isEmpty()
+                || req.newPassword() == null || req.newPassword().isEmpty()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Maps.of("success", false, "message", "현재 비밀번호와 새 비밀번호를 입력하세요."));
+        }
         boolean ok = authService.changePassword(req.token(), req.currentPassword(), req.newPassword());
         if (ok) {
             return ResponseEntity.ok(Maps.of("success", true));

@@ -20,9 +20,17 @@ public class OracleQueryHelper {
     private static final Pattern TRAILING_NUM = Pattern.compile("(\\d+)$");
     private static final Pattern ANY_NUM = Pattern.compile("(\\d+)");
 
-    public int getInstId(Connection conn, TargetDbConfig target) {
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT instance_number, instance_name FROM v$instance")) {
+    /**
+     * 인스턴스 번호를 구한다. 조회가 실패(SQLException·타임아웃)하면 예외를 그대로 던진다.
+     * (2026-10-09 점검 수정 A1-3) 예전에는 실패 시 조용히 1을 반환해 RAC에서 엉뚱한 인스턴스로 KILL이 나갈 수 있었다.
+     * 호출부는 예외를 받으면 해당 KILL을 실패 처리해야 한다.
+     *
+     * @param queryTimeoutSeconds 0 이하면 타임아웃을 걸지 않는다
+     */
+    public int getInstId(Connection conn, TargetDbConfig target, int queryTimeoutSeconds) throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            if (queryTimeoutSeconds > 0) st.setQueryTimeout(queryTimeoutSeconds);
+            ResultSet rs = st.executeQuery("SELECT instance_number, instance_name FROM v$instance");
 
             List<Object[]> instances = new ArrayList<>();
             while (rs.next()) {
@@ -60,15 +68,16 @@ public class OracleQueryHelper {
                 }
             }
 
-            try (Statement st2 = conn.createStatement();
-                 ResultSet rs2 = st2.executeQuery("SELECT sys_context('userenv', 'instance') FROM dual")) {
-                if (rs2.next()) {
-                    return rs2.getInt(1);
+            try (Statement st2 = conn.createStatement()) {
+                if (queryTimeoutSeconds > 0) st2.setQueryTimeout(queryTimeoutSeconds);
+                try (ResultSet rs2 = st2.executeQuery("SELECT sys_context('userenv', 'instance') FROM dual")) {
+                    if (rs2.next()) {
+                        return rs2.getInt(1);
+                    }
                 }
             }
-            return 1;
-        } catch (SQLException e) {
-            return 1;
+            // v$instance·sys_context 모두 값이 없는 비정상 상황 - 임의의 1로 가정하지 않고 실패로 알린다
+            throw new SQLException("instance number not found");
         }
     }
 

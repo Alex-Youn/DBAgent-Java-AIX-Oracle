@@ -100,6 +100,11 @@ public class MonitorService {
     // Lock Holder/Waiter Tree 화면용 object_id → OWNER.NAME 캐시(DB별). 매 호출 dba_objects 조인 대신 모르는 id만 한 번 조회
     // (LockRealtimeService.objectNames와 같은 방식 - 그쪽이 MonitorService를 주입받아 서로 참조할 수 없어 따로 둔다).
     private final Map<String, Map<Long, String>> lockObjectNames = new ConcurrentHashMap<>();
+    // (2026-10-09 점검 수정 A1-7) dba_objects에서 못 찾은 object_id(삭제된 임시 객체 등)는 폴링마다 다시 조회하지 않도록
+    // 만료 시각(epoch ms)과 함께 기억한다. 못 찾음은 10분, 조회 실패(타임아웃 등)는 1분 뒤 재시도.
+    private final Map<String, Map<Long, Long>> lockObjectMissingUntil = new ConcurrentHashMap<>();
+    private static final long LOCK_OBJ_MISSING_TTL_MS = 10 * 60_000L;
+    private static final long LOCK_OBJ_FAILED_TTL_MS = 60_000L;
 
     /**
      * Holder마다 그 세션을 기다리는 waiters를 붙인 목록(응답 형식은 예전과 같음 - app.js가 트리로 편다).
@@ -320,12 +325,18 @@ public class MonitorService {
             List<Map<String, Object>> ws = (List<Map<String, Object>>) h.get("waiters");
             all.addAll(ws);
         }
+        Map<Long, Long> missing = lockObjectMissingUntil.computeIfAbsent(dbId, k -> new ConcurrentHashMap<>());
+        long nowMs = System.currentTimeMillis();
         java.util.Set<Long> unknown = new java.util.HashSet<>();
         for (Map<String, Object> m : all) {
             Long id = (Long) m.get("objId");
-            if (id != null && !names.containsKey(id)) unknown.add(id);
+            if (id == null || names.containsKey(id)) continue;
+            Long until = missing.get(id);
+            if (until != null && until > nowMs) continue; // 최근에 못 찾은 id - OBJ#id 자리표시자로 표시
+            unknown.add(id);
         }
         if (!unknown.isEmpty() && unknown.size() <= 500) {
+            boolean lookupFailed = false;
             String in = String.join(",", Collections.nCopies(unknown.size(), "?"));
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT object_id, owner || '.' || object_name FROM dba_objects WHERE object_id IN (" + in + ")")) {
@@ -336,8 +347,14 @@ public class MonitorService {
                     while (rs.next()) names.put(rs.getLong(1), rs.getString(2));
                 }
             } catch (SQLException e) {
+                lookupFailed = true;
                 log.debug("tmlock object name lookup skipped: {}", e.toString());
             }
+            long ttl = lookupFailed ? LOCK_OBJ_FAILED_TTL_MS : LOCK_OBJ_MISSING_TTL_MS;
+            for (Long id : unknown) {
+                if (!names.containsKey(id)) missing.put(id, nowMs + ttl);
+            }
+            if (missing.size() > 5000) missing.clear();
             if (names.size() > 5000) names.clear(); // 캐시 상한 - 객체가 계속 바뀌는 환경 대비
         }
         for (Map<String, Object> m : all) {
@@ -1504,7 +1521,19 @@ public class MonitorService {
         List<Map<String, Object>> results = new ArrayList<>();
         long now = System.currentTimeMillis();
         try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
-            int instId = queryHelper.getInstId(conn, target);
+            // (2026-10-09 점검 수정 A1-3) KILL 경로 조회에 타임아웃 - 락 조회와 같은 짧은 값. ALTER SYSTEM은 세션 정리를
+            // 기다릴 수 있어 최소 10초를 준다.
+            int killQueryTimeout = settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS);
+            st.setQueryTimeout(killQueryTimeout);
+            // 인스턴스 번호를 못 구하면(예전엔 조용히 1) 엉뚱한 인스턴스로 KILL이 나가므로, 이 요청의 KILL은 모두 실패 처리한다.
+            int instId = -1;
+            String instIdFailure = null;
+            try {
+                instId = queryHelper.getInstId(conn, target, killQueryTimeout);
+            } catch (SQLException e) {
+                log.warn("KILL 인스턴스 번호 조회 실패 (db_id={}): {}", target.id(), e.toString());
+                instIdFailure = "인스턴스 번호를 확인하지 못해 KILL하지 않았습니다. 잠시 후 다시 시도해 주세요.";
+            }
             String instanceName = null;
             long mySid = -1;
             try (ResultSet rs = st.executeQuery("SELECT instance_name, SYS_CONTEXT('USERENV','SID') FROM v$instance")) {
@@ -1515,6 +1544,7 @@ public class MonitorService {
             }
             try (PreparedStatement ps = conn.prepareStatement(
                     "SELECT username, program, machine, type, last_call_et FROM v$session WHERE sid = ? AND serial# = ?")) {
+                ps.setQueryTimeout(killQueryTimeout);
                 for (long[] s : sessions) {
                     long sid = s[0];
                     long serial = s[1];
@@ -1546,8 +1576,12 @@ public class MonitorService {
                     } else if (sid == mySid) {
                         status = "skipped";
                         message = "모니터링 앱 자신의 접속 세션입니다.";
+                    } else if (instIdFailure != null) {
+                        status = "error";
+                        message = instIdFailure;
                     } else {
                         try {
+                            st.setQueryTimeout(Math.max(killQueryTimeout, 10));
                             st.execute("ALTER SYSTEM KILL SESSION '" + sid + "," + serial + ",@" + instId + "' IMMEDIATE");
                             status = "killed";
                         } catch (SQLException e) {
@@ -2035,7 +2069,8 @@ public class MonitorService {
         Integer dedicatedSessions = null;
         Integer sharedSessions = null;
 
-        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+        try (Connection conn = poolManager.getConnection(target); Statement st = timed(conn.createStatement())) {
+            // (2026-10-09 점검 수정 A1-4) 폴링마다 도는 조회라 타임아웃이 없으면 느린 DB에서 커넥션·스레드가 쌓인다
             listenerStatus = "Alive";
 
             try (ResultSet rs = st.executeQuery("SELECT status FROM v$instance WHERE 1=1")) {
@@ -2212,11 +2247,24 @@ public class MonitorService {
     // (사용자 요청, 2026-08-30: "버전 표시는 21c, 11g 이런식으론 못 나타내나").
     private static final Pattern VERSION_CODENAME_PATTERN = Pattern.compile("Database\\s+(\\S+)");
 
+    /** 한 값을 읽는 조회 - 행이 없거나 NULL이거나 실패하면 null(0으로 대체하지 않는다, 2026-10-09 점검 수정 A1-5). */
+    private Double queryDoubleOrNull(Statement st, String sql, TargetDbConfig target, String label) {
+        try (ResultSet rs = st.executeQuery(sql)) {
+            if (!rs.next()) return null;
+            double v = rs.getDouble(1);
+            return rs.wasNull() ? null : Double.valueOf(v);
+        } catch (SQLException e) {
+            log.warn("fleet_status {} lookup failed for db_id={}: {}", label, target.id(), e.toString());
+            return null;
+        }
+    }
+
     public Map<String, Object> getFleetStatus(TargetDbConfig target) {
         long startedAt = System.currentTimeMillis();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", target.id());
-        try (Connection conn = poolManager.getConnection(target); Statement st = conn.createStatement()) {
+        try (Connection conn = poolManager.getConnection(target); Statement st = timed(conn.createStatement())) {
+            // (2026-10-09 점검 수정 A1-4) 화면 조회 타임아웃 - 느린 DB가 FLEET_STATUS_EXECUTOR 스레드와 커넥션을 붙잡지 않게
             String instanceStatus = "down";
             double uptimeDays = 0;
             String version = null;
@@ -2253,37 +2301,31 @@ public class MonitorService {
                 log.warn("v$version lookup failed for db_id={}: {}", target.id(), e.toString());
             }
 
-            double numCpus = 1;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPUS'")) {
-                if (rs.next()) numCpus = rs.getDouble(1);
-            }
-            double cpuUsage = 0;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$sysmetric WHERE metric_name = 'CPU Usage Per Sec'")) {
-                if (rs.next()) cpuUsage = rs.getDouble(1);
-            }
-            double cpuPct = numCpus > 0 ? Math.round((cpuUsage / numCpus) * 100.0) / 100.0 : 0;
+            // (2026-10-09 점검 수정 A1-5) 값이 없거나 조회가 실패한 지표는 0·기본값(numCpus=1, totalMem=1)으로 계산하지 않고
+            // null로 둔다. 예전에는 totalMem=1 때문에 memPct가 수억 %로 "degraded" 오판, v$sysmetric이 비면 CPU 0%로 "alive"였다.
+            // null 지표는 상태(degraded) 판정에서 제외하고 응답 키는 그대로 유지한다(값만 null).
+            Double numCpus = queryDoubleOrNull(st, "SELECT value FROM v$osstat WHERE stat_name = 'NUM_CPUS'", target, "NUM_CPUS");
+            // group_id=2(60초 구간) 한 종류만 - 15초 구간(group_id=3)과 섞이면 첫 행이 어느 쪽인지 불확정
+            Double cpuUsage = queryDoubleOrNull(st, "SELECT value FROM v$sysmetric WHERE metric_name = 'CPU Usage Per Sec' "
+                    + "AND group_id = 2 ORDER BY end_time DESC", target, "CPU Usage Per Sec");
+            Double cpuPct = (numCpus != null && cpuUsage != null && numCpus > 0)
+                    ? Double.valueOf(Math.round((cpuUsage / numCpus) * 100.0) / 100.0) : null;
 
-            double sgaBytes = 0;
-            try (ResultSet rs = st.executeQuery("SELECT sum(bytes) FROM v$sgastat")) {
-                if (rs.next()) sgaBytes = rs.getDouble(1);
-            }
-            double pgaBytes = 0;
-            try (ResultSet rs = st.executeQuery("SELECT sum(value) FROM v$pgastat WHERE name = 'total PGA allocated'")) {
-                if (rs.next()) pgaBytes = rs.getDouble(1);
-            }
-            double totalMem = 1;
-            try (ResultSet rs = st.executeQuery("SELECT value FROM v$osstat WHERE stat_name = 'PHYSICAL_MEMORY_BYTES'")) {
-                if (rs.next()) totalMem = rs.getDouble(1);
-            }
-            double memPct = totalMem > 0 ? Math.round(((sgaBytes + pgaBytes) / totalMem) * 10000.0) / 100.0 : 0;
+            Double sgaBytes = queryDoubleOrNull(st, "SELECT sum(bytes) FROM v$sgastat", target, "v$sgastat");
+            Double pgaBytes = queryDoubleOrNull(st, "SELECT sum(value) FROM v$pgastat WHERE name = 'total PGA allocated'", target, "v$pgastat");
+            Double totalMem = queryDoubleOrNull(st, "SELECT value FROM v$osstat WHERE stat_name = 'PHYSICAL_MEMORY_BYTES'", target, "PHYSICAL_MEMORY_BYTES");
+            Double memPct = (sgaBytes != null && pgaBytes != null && totalMem != null && totalMem > 0)
+                    ? Double.valueOf(Math.round(((sgaBytes + pgaBytes) / totalMem) * 10000.0) / 100.0) : null;
 
-            int activeSessions = 0;
+            Integer activeSessions = null;
             // 사용자 요청(2026-08-31)으로 getSessions()가 제외하기 시작한 것과 동일한 대상(NULL
             // username, 모니터링 계정 자신)을 이 카운트에서도 빼서, Active Session 목록의 실제 행
             // 개수와 여기 KPI 숫자가 어긋나지 않게 함.
             try (ResultSet rs = st.executeQuery("SELECT count(*) FROM v$session WHERE status = 'ACTIVE' AND type != 'BACKGROUND' " +
                     "AND username IS NOT NULL AND username != " + monitoringAccountLiteral(target))) {
                 if (rs.next()) activeSessions = rs.getInt(1);
+            } catch (SQLException e) {
+                log.warn("fleet_status active session count failed for db_id={}: {}", target.id(), e.toString());
             }
 
             Long txnPerMin = queryTxnPerMinute(conn); // 조회 실패면 null(카드에 "—")
@@ -2295,7 +2337,7 @@ public class MonitorService {
             // flag on any lock waiter (v$lock-based), dropped when that metric was swapped for
             // txnPerMin (사용자가 겪은 문제: 이 인스턴스에서 v$lock 스캔 자체가 49초씩 걸림 -
             // v$sysmetric 기반의 분당 트랜잭션 수로 교체, 트랜잭션 양 자체는 경고 신호가 아니므로 임계값 없음).
-            boolean warning = cpuPct >= 80 || memPct >= 80;
+            boolean warning = (cpuPct != null && cpuPct >= 80) || (memPct != null && memPct >= 80);
 
             result.put("status", warning ? "degraded" : "alive");
             // 사용자 요청(2026-08-31): FO 카드의 SID를 databases.json 설정값이 아니라 실제 DB의
@@ -2320,7 +2362,48 @@ public class MonitorService {
     }
 
     // ------------------------------------------------------- history_sessions
+    /**
+     * (2026-10-09 점검 수정 A1-1) history_sessions·history_top_sessions의 구간 검증 - 형식(yyyy-MM-ddTHH:mm)과 순서, 최대
+     * 24시간(AshRange.MAX_RANGE_MINUTES). 예전에는 구간 상한이 없어 며칠~몇 달 치 dba_hist_active_sess_history를 훑을 수 있었다.
+     * 위반하면 IllegalArgumentException(한국어 사유) - 컨트롤러가 400으로 내린다. 반환값은 TO_DATE에 바인드할 정규화 문자열 {시작, 종료}.
+     */
+    static String[] validateHistoryRange(String startTime, String endTime) {
+        LocalDateTime start;
+        LocalDateTime end;
+        try {
+            start = LocalDateTime.parse(startTime.trim());
+            end = LocalDateTime.parse(endTime.trim());
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("시작·종료 시각 형식이 올바르지 않습니다(예: 2026-10-09T14:30).");
+        }
+        if (!start.isBefore(end)) {
+            throw new IllegalArgumentException("시작 시각은 종료 시각보다 이전이어야 합니다.");
+        }
+        if (java.time.Duration.between(start, end).toMinutes() > AshRange.MAX_RANGE_MINUTES) {
+            throw new IllegalArgumentException("조회 구간은 최대 24시간까지 가능합니다. 구간을 줄여 다시 조회해 주세요.");
+        }
+        java.time.format.DateTimeFormatter f = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm");
+        return new String[]{f.format(start), f.format(end)};
+    }
+
+    /**
+     * 성능 이력 AWR 조회의 범위 조건 - dba_hist_active_sess_history는 (dbid, snap_id) 파티션이라 sample_time만 주면 보관 기간
+     * 전체를 훑는다. 접속 인스턴스(RAC 원칙)로 고정하고 구간을 덮는 snap_id 하한·상한으로 자른다(AshRange.baseSql과 같은 방식).
+     * 바인드 4개(시작, 종료 시각 문자열 - 하한용 1개, 상한용 1개 + 뒤따르는 sample_time 2개는 호출부가 붙인다).
+     */
+    private static final String HISTORY_AWR_SNAP_RANGE =
+            "dbid = (SELECT dbid FROM v$database) AND instance_number = (SELECT instance_number FROM v$instance) " +
+            "AND snap_id >= (SELECT NVL(MIN(s.snap_id), 0) FROM dba_hist_snapshot s " +
+            "WHERE s.dbid = (SELECT dbid FROM v$database) AND s.instance_number = (SELECT instance_number FROM v$instance) " +
+            "AND s.end_interval_time >= TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI')) " +
+            "AND snap_id <= (SELECT NVL(MIN(s.snap_id), 2147483647) FROM dba_hist_snapshot s " +
+            "WHERE s.dbid = (SELECT dbid FROM v$database) AND s.instance_number = (SELECT instance_number FROM v$instance) " +
+            "AND s.end_interval_time >= TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI')) ";
+
     public List<Map<String, Object>> getHistorySessions(TargetDbConfig target, String startTime, String endTime, String users, String machines) throws SQLException {
+        String[] range = validateHistoryRange(startTime, endTime);
+        startTime = range[0];
+        endTime = range[1];
         String userFilter = buildUserFilter(users);
         String machineFilter = buildMachineFilter(machines);
         String query = "WITH combined_ash AS (" +
@@ -2330,7 +2413,7 @@ public class MonitorService {
                 "UNION ALL " +
                 "SELECT session_id, session_serial#, sql_id, event, sample_time, sql_exec_start, program, machine, user_id, sql_plan_hash_value, session_type " +
                 "FROM dba_hist_active_sess_history " +
-                "WHERE sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI')" +
+                "WHERE " + HISTORY_AWR_SNAP_RANGE + "AND sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI')" +
                 "), sql_execs AS (" +
                 "SELECT sql_id, SUM(executions) as exec_count FROM v$sqlarea GROUP BY sql_id" +
                 ") SELECT h.session_id as sid, h.session_serial# as serial, h.sql_id, NVL(h.event, 'ON CPU') as event_name, " +
@@ -2350,10 +2433,13 @@ public class MonitorService {
         List<Map<String, Object>> sessions = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
              PreparedStatement ps = conn.prepareStatement(query)) {
+            ps.setQueryTimeout(settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS)); // 2026-10-09 점검 수정 A1-1
             ps.setString(1, startTime);
             ps.setString(2, endTime);
-            ps.setString(3, startTime);
-            ps.setString(4, endTime);
+            ps.setString(3, startTime); // AWR snap_id 하한
+            ps.setString(4, endTime);   // AWR snap_id 상한
+            ps.setString(5, startTime);
+            ps.setString(6, endTime);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> row = new LinkedHashMap<>();
@@ -2378,6 +2464,9 @@ public class MonitorService {
 
     // --------------------------------------------------- history_top_sessions
     public List<Map<String, Object>> getHistoryTopSessions(TargetDbConfig target, String startTime, String endTime, String users, String machines) throws SQLException {
+        String[] range = validateHistoryRange(startTime, endTime);
+        startTime = range[0];
+        endTime = range[1];
         String userFilter = buildUserFilter(users);
         String machineFilter = buildMachineFilter(machines);
         // FETCH FIRST(12c+) 대신 ROWNUM - 11g 대상 DB에서 ORA-00933으로 실패하던 문제(2026-09-26 대시보드 수용 기준 점검 중 발견).
@@ -2388,7 +2477,7 @@ public class MonitorService {
                 "UNION ALL " +
                 "SELECT session_id, session_serial#, sql_id, sql_exec_id, sql_exec_start, event, sample_time, program, machine, user_id, sql_plan_hash_value, session_type " +
                 "FROM dba_hist_active_sess_history " +
-                "WHERE sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND sql_exec_start IS NOT NULL" +
+                "WHERE " + HISTORY_AWR_SNAP_RANGE + "AND sample_time BETWEEN TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND TO_DATE(?, 'YYYY-MM-DD\"T\"HH24:MI') AND sql_exec_start IS NOT NULL" +
                 ") SELECT h.sql_id, COUNT(DISTINCT h.sql_exec_id) as exec_count, " +
                 "MAX(ROUND((CAST(h.sample_time AS DATE) - CAST(h.sql_exec_start AS DATE)) * 24 * 60 * 60, 2)) as max_duration_time, " +
                 "MAX(NVL(h.event, 'ON CPU')) as event_name, TO_CHAR(MAX(h.sample_time), 'YYYY-MM-DD HH24:MI:SS') as capture_time, " +
@@ -2404,10 +2493,13 @@ public class MonitorService {
         List<Map<String, Object>> sessions = new ArrayList<>();
         try (Connection conn = poolManager.getConnection(target);
              PreparedStatement ps = conn.prepareStatement(query)) {
+            ps.setQueryTimeout(settings.getInt(SettingKey.ASH_AWR_QUERY_TIMEOUT_SECONDS)); // 2026-10-09 점검 수정 A1-1
             ps.setString(1, startTime);
             ps.setString(2, endTime);
-            ps.setString(3, startTime);
-            ps.setString(4, endTime);
+            ps.setString(3, startTime); // AWR snap_id 하한
+            ps.setString(4, endTime);   // AWR snap_id 상한
+            ps.setString(5, startTime);
+            ps.setString(6, endTime);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> row = new LinkedHashMap<>();

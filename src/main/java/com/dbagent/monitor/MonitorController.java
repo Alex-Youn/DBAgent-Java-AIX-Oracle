@@ -235,16 +235,16 @@ public class MonitorController {
                 fromTime = LocalDateTime.parse(from.trim());
                 toTime = (to == null || to.trim().isEmpty()) ? null : LocalDateTime.parse(to.trim());
             } catch (DateTimeParseException e) {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "from/to must be yyyy-MM-ddTHH:mm[:ss] (DB time)"));
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "from/to 형식은 yyyy-MM-ddTHH:mm[:ss]입니다(DB 시각)."));
             }
             if (toTime != null && !fromTime.isBefore(toTime)) {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "from must be before to"));
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "시작 시각이 종료 시각보다 앞서야 합니다."));
             }
         } else if (rangeMinutes != 30 && rangeMinutes != 60) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "range_minutes must be 30 or 60 (1단계 구현 범위)"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "range_minutes는 30 또는 60이어야 합니다."));
         }
         if (!ASH_STEP_MINUTES.contains(stepMinutes) || (fromTime == null && stepMinutes != 1)) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "step_minutes must be 1 (from/to 지정 시 1/5/10/15/30/60)"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "step_minutes는 1이어야 합니다(from/to 지정 시 1/5/10/15/30/60)."));
         }
         TargetDbConfig target = configService.resolve(db_id);
         if (target == null) {
@@ -272,10 +272,10 @@ public class MonitorController {
             return dbAccessDenied();
         }
         if (rangeMinutes != 30 && rangeMinutes != 60) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "range_minutes must be 30 or 60 (1단계 구현 범위)"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "range_minutes는 30 또는 60이어야 합니다."));
         }
         if (stepMinutes != 1) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "step_minutes must be 1 (1단계 구현 범위)"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "step_minutes는 1이어야 합니다."));
         }
         TargetDbConfig target = configService.resolve(db_id);
         if (target == null) {
@@ -509,7 +509,7 @@ public class MonitorController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Maps.of("error", "해당 DB에 대한 접근 권한이 없습니다."));
         }
         if (req.sessions() == null || req.sessions().isEmpty()) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "No sessions provided"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "Kill 대상 세션이 없습니다."));
         }
         if (req.sessions().size() > MAX_KILL_SESSIONS) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "Kill 대상이 너무 많습니다(최대 " + MAX_KILL_SESSIONS + ")."));
@@ -588,7 +588,7 @@ public class MonitorController {
             return dbAccessDenied();
         }
         if ((sid == null || Strings.isBlank(sid)) && (sqlId == null || Strings.isBlank(sqlId))) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "SID or SQL_ID is required"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "SID 또는 SQL_ID가 필요합니다."));
         }
         TargetDbConfig target = configService.resolve(db_id);
         if (target == null) {
@@ -620,7 +620,7 @@ public class MonitorController {
         try {
             return ResponseEntity.ok(monitorService.getTableInfo(target, name[0], name[1]));
         } catch (SQLException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Maps.of("error", e.getMessage()));
+            return dbError(e);
         }
     }
 
@@ -687,7 +687,7 @@ public class MonitorController {
             return dbAccessDenied();
         }
         if (startTime == null || endTime == null) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "start_time and end_time are required"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "start_time과 end_time이 필요합니다."));
         }
         TargetDbConfig target = configService.resolve(db_id);
         if (target == null) {
@@ -695,6 +695,9 @@ public class MonitorController {
         }
         try {
             return ResponseEntity.ok(monitorService.getHistorySessions(target, startTime, endTime, users, machines));
+        } catch (IllegalArgumentException e) {
+            // 구간 형식·순서·24시간 상한 위반(2026-10-09 점검 수정 A1-1)
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", e.getMessage()));
         } catch (SQLException e) {
             return dbError(e);
         }
@@ -719,7 +722,7 @@ public class MonitorController {
             return dbAccessDenied();
         }
         if (startTime == null || endTime == null) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "start_time and end_time are required"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "start_time과 end_time이 필요합니다."));
         }
         LocalDateTime start;
         LocalDateTime end;
@@ -727,19 +730,19 @@ public class MonitorController {
             start = LocalDateTime.parse(startTime.trim());
             end = LocalDateTime.parse(endTime.trim());
         } catch (DateTimeParseException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "start_time/end_time must be yyyy-MM-ddTHH:mm (DB time)"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "start_time/end_time 형식은 yyyy-MM-ddTHH:mm입니다(DB 시각)."));
         }
         List<String> categoryList = splitCsv(categories);
         for (String c : categoryList) {
             if (!Arrays.asList(AshCategories.KEYS7).contains(c)) {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "unknown category: " + c));
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "알 수 없는 분류입니다: " + c));
             }
         }
         List<String> sqlIdList = splitCsv(sqlIds);
         List<String> excludeList = splitCsv(excludeSqlIds);
         for (String id : concat(sqlIdList, excludeList)) {
             if (!id.matches("[a-z0-9]{13}")) {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "invalid sql_id"));
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Collections.singletonMap("error", "sql_id 형식이 올바르지 않습니다."));
             }
         }
         TargetDbConfig target = configService.resolve(db_id);
@@ -783,7 +786,7 @@ public class MonitorController {
             return dbAccessDenied();
         }
         if (startTime == null || endTime == null) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "start_time and end_time are required"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "start_time과 end_time이 필요합니다."));
         }
         TargetDbConfig target = configService.resolve(db_id);
         if (target == null) {
@@ -828,7 +831,7 @@ public class MonitorController {
             return dbAccessDenied();
         }
         if (startTime == null || endTime == null) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "start_time and end_time are required"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", "start_time과 end_time이 필요합니다."));
         }
         TargetDbConfig target = configService.resolve(db_id);
         if (target == null) {
@@ -836,6 +839,9 @@ public class MonitorController {
         }
         try {
             return ResponseEntity.ok(monitorService.getHistoryTopSessions(target, startTime, endTime, users, machines));
+        } catch (IllegalArgumentException e) {
+            // 구간 형식·순서·24시간 상한 위반(2026-10-09 점검 수정 A1-1)
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Maps.of("error", e.getMessage()));
         } catch (SQLException e) {
             return dbError(e);
         }
@@ -871,12 +877,17 @@ public class MonitorController {
         try {
             return ResponseEntity.ok(monitorService.getHistoryUsers(target));
         } catch (SQLException e) {
-            return ResponseEntity.ok(Maps.of("error", e.getMessage()));
+            log.warn("history_users DB query failed: {}", e.toString());
+            return ResponseEntity.ok(Maps.of("error", DB_ERROR_MESSAGE));
         }
     }
 
+    /** DB 오류 화면 문구 - ORA 원문은 내리지 않고 로그에만 남긴다(2026-10-09 점검 수정 A1-12). */
+    private static final String DB_ERROR_MESSAGE = "DB 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.";
+
     private ResponseEntity<Object> dbError(SQLException e) {
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Maps.of("error", e.getMessage()));
+        log.warn("DB query failed: {}", e.toString());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Maps.of("error", DB_ERROR_MESSAGE));
     }
 
     private ResponseEntity<Object> dbAccessDenied() {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>데이터파일 정보</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="style.css?v=78">
     <link rel="stylesheet" href="popup.css?v=3">
     <script src="lib/lucide.js"></script>
     <script>
@@ -24,6 +24,8 @@
     <script>
         (function () {
             function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
+            // 서버/저장소 문자열을 innerHTML에 넣기 전 이스케이프(2026-10-09 점검 수정, G-3/G-13).
+            function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (ch) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]; }); }
             function qs(name) { return new URLSearchParams(window.location.search).get(name) || ''; }
 
             const dbId = qs('db_id');
@@ -45,28 +47,28 @@
                 .then(res => res.json())
                 .then(data => {
                     if (data.error) {
-                        contentEl.innerHTML = `<h3 style="color: var(--danger);">조회 오류</h3><p>${data.error}</p>`;
+                        contentEl.innerHTML = `<h3 style="color: var(--danger);">조회 오류</h3><p>${esc(data.error)}</p>`;
                         return;
                     }
 
                     const rowsHtml = (data.length > 0)
                         ? data.map(f => {
                             const numPct = Number(f.used_pct);
-                            const displayPct = numPct.toFixed(1);
+                            const displayPct = isNaN(numPct) ? '--' : numPct.toFixed(1);
                             let barClass = '';
                             if (numPct >= 90) barClass = 'danger';
                             else if (numPct >= 80) barClass = 'warning';
                             return `
                                 <tr>
-                                    <td style="font-family: monospace; font-size: 0.9em;">${f.file_name}</td>
-                                    <td><span class="status-badge ${f.status && f.status.toUpperCase() === 'AVAILABLE' ? 'online' : 'offline'}">${f.status}</span></td>
+                                    <td style="font-family: monospace; font-size: 0.9em;">${esc(f.file_name)}</td>
+                                    <td><span class="status-badge ${f.status && f.status.toUpperCase() === 'AVAILABLE' ? 'online' : 'offline'}">${esc(f.status)}</span></td>
                                     <td>${f.autoextensible === 'YES' ? 'Y' : 'N'}</td>
-                                    <td>${f.total_mb.toLocaleString()}</td>
-                                    <td>${f.used_mb.toLocaleString()}</td>
-                                    <td>${f.free_mb.toLocaleString()}</td>
+                                    <td>${f.total_mb == null ? '--' : esc(f.total_mb.toLocaleString())}</td>
+                                    <td>${f.used_mb == null ? '--' : esc(f.used_mb.toLocaleString())}</td>
+                                    <td>${f.free_mb == null ? '--' : esc(f.free_mb.toLocaleString())}</td>
                                     <td>
                                         <div class="progress-bar-container">
-                                            <div class="progress-bar ${barClass}" style="width: ${numPct}%;"></div>
+                                            <div class="progress-bar ${barClass}" style="width: ${isNaN(numPct) ? 0 : numPct}%;"></div>
                                             <span>${displayPct}%</span>
                                         </div>
                                     </td>
@@ -77,7 +79,7 @@
 
                     contentEl.innerHTML = `
                         <div style="color: var(--text-main); text-align: left;">
-                            <h2 class="pp-title" style="margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; font-size: 1.5rem; color: var(--primary-color);">${tsName} 데이터파일 정보</h2>
+                            <h2 class="pp-title" style="margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; font-size: 1.5rem; color: var(--primary-color);">${esc(tsName)} 데이터파일 정보</h2>
                             <div class="table-container" style="max-height: 500px; overflow-y: auto;">
                                 <table class="data-table" style="width: 100%;">
                                     <thead>
@@ -100,7 +102,7 @@
                     if (typeof lucide !== 'undefined') lucide.createIcons();
                 })
                 .catch(err => {
-                    contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${err.message}</p>`;
+                    contentEl.innerHTML = `<h3 style="color: var(--danger);">오류 발생</h3><p>${esc(err.message)}</p>`;
                 });
         })();
     </script>

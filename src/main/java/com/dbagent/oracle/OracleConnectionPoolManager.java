@@ -118,7 +118,9 @@ public class OracleConnectionPoolManager implements org.springframework.beans.fa
     public Connection getConnection(TargetDbConfig target) throws SQLException {
         boolean sysdba = "SYS".equalsIgnoreCase(target.user());
         String dsn = buildDsn(target);
-        String poolKey = target.id() + "_" + target.user() + "_" + dsn + "_" + (sysdba ? "SYSDBA" : "DEFAULT");
+        // (2026-10-09 점검 수정 B-4) id 뒤 구분자를 id 에 쓸 수 없는 제어문자로 바꿔, id "ORCL" 의 풀과 id "ORCL_2" 의 풀이
+        // 접두사로 섞이지 않게 한다(evictPoolsForDbId 가 정확히 그 id 의 풀만 고른다). 풀 키는 내부에서만 쓴다.
+        String poolKey = poolKeyPrefix(target.id()) + target.user() + "_" + dsn + "_" + (sysdba ? "SYSDBA" : "DEFAULT");
 
         checkCooldown(poolKey);
 
@@ -132,7 +134,14 @@ public class OracleConnectionPoolManager implements org.springframework.beans.fa
                 if (ds == null) {
                     // createPool() itself never blocks on connectivity (see initializationFailTimeout
                     // below) - the first real connection attempt, and its failure, happens below instead.
-                    ds = createPool(target, dsn, sysdba);
+                    try {
+                        ds = createPool(target, dsn, sysdba);
+                    } catch (RuntimeException e) {
+                        // (2026-10-09 점검 수정 C-1) 풀 설정 오류(IllegalArgumentException 등)도 접속 실패와 같은 쿨다운 경로를 타게
+                        // 한다 - 안 그러면 폴링마다 풀 생성 예외가 반복된다.
+                        failedPools.put(poolKey, Instant.now());
+                        throw new SQLException("Connection pool could not be created: " + e.getMessage(), e);
+                    }
                     pools.put(poolKey, ds);
                 }
             } finally {
@@ -159,19 +168,46 @@ public class OracleConnectionPoolManager implements org.springframework.beans.fa
     // DB connections) would just leak forever instead of being replaced. Called by DbConfigAdminController
     // after a successful update/delete.
     public void evictPoolsForDbId(String dbId) {
-        final String prefix = dbId + "_";
-        pools.keySet().removeIf(key -> {
+        if (dbId == null) {
+            return;
+        }
+        // (2026-10-09 점검 수정 B-4/B-5) 구분자까지 포함한 접두사라 정확히 이 dbId 의 풀만 고른다. 풀은 즉시 닫지 않고
+        // 설정 변경 경로(onSettingsChanged)와 같이 지연 폐쇄해 진행 중인 조회가 끊기지 않게 한다.
+        // 키별 락을 잡은 채 풀을 빼므로 getConnection 의 풀 생성과 겹치지 않는다(락은 지우지 않는다 - 지우면 다른 스레드가
+        // 새 락을 만들어 같은 키 풀을 이중 생성할 수 있다).
+        final String prefix = poolKeyPrefix(dbId);
+        long delay = Math.max(POOL_RETIRE_MIN_DELAY_SECONDS, appliedReadTimeoutMs / 1000L + POOL_RETIRE_EXTRA_SECONDS);
+        for (String key : new java.util.ArrayList<>(pools.keySet())) {
             if (!key.startsWith(prefix)) {
-                return false;
+                continue;
             }
-            HikariDataSource ds = pools.get(key);
-            if (ds != null) {
-                ds.close();
+            ReentrantLock keyLock = poolLocks.computeIfAbsent(key, k -> new ReentrantLock());
+            keyLock.lock();
+            try {
+                HikariDataSource ds = pools.remove(key);
+                failedPools.remove(key);
+                if (ds != null) {
+                    retirePool(ds, delay);
+                }
+            } finally {
+                keyLock.unlock();
             }
-            return true;
-        });
+        }
         failedPools.keySet().removeIf(key -> key.startsWith(prefix));
-        poolLocks.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
+    private static String poolKeyPrefix(String dbId) {
+        return dbId + "\u0001";
+    }
+
+    private void retirePool(final HikariDataSource ds, long delaySeconds) {
+        POOL_RETIRE.schedule(() -> {
+            try {
+                ds.close();
+            } catch (RuntimeException e) {
+                poolLog.warn("이전 풀을 닫지 못했습니다: {}", e.toString());
+            }
+        }, delaySeconds, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     private static final Pattern WAITING_PATTERN = Pattern.compile("waiting=(\\d+)");

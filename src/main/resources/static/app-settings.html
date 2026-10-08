@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>시스템 설정</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=76">
+    <link rel="stylesheet" href="style.css?v=78">
     <link rel="stylesheet" href="popup.css?v=3">
     <script>
         // 메인 화면의 테마 선택을 따른다 (다른 팝업과 동일).
@@ -143,8 +143,16 @@
             }
 
             async function loadHistory() {
-                const r = await api('GET', '/api/app_settings/history?token=' + encodeURIComponent(token) + '&limit=200');
-                state.history = r.ok ? r.json.items : [];
+                let r;
+                try {
+                    r = await api('GET', '/api/app_settings/history?token=' + encodeURIComponent(token) + '&limit=200');
+                } catch (e) {
+                    // 네트워크 오류도 "이력 없음"이 아니라 사유와 함께 표시(2026-10-09 QA 수정)
+                    r = { ok: false, status: 0, json: { error: '서버에 연결하지 못했습니다(' + (e && e.message ? e.message : e) + ')' } };
+                }
+                // 조회 실패(403·500)를 "이력 없음"으로 보이지 않게 사유를 남긴다(2026-10-09 점검 수정).
+                state.historyError = r.ok ? null : ((r.json && r.json.error) || ('HTTP ' + r.status));
+                state.history = r.ok ? (r.json.items || []) : [];
                 render();
             }
 
@@ -454,6 +462,7 @@
                 const wrap = el('div');
                 wrap.append(el('div', 'as-note', '환경설정 변경 이력입니다 (최근 200건, 최신순). 이관(MIGRATE)은 최초 기동 때 옛 application.properties 에서 옮긴 값입니다.'));
                 if (state.history === null) { wrap.append(el('div', 'as-note', '불러오는 중...')); return wrap; }
+                if (state.historyError) { wrap.append(el('div', 'as-note', '이력을 불러오지 못했습니다(' + state.historyError + ').')); return wrap; }
                 if (!state.history.length) { wrap.append(el('div', 'as-note', '변경 이력이 없습니다.')); return wrap; }
                 const table = el('table', 'as-table');
                 const thead = el('thead');

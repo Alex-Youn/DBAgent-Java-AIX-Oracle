@@ -174,6 +174,7 @@ public class MsSqlMonitorService implements EngineMonitorService {
             result.put("bufferPoolGib", Math.round((bufferBytes / 1073741824.0) * 100.0) / 100.0);
             result.put("bufferPoolHitRatePct", Math.round(hitRatePct * 100.0) / 100.0);
         } catch (SQLException e) {
+            log.warn("MSSQL 개요/상태 조회 실패 (db={}): {}", target.id(), e.toString()); // 원인을 남긴다(2026-10-09 점검 수정 D-5)
             result.put("error", "DB에 연결할 수 없습니다.");
         }
         return result;
@@ -297,6 +298,7 @@ public class MsSqlMonitorService implements EngineMonitorService {
                 }
             }
         } catch (SQLException e) {
+            log.warn("MSSQL 개요/상태 조회 실패 (db={}): {}", target.id(), e.toString()); // 원인을 남긴다(2026-10-09 점검 수정 D-5)
             result.put("error", "DB에 연결할 수 없습니다.");
         }
         return result;
@@ -307,6 +309,15 @@ public class MsSqlMonitorService implements EngineMonitorService {
         String sql = "SELECT cntr_value FROM sys.dm_os_performance_counters " +
                 "WHERE RTRIM(object_name) LIKE ? AND RTRIM(counter_name) = ?";
         try (PreparedStatement ps = st.getConnection().prepareStatement(sql)) {
+            // st.getConnection() 은 타임아웃을 거는 감싼 연결이 아니라 원본이라, 호출한 Statement 의 제한 시간을 이어 받는다(2026-10-09 점검 수정 D-4).
+            int qt = st.getQueryTimeout();
+            if (qt > 0) {
+                try {
+                    ps.setQueryTimeout(qt);
+                } catch (SQLException ignore) {
+                    // 드라이버가 지원하지 않아도 조회는 계속한다.
+                }
+            }
             ps.setString(1, "%:" + objectNameFragment);
             ps.setString(2, counterName);
             try (ResultSet rs = ps.executeQuery()) {
@@ -398,7 +409,8 @@ public class MsSqlMonitorService implements EngineMonitorService {
         try (Connection conn = poolManager.getConnection(target);
              PreparedStatement ps = conn.prepareStatement(sql)) {
             // session_id 는 smallint 라 int 로 바인딩한다.
-            ps.setInt(1, (int) sessionId);
+            // (int) 캐스트는 큰 값을 다른 SPID 로 잘라 엉뚱한 세션을 보여 준다 - 범위 밖이면 예외(2026-10-09 점검 수정 D-1).
+            ps.setInt(1, Math.toIntExact(sessionId));
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
                     result.put("found", false);
@@ -498,14 +510,22 @@ public class MsSqlMonitorService implements EngineMonitorService {
     public Map<String, Object> killSession(TargetDbConfig target, long sessionId) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("session_id", sessionId);
-        try (Connection conn = poolManager.getConnection(target);
+        if (sessionId < 1 || sessionId > Integer.MAX_VALUE) {
+            // 범위 밖 값은 SPID 로 쓸 수 없다(2026-10-09 점검 수정 D-1).
+            result.put("status", "error");
+            result.put("message", "세션 ID가 올바르지 않습니다.");
+            return result;
+        }
+        try (Connection conn = poolManager.getKillConnection(target);
              Statement st = conn.createStatement()) {
             st.execute("KILL " + sessionId);
             result.put("status", "killed");
             result.put("message", null);
         } catch (SQLException e) {
+            // 드라이버 원문은 화면에 내리지 않고 로그에만 남긴다(2026-10-09 점검 수정 D-9). 권한 부족·시스템 세션 등 사유는 로그에서 확인한다.
+            log.warn("MSSQL 세션 종료 실패 (db={}, spid={}): {}", target.id(), sessionId, e.toString());
             result.put("status", "error");
-            result.put("message", e.getMessage());
+            result.put("message", "세션 종료에 실패했습니다. 권한(ALTER ANY CONNECTION)이나 시스템 세션 여부를 확인하세요. 자세한 사유는 서버 로그에 있습니다.");
         }
         return result;
     }

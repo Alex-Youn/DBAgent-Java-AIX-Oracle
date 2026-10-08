@@ -128,8 +128,9 @@ public class CheckCollector {
         for (CompletableFuture<Void> f : fs) {
             try {
                 f.join();
-            } catch (Exception ignored) {
-                // 각 점검이 스스로 ERROR 행을 남긴다
+            } catch (Exception e) {
+                // 각 점검이 스스로 ERROR 행을 남기므로 계속 진행하되, 원인 추적을 위해 로그는 남긴다(2026-10-09 점검 수정 A2-8)
+                log.warn("check job failed unexpectedly: {}", e.toString());
             }
         }
     }
@@ -182,9 +183,11 @@ public class CheckCollector {
         try {
             check.run();
             rows.add(row(target, ts, type, "*", "OK", null, null, null));
-        } catch (SQLException e) {
+        } catch (Exception e) {
+            // SQLException뿐 아니라 런타임 예외(예: saveSegmentSizes의 저장소 오류)도 이 항목의 ERROR 행으로 남긴다 - 안 그러면 예외가
+            // run()을 빠져나가 checkDaily 전체가 중단되고 뒤 항목(INVALID_OBJ 등)이 저장되지 않는다(2026-10-09 점검 수정 A2-8).
             while (rows.size() > before) rows.remove(rows.size() - 1);
-            rows.add(error(target, ts, type, e.getMessage()));
+            rows.add(error(target, ts, type, e.getMessage() != null ? e.getMessage() : e.toString()));
             log.debug("check {} failed for db_id={}: {}", type, target.id(), e.toString());
         }
     }

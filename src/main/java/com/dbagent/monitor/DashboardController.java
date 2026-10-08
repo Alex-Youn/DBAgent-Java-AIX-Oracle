@@ -280,7 +280,8 @@ public class DashboardController {
         try {
             return ResponseEntity.ok(lockService.killTmHolders(target, executedBy, parsed));
         } catch (SQLException e) {
-            return error(HttpStatus.INTERNAL_SERVER_ERROR, "KILL 처리 중 DB 오류: " + e.getMessage());
+            log.warn("KILL 처리 중 DB 오류: db_id={}, {}", dbId, e.toString()); // 2026-10-09 점검 수정: JDBC 원문(호스트·SQL)은 로그에만
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "KILL 처리 중 DB 오류가 발생했습니다. 서버 로그를 확인하세요.");
         }
     }
 

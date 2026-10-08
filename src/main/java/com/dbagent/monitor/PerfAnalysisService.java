@@ -120,6 +120,10 @@ public class PerfAnalysisService {
     /** 상단 차트 - /api/ash_activity와 같은 모양(categories, series[{time, values[7]}], cpu_cores, step_minutes). */
     public Map<String, Object> storeActivity(TargetDbConfig target, LocalDateTime from, LocalDateTime to, int step,
                                              AshRange.Filter filter) throws SQLException {
+        // 직접 호출 방어(2026-10-09 점검 수정 A1-2): 컨트롤러가 이미 검증하지만, 버킷 맵을 만드는 곳이라 한 번 더 막는다.
+        if (step <= 0 || java.time.Duration.between(from, to).toMinutes() > AshRange.MAX_RANGE_MINUTES) {
+            throw new IllegalArgumentException("조회 구간 또는 간격이 올바르지 않습니다.");
+        }
         LocalDateTime now = dbNowTime(target);
         to = clampTo(to, now);
         LocalDateTime start = AshRange.floorToStep(from, step);

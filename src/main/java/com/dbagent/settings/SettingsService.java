@@ -536,6 +536,27 @@ public class SettingsService {
         if (dangerKey != null && (reason == null || reason.trim().length() < 2)) {
             errors.put(dangerKey, "위험 항목은 변경 사유를 입력해야 합니다.");
         }
+        // 키 사이 관계 검사 (2026-10-09 점검 수정 C-2) - apply 와 같은 PAIR_RULES 를 초기화 결과 값 기준으로 적용한다.
+        // 예: crit 80 저장 상태에서 warn 만 기본 97 로 초기화하면 warn > crit 이 되므로 거부. DB별 재정의 초기화는
+        // 전역 유효값으로 돌아간다.
+        for (PairRule r : PAIR_RULES) {
+            if (dbId != null && !r.low.perDb()) {
+                continue;
+            }
+            if (!targets.contains(r.low) && !targets.contains(r.high)) {
+                continue;
+            }
+            if (errors.containsKey(r.low.key()) || errors.containsKey(r.high.key())) {
+                continue;
+            }
+            String lo = targets.contains(r.low) ? valueAfterReset(r.low, dbId) : resolve(r.low, dbId).value();
+            String hi = targets.contains(r.high) ? valueAfterReset(r.high, dbId) : resolve(r.high, dbId).value();
+            int c = compareNumbers(lo, hi);
+            if (r.strict ? c >= 0 : c > 0) {
+                String field = targets.contains(r.low) ? r.low.key() : r.high.key();
+                errors.put(field, "초기화하면 " + r.message + " (초기화 후 값: " + lo + " / " + hi + ")");
+            }
+        }
         if (!errors.isEmpty()) {
             return new ApplyResult(400, "입력값을 확인하세요.", errors, null, 0);
         }
@@ -556,6 +577,11 @@ public class SettingsService {
             reload();
         }
         return new ApplyResult(200, null, null, changed, unchanged);
+    }
+
+    /** 초기화 후 이 키의 유효값 - 전역이면 옛 파일·번들·코드 기본값, DB별이면 전역 유효값. */
+    private String valueAfterReset(SettingKey key, String dbId) {
+        return dbId == null ? baseValue(key) : resolve(key, null).value();
     }
 
     private boolean hasRow(SettingKey key, String dbId) {

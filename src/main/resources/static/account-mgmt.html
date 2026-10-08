@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>계정 관리</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=56">
+    <link rel="stylesheet" href="style.css?v=78">
     <link rel="stylesheet" href="popup.css?v=3">
     <script>
         (function () {
@@ -302,13 +302,24 @@
                     return;
                 }
                 if (!confirm(`'${user.username}' 계정을 삭제하시겠습니까?`)) return;
-                const delRes = await fetch(`/api/users/${encodeURIComponent(user.username)}?token=${encodeURIComponent(token)}`, { method: 'DELETE' });
-                const delData = await delRes.json();
+                // 네트워크 오류·비JSON 응답에도 안내가 나오도록 try/catch(2026-10-09 점검 수정).
+                let delRes, delData;
+                try {
+                    delRes = await fetch(`/api/users/${encodeURIComponent(user.username)}?token=${encodeURIComponent(token)}`, { method: 'DELETE' });
+                    delData = await delRes.json();
+                } catch (err) {
+                    acctMainError.textContent = '삭제 요청 중 오류가 발생했습니다: ' + err.message;
+                    acctMainError.style.display = 'block';
+                    return;
+                }
                 if (!delRes.ok || !delData.success) {
                     acctMainError.textContent = delData.message || '삭제 실패';
                     acctMainError.style.display = 'block';
                     return;
                 }
+                // 이전 시도의 오류 문구가 남지 않게 지운다(2026-10-09 QA 수정)
+                acctMainError.textContent = '';
+                acctMainError.style.display = 'none';
                 loadUserList();
             });
 

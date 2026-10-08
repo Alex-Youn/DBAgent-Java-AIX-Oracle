@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=25">
+    <link rel="stylesheet" href="style.css?v=78">
     <script src="lib/lucide.js"></script>
     <script>
         (function () {
@@ -81,6 +81,8 @@
     <script>
         (function () {
             function getToken() { return sessionStorage.getItem('dbagent_token') || ''; }
+            // 서버/저장소 문자열을 innerHTML에 넣기 전 이스케이프(2026-10-09 점검 수정, G-10).
+            function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (ch) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]; }); }
             function qs(name) { return new URLSearchParams(window.location.search).get(name) || ''; }
 
             const dbId = qs('db_id');
@@ -108,7 +110,7 @@
                     .then(res => res.json())
                     .then(data => {
                         if (data.error) {
-                            sessionsTbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#d03b3b; padding:20px;">DB Error: ${data.error}</td></tr>`;
+                            sessionsTbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#d03b3b; padding:20px;">DB Error: ${esc(data.error)}</td></tr>`;
                             return;
                         }
                         if (!data.length) {
@@ -123,19 +125,19 @@
                             const query = (s.info || '').toString().slice(0, 200);
                             return `
                                 <tr>
-                                    <td>${id != null ? id : ''}</td>
-                                    <td>${s.user || ''}</td>
-                                    <td>${s.host || ''}</td>
-                                    <td>${dbOrApp}</td>
-                                    <td>${state}</td>
-                                    <td>${duration}</td>
-                                    <td style="font-family: monospace; font-size: 0.85em; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${(s.info || '').toString().replace(/"/g, '&quot;')}">${query}</td>
+                                    <td>${esc(id != null ? id : '')}</td>
+                                    <td>${esc(s.user || '')}</td>
+                                    <td>${esc(s.host || '')}</td>
+                                    <td>${esc(dbOrApp)}</td>
+                                    <td>${esc(state)}</td>
+                                    <td>${esc(duration)}</td>
+                                    <td style="font-family: monospace; font-size: 0.85em; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(s.info || '')}">${esc(query)}</td>
                                 </tr>
                             `;
                         }).join('');
                     })
                     .catch(err => {
-                        sessionsTbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#d03b3b; padding:20px;">${err.message}</td></tr>`;
+                        sessionsTbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#d03b3b; padding:20px;">${esc(err.message)}</td></tr>`;
                     });
             }
 
@@ -148,7 +150,7 @@
                     .then(res => res.json())
                     .then(data => {
                         if (data.error) {
-                            storageTbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#d03b3b; padding:20px;">DB Error: ${data.error}</td></tr>`;
+                            storageTbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#d03b3b; padding:20px;">DB Error: ${esc(data.error)}</td></tr>`;
                             totalMbEl.textContent = '-- MB'; usedMbEl.textContent = '-- MB'; totalPctEl.textContent = '--%';
                             return;
                         }
@@ -163,8 +165,8 @@
                             sumUsedMb += Number(t.used_mb) || 0;
                             return `
                                 <tr>
-                                    <td>${t.tablespace_name}</td>
-                                    <td><span class="status-badge online">${t.status}</span></td>
+                                    <td>${esc(t.tablespace_name)}</td>
+                                    <td><span class="status-badge online">${esc(t.status)}</span></td>
                                     <td>${Number(t.used_mb).toLocaleString()}</td>
                                 </tr>
                             `;
@@ -174,7 +176,7 @@
                         totalPctEl.textContent = sumTotalMb > 0 ? `${((sumUsedMb / sumTotalMb) * 100).toFixed(1)}%` : '0%';
                     })
                     .catch(err => {
-                        storageTbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#d03b3b; padding:20px;">${err.message}</td></tr>`;
+                        storageTbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#d03b3b; padding:20px;">${esc(err.message)}</td></tr>`;
                     });
             }
 

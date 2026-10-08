@@ -177,6 +177,7 @@ public class PostgresMonitorService implements EngineMonitorService {
             result.put("sharedBuffersGib", round2(sharedBuffersBytes / 1073741824.0));
             result.put("cacheHitRatePct", round2(hitRatePct));
         } catch (SQLException e) {
+            log.warn("PostgreSQL 개요/상태 조회 실패 (db={}): {}", target.id(), e.toString()); // 원인을 남긴다(2026-10-09 점검 수정 D-5)
             result.put("error", "DB에 연결할 수 없습니다.");
         }
         return result;
@@ -331,6 +332,7 @@ public class PostgresMonitorService implements EngineMonitorService {
             result.put("replicaCount", replicaCount);
             result.put("replicationSlotCount", replicationSlotCount);
         } catch (SQLException e) {
+            log.warn("PostgreSQL 개요/상태 조회 실패 (db={}): {}", target.id(), e.toString()); // 원인을 남긴다(2026-10-09 점검 수정 D-5)
             result.put("error", "DB에 연결할 수 없습니다.");
         }
         return result;
@@ -435,7 +437,8 @@ public class PostgresMonitorService implements EngineMonitorService {
         try (Connection conn = poolManager.getConnection(target);
              PreparedStatement ps = conn.prepareStatement(sql)) {
             // pg 의 pid 는 int4 라 int 로 바인딩한다.
-            ps.setInt(1, (int) sessionId);
+            // (int) 캐스트는 4294967297 같은 값을 1 로 잘라 엉뚱한 세션을 가리킨다 - 범위를 벗어나면 예외로 막는다(2026-10-09 점검 수정 D-1).
+            ps.setInt(1, Math.toIntExact(sessionId));
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
                     result.put("found", false);
@@ -531,7 +534,13 @@ public class PostgresMonitorService implements EngineMonitorService {
     public Map<String, Object> killSession(TargetDbConfig target, long sessionId) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("session_id", sessionId);
-        try (Connection conn = poolManager.getConnection(target);
+        if (sessionId < 1 || sessionId > Integer.MAX_VALUE) {
+            // (int) 캐스트로 다른 pid 가 종료되는 것을 막는다(2026-10-09 점검 수정 D-1).
+            result.put("status", "error");
+            result.put("message", "세션 ID가 올바르지 않습니다.");
+            return result;
+        }
+        try (Connection conn = poolManager.getKillConnection(target);
              PreparedStatement ps = conn.prepareStatement("SELECT pg_terminate_backend(?) AS terminated")) {
             ps.setInt(1, (int) sessionId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -541,7 +550,9 @@ public class PostgresMonitorService implements EngineMonitorService {
             }
         } catch (SQLException e) {
             result.put("status", "error");
-            result.put("message", e.getMessage());
+            // 드라이버 원문(호스트·포트 포함)은 화면에 내리지 않고 로그에만 남긴다(2026-10-09 점검 수정 D-9).
+            log.warn("PostgreSQL 세션 종료 실패 (db={}, pid={}): {}", target.id(), sessionId, e.toString());
+            result.put("message", "세션 종료에 실패했습니다. 서버 로그를 확인해 주세요.");
         }
         return result;
     }

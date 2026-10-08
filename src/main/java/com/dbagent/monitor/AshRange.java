@@ -33,6 +33,12 @@ final class AshRange {
     /** 한 번에 조회할 수 있는 최대 구간 - 설계 4.3 (3). */
     static final int MAX_RANGE_MINUTES = 24 * 60;
 
+    /**
+     * 가벼운 메타 조회(SYSDATE, v$instance, MIN(sample_time) 등)의 쿼리 타임아웃(초) - screen-query-timeout-seconds 기본값과 같다.
+     * (2026-10-09 점검 수정 A1-9) 이 조회들만 타임아웃이 없어 DB가 느리면 커넥션을 무한정 붙잡을 수 있었다. 정적 헬퍼라 설정을 못 읽어 상수로 둔다.
+     */
+    static final int META_QUERY_TIMEOUT_SECONDS = 10;
+
     /** 모니터링 계정 세션 제외(별칭 h). user_id가 NULL인 행은 예전 dba_users LEFT JOIN 방식처럼 남긴다. */
     static final String EXCLUDE_SELF_SQL =
             "AND (h.user_id IS NULL OR h.user_id <> TO_NUMBER(SYS_CONTEXT('USERENV', 'SESSION_USERID'))) ";
@@ -69,7 +75,9 @@ final class AshRange {
 
     /** DB의 현재 시각(SYSDATE). */
     static LocalDateTime dbNow(Connection conn) throws SQLException {
-        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT SYSDATE FROM dual")) {
+        try (Statement st = conn.createStatement()) {
+            st.setQueryTimeout(META_QUERY_TIMEOUT_SECONDS);
+            ResultSet rs = st.executeQuery("SELECT SYSDATE FROM dual");
             rs.next();
             return rs.getTimestamp(1).toLocalDateTime();
         }
@@ -91,10 +99,12 @@ final class AshRange {
         }
         LocalDateTime ashMin = null;
         if (awrFallback) {
-            try (Statement st = conn.createStatement();
-                 ResultSet rs = st.executeQuery("SELECT MIN(sample_time) FROM v$active_session_history")) {
-                if (rs.next() && rs.getTimestamp(1) != null) {
-                    ashMin = rs.getTimestamp(1).toLocalDateTime();
+            try (Statement st = conn.createStatement()) {
+                st.setQueryTimeout(META_QUERY_TIMEOUT_SECONDS);
+                try (ResultSet rs = st.executeQuery("SELECT MIN(sample_time) FROM v$active_session_history")) {
+                    if (rs.next() && rs.getTimestamp(1) != null) {
+                        ashMin = rs.getTimestamp(1).toLocalDateTime();
+                    }
                 }
             }
         }

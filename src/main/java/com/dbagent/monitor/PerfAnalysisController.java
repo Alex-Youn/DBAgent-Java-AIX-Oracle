@@ -6,6 +6,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import com.dbagent.auth.AuthService;
 import com.dbagent.oracle.DatabaseConfigService;
 import com.dbagent.oracle.TargetDbConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,6 +27,8 @@ import java.util.Collections;
 @RestController
 @RequestMapping("/api/perf")
 public class PerfAnalysisController {
+
+    private static final Logger log = LoggerFactory.getLogger(PerfAnalysisController.class);
 
     // 환경설정 DB화 P3-2(2026-10-04): 보존 기간을 SettingsService 에서 읽는다(저장 즉시 반영).
     @Autowired
@@ -57,7 +61,7 @@ public class PerfAnalysisController {
         try {
             return ResponseEntity.ok(Collections.singletonMap("dbNow", perfService.dbNow(target)));
         } catch (SQLException e) {
-            return error(HttpStatus.INTERNAL_SERVER_ERROR, "조회 중 DB 오류: " + e.getMessage());
+            return dbError(e);
         }
     }
 
@@ -89,7 +93,7 @@ public class PerfAnalysisController {
         try {
             return ResponseEntity.ok(perfService.storeFilters(target, settings.getInt(SettingKey.PERF_RETENTION_DAYS)));
         } catch (SQLException e) {
-            return error(HttpStatus.INTERNAL_SERVER_ERROR, "조회 중 DB 오류: " + e.getMessage());
+            return dbError(e);
         }
     }
 
@@ -141,6 +145,12 @@ public class PerfAnalysisController {
         if (!f.isBefore(t)) {
             return error(HttpStatus.BAD_REQUEST, "시작 시각이 종료 시각보다 앞서야 합니다.");
         }
+        // (2026-10-09 점검 수정 A1-2) 기본 경로(source=store)에도 구간 상한을 둔다 - 예전에는 원본(oracle) 경로만 AshRange.resolve에서
+        // 24시간으로 잘렸고, store 경로는 from=2000-01-01 같은 입력에 분 단위 버킷 수천만 개를 만들어 서버 메모리를 고갈시킬 수 있었다.
+        // 화면(perf-analysis.js)도 24시간 초과를 이미 막고 있어 자르지 않고 400으로 알린다.
+        if (java.time.Duration.between(f, t).toMinutes() > AshRange.MAX_RANGE_MINUTES) {
+            return error(HttpStatus.BAD_REQUEST, "조회 구간은 최대 24시간까지 가능합니다. 구간을 줄여 주세요.");
+        }
         TargetDbConfig target = configService.resolve(dbId);
         if (target == null || !"oracle".equalsIgnoreCase(target.dbType())) {
             return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
@@ -148,8 +158,16 @@ public class PerfAnalysisController {
         try {
             return ResponseEntity.ok(q.run(target, f, t, AshRange.Filter.of(users, machines)));
         } catch (SQLException e) {
-            return error(HttpStatus.INTERNAL_SERVER_ERROR, "조회 중 DB 오류: " + e.getMessage());
+            return dbError(e);
+        } catch (IllegalArgumentException e) {
+            return error(HttpStatus.BAD_REQUEST, e.getMessage());
         }
+    }
+
+    /** DB 오류 원문(ORA-...)은 화면에 내리지 않고 로그에만 남긴다(2026-10-09 점검 수정 A1-12). */
+    private static ResponseEntity<Object> dbError(SQLException e) {
+        log.warn("perf analysis DB query failed: {}", e.toString());
+        return error(HttpStatus.INTERNAL_SERVER_ERROR, "조회 중 DB 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
     }
 
     private static ResponseEntity<Object> error(HttpStatus status, String message) {
