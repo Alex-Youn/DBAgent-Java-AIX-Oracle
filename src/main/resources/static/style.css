@@ -2011,6 +2011,8 @@ body.app-shell { overflow-y: hidden; }
 .perf-brush { position: absolute; top: 0; height: 100%; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10; }
 .perf-sel-bar { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; font-size: 0.9rem; }
 .perf-sel-bar #perf-sel-text { font-weight: 600; }
+.perf-quick { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 0 0 10px; }
+.perf-range-msg { color: var(--warning); font-size: 0.85rem; margin-left: 6px; }
 .perf-link-btn { border: 1px solid var(--border-color); background: var(--bg-card); color: var(--primary); border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 0.85rem; }
 .perf-hint { color: var(--text-secondary); font-size: 0.8rem; font-weight: 400; }
 .perf-h3 { margin: 0 0 8px; color: var(--text-primary); font-size: 1.05rem; }

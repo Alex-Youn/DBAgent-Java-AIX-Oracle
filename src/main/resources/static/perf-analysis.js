@@ -36,8 +36,10 @@
         gen: 0,
         eventsGen: 0,
         initFor: null,     // 입력칸 기본값을 채운 DB
-        source: 'store'    // 'store'(수집 저장소, 기본) | 'oracle'(원본 ASH/AWR)
+        source: 'store',   // 'store'(수집 저장소, 기본) | 'oracle'(원본 ASH/AWR)
+        nowOffsetMs: 0     // DB 시각 - 브라우저 시각(db_now 응답 기준). 빠른 선택·max 계산을 DB 시각으로 맞추려고
     };
+    const MAX_RANGE_MIN = 24 * 60;
     let activityChart = null;
     let eventsChart = null;
     let lastEvents = [];
@@ -94,6 +96,89 @@
     // 2026-09-26 오케스트레이터 결정: 1시간 → 15분(초기 자동 조회 부하를 줄이고, 구간이 ASH 보관 범위를 넘어 AWR까지 가지 않게).
     const DEFAULT_RANGE_MS = 15 * 60000;
 
+    // 지금의 DB 시각(분 단위로 내림). db_now를 받은 뒤의 오프셋으로 계산해 브라우저·DB 시간대가 달라도 맞는다.
+    const dbNowDate = () => new Date(Math.floor((Date.now() + st.nowOffsetMs) / 60000) * 60000);
+
+    function rangeMsg(text) {
+        const el = $('perf-range-msg');
+        if (!el) return;
+        el.textContent = text || '';
+        el.style.display = text ? '' : 'none';
+    }
+
+    // 입력칸에서 미래를 못 고르게 max를 지금(DB 시각)으로 둔다(2026-10-09 오케스트레이터 요청: 시간 선택 개선).
+    function refreshInputLimits() {
+        const mx = fmtMinute(dbNowDate());
+        $('history-start-time').max = mx;
+        $('history-end-time').max = mx;
+    }
+
+    function setRange(from, to) {
+        $('history-start-time').value = fmtMinute(from);
+        $('history-end-time').value = fmtMinute(to);
+        refreshInputLimits();
+        validateRange();
+    }
+
+    // 조회 전에 입력칸 아래 문구로 미리 알린다(alert 대신). 조회할 수 있으면 true.
+    function validateRange() {
+        const from = $('history-start-time').value;
+        const to = $('history-end-time').value;
+        const btn = $('perf-search-btn');
+        let msg = '';
+        let blocked = false;
+        if (!from || !to) { msg = '시작·종료 시간을 모두 입력해 주세요.'; blocked = true; }
+        else {
+            const minutes = (parseLocal(to) - parseLocal(from)) / 60000;
+            if (!(minutes > 0)) { msg = '시작 시간이 종료 시간보다 앞서야 합니다.'; blocked = true; }
+            else if (minutes > MAX_RANGE_MIN) { msg = '한 번에 최대 24시간까지 조회할 수 있습니다. 구간을 줄여 주세요.'; blocked = true; }
+            else if (parseLocal(to) > dbNowDate()) msg = '종료 시간이 DB 현재 시각보다 뒤입니다. 조회하면 현재 시각까지로 잘립니다.';
+        }
+        rangeMsg(msg);
+        if (btn) btn.disabled = blocked;
+        return !blocked;
+    }
+
+    // 시작을 바꿨는데 종료와 어긋나면(종료<=시작, 24시간 초과) 종료를 시작+1시간(최대 현재)으로 보정한다.
+    function onStartChange() {
+        const from = $('history-start-time').value;
+        const to = $('history-end-time').value;
+        if (from) {
+            const f = parseLocal(from);
+            const mins = to ? (parseLocal(to) - f) / 60000 : 0;
+            if (!to || !(mins > 0) || mins > MAX_RANGE_MIN) {
+                let e = new Date(Math.min(f.getTime() + 60 * 60000, dbNowDate().getTime()));
+                if (!(e > f)) e = new Date(f.getTime() + 60000);
+                $('history-end-time').value = fmtMinute(e);
+            }
+        }
+        validateRange();
+    }
+
+    // 빠른 선택: 종료=DB 현재 시각, 시작=종료-N분 후 바로 조회
+    function quickRange(minutes) {
+        const now = dbNowDate();
+        setRange(new Date(now.getTime() - minutes * 60000), now);
+        search();
+    }
+
+    // 현재 폭만큼 앞/뒤로 이동(뒤로는 현재 시각을 넘지 않게)
+    function shiftRange(dir) {
+        const from = $('history-start-time').value;
+        const to = $('history-end-time').value;
+        if (!from || !to) return;
+        const f = parseLocal(from).getTime();
+        const t = parseLocal(to).getTime();
+        const width = t - f;
+        if (!(width > 0)) return;
+        let nf = f + dir * width;
+        let nt = t + dir * width;
+        const now = dbNowDate().getTime();
+        if (nt > now) { nt = now; nf = now - width; }
+        setRange(new Date(nf), new Date(nt));
+        search();
+    }
+
     async function ensureDefaultRange() {
         const dbId = window.currentDbId;
         if (!dbId || st.initFor === dbId) return;
@@ -101,8 +186,8 @@
         try {
             const d = await getJson(`/api/perf/db_now?db_id=${encodeURIComponent(dbId)}`);
             const now = parseLocal(d.dbNow);
-            $('history-end-time').value = fmtMinute(now);
-            $('history-start-time').value = fmtMinute(new Date(now.getTime() - DEFAULT_RANGE_MS));
+            st.nowOffsetMs = now.getTime() - Date.now();
+            setRange(new Date(now.getTime() - DEFAULT_RANGE_MS), now);
             loadFilters(dbId);
             // 초기 화면(2026-09-26 오케스트레이터 요청): 메뉴에 들어오면 빈 화면 대신 최근 15분을 바로 조회해
             // 상단 차트와 하단 event 막대를 보여 준다. 이미 조회한 결과가 있으면(같은 DB) 다시 조회하지 않는다.
@@ -140,10 +225,8 @@
         const from = $('history-start-time').value;
         const to = $('history-end-time').value;
         if (!dbId) return;
-        if (!from || !to) { alert('시작 시간과 종료 시간을 모두 입력해 주세요.'); return; }
+        if (!validateRange()) return;
         const minutes = (parseLocal(to) - parseLocal(from)) / 60000;
-        if (!(minutes > 0)) { alert('시작 시간이 종료 시간보다 앞서야 합니다.'); return; }
-        if (minutes > 24 * 60) { alert('한 번에 최대 24시간까지 조회할 수 있습니다.'); return; }
 
         const my = ++st.gen;
         st.dbId = dbId;
@@ -159,7 +242,14 @@
             if (my !== st.gen || dbId !== window.currentDbId) return;
             st.activity = act;
             // 서버가 확정한 구간(종료가 DB 현재 시각보다 뒤면 현재 시각으로 잘림)을 기준으로 삼는다.
-            if (act.from && act.to) st.range = { from: act.from, to: act.to };
+            if (act.from && act.to) {
+                st.range = { from: act.from, to: act.to };
+                // 서버가 잘라 확정한 구간을 입력칸에도 되돌려 채운다(입력값과 실제 조회 구간이 달라 보이지 않게)
+                $('history-start-time').value = act.from.slice(0, 16);
+                $('history-end-time').value = act.to.slice(0, 16);
+                refreshInputLimits();
+                validateRange();
+            }
             renderActivity(act);
             renderSelection();
             await loadEvents();
@@ -438,6 +528,14 @@
         const btn = $('perf-search-btn');
         if (!btn) return;
         btn.addEventListener('click', search);
+        $('history-start-time').addEventListener('change', onStartChange);
+        $('history-end-time').addEventListener('change', validateRange);
+        document.querySelectorAll('[data-perf-quick]').forEach(b =>
+            b.addEventListener('click', () => quickRange(parseInt(b.dataset.perfQuick, 10))));
+        const prev = $('perf-range-prev');
+        const next = $('perf-range-next');
+        if (prev) prev.addEventListener('click', () => shiftRange(-1));
+        if (next) next.addEventListener('click', () => shiftRange(1));
         $('perf-sel-reset').addEventListener('click', () => { st.sel = null; renderSelection(); loadEvents(); });
         attachBrush();
         attachEventsClick();

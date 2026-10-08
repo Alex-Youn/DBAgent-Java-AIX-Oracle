@@ -4425,18 +4425,7 @@ function showSelectedSessionsPopup(sessions) {
 }
 
 
-    const endInput = document.getElementById('history-end-time');
-    const startInput = document.getElementById('history-start-time');
-    if (endInput && startInput) {
-        const now = new Date();
-        const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-        const formatDateTime = (date) => {
-            const pad = (n) => n.toString().padStart(2, '0');
-            return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-        };
-        endInput.value = formatDateTime(now);
-        startInput.value = formatDateTime(oneHourAgo);
-    }
+    // 성능 분석 시작/종료 기본값은 perf-analysis.js가 DB 시각 기준으로 채운다(2026-10-09 - 브라우저 시각 1시간 기본값 제거).
 
 
 

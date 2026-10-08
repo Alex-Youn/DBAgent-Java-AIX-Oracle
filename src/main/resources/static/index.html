@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=76">
+    <link rel="stylesheet" href="style.css?v=78">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=13"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -1140,6 +1140,19 @@
                                 <div class="circular-progress"></div>
                                 <span style="color: #fff; font-weight: 600;">조회 중입니다...</span>
                             </div>
+                            <!-- 빠른 선택(2026-10-09): 종료=DB 현재 시각, 시작=종료-N분으로 채우고 바로 조회. 동작은 perf-analysis.js -->
+                            <div class="perf-quick">
+                                <button type="button" class="perf-link-btn" id="perf-range-prev" title="현재 폭만큼 이전 구간으로 이동">◀ 이전</button>
+                                <button type="button" class="perf-link-btn" data-perf-quick="15">15분</button>
+                                <button type="button" class="perf-link-btn" data-perf-quick="30">30분</button>
+                                <button type="button" class="perf-link-btn" data-perf-quick="60">1시간</button>
+                                <button type="button" class="perf-link-btn" data-perf-quick="180">3시간</button>
+                                <button type="button" class="perf-link-btn" data-perf-quick="360">6시간</button>
+                                <button type="button" class="perf-link-btn" data-perf-quick="720">12시간</button>
+                                <button type="button" class="perf-link-btn" data-perf-quick="1440">24시간</button>
+                                <button type="button" class="perf-link-btn" id="perf-range-next" title="현재 폭만큼 다음 구간으로 이동(현재 시각까지)">다음 ▶</button>
+                                <span id="perf-range-msg" class="perf-range-msg" style="display: none;"></span>
+                            </div>
                             <div class="perf-meta" id="perf-meta">조회할 구간을 정하고 조회 버튼을 눌러 주세요. 최대 24시간, ASH 보관 범위 밖은 AWR로 보충합니다.</div>
                             <div class="perf-chart-box" id="perf-activity-container">
                                 <canvas id="perf-activity-chart"></canvas>
@@ -1218,12 +1231,12 @@
     </div>
 
 
-    <script src="app.js?v=191"></script>
+    <script src="app.js?v=192"></script>
     <script src="nd-dashboard.js?v=21"></script>
     <script src="nd-aas.js?v=12"></script>
     <script src="nd-lock.js?v=13"></script>
     <script src="nd-top.js?v=4"></script>
     <script src="nd-checks.js?v=7"></script>
-    <script src="perf-analysis.js?v=6"></script>
+    <script src="perf-analysis.js?v=8"></script>
 </body>
 </html>
