@@ -37,7 +37,8 @@
         eventsGen: 0,
         initFor: null,     // 입력칸 기본값을 채운 DB
         source: 'store',   // 'store'(수집 저장소, 기본) | 'oracle'(원본 ASH/AWR)
-        nowOffsetMs: 0     // DB 시각 - 브라우저 시각(db_now 응답 기준). 빠른 선택·max 계산을 DB 시각으로 맞추려고
+        nowOffsetMs: 0,    // DB 시각 - 브라우저 시각(db_now 응답 기준). 빠른 선택·max 계산을 DB 시각으로 맞추려고
+        nowReady: false    // 현재 DB의 db_now를 받아 nowOffsetMs가 유효한지(받기 전·DB 전환 직후에는 브라우저 시각으로 계산하면 시간대가 어긋난다)
     };
     const MAX_RANGE_MIN = 24 * 60;
     let activityChart = null;
@@ -108,6 +109,7 @@
 
     // 입력칸에서 미래를 못 고르게 max를 지금(DB 시각)으로 둔다(2026-10-09 오케스트레이터 요청: 시간 선택 개선).
     function refreshInputLimits() {
+        if (!st.nowReady) return; // DB 시각을 모르면 max를 두지 않는다(브라우저 시각으로 두면 DB가 더 앞선 시간대에서 유효한 시각을 막는다)
         const mx = fmtMinute(dbNowDate());
         $('history-start-time').max = mx;
         $('history-end-time').max = mx;
@@ -132,6 +134,8 @@
             const minutes = (parseLocal(to) - parseLocal(from)) / 60000;
             if (!(minutes > 0)) { msg = '시작 시간이 종료 시간보다 앞서야 합니다.'; blocked = true; }
             else if (minutes > MAX_RANGE_MIN) { msg = '한 번에 최대 24시간까지 조회할 수 있습니다. 구간을 줄여 주세요.'; blocked = true; }
+            // 시작이 DB 현재 시각 이후면 서버가 종료만 잘라 시작>종료로 뒤집히므로 미리 막는다(QA 결함 1, 키보드 직접 입력으로 재현)
+            else if (st.nowReady && parseLocal(from) >= dbNowDate()) { msg = '시작 시간이 DB 현재 시각보다 뒤입니다. 더 이전 시각을 선택해 주세요.'; blocked = true; }
             else if (parseLocal(to) > dbNowDate()) msg = '종료 시간이 DB 현재 시각보다 뒤입니다. 조회하면 현재 시각까지로 잘립니다.';
         }
         rangeMsg(msg);
@@ -155,8 +159,14 @@
         validateRange();
     }
 
+    // 현재 DB의 db_now를 받아 시각 기준이 유효한지(DB 전환 직후·응답 전에는 이전 DB의 입력값으로 조회하지 않는다 - QA 결함 2)
+    function nowOk() {
+        return st.nowReady && st.initFor === window.currentDbId;
+    }
+
     // 빠른 선택: 종료=DB 현재 시각, 시작=종료-N분 후 바로 조회
     function quickRange(minutes) {
+        if (!nowOk()) { rangeMsg('DB 현재 시각을 확인하는 중입니다. 잠시 후 다시 눌러 주세요.'); return; }
         const now = dbNowDate();
         setRange(new Date(now.getTime() - minutes * 60000), now);
         search();
@@ -164,6 +174,7 @@
 
     // 현재 폭만큼 앞/뒤로 이동(뒤로는 현재 시각을 넘지 않게)
     function shiftRange(dir) {
+        if (!nowOk()) { rangeMsg('DB 현재 시각을 확인하는 중입니다. 잠시 후 다시 눌러 주세요.'); return; }
         const from = $('history-start-time').value;
         const to = $('history-end-time').value;
         if (!from || !to) return;
@@ -183,10 +194,12 @@
         const dbId = window.currentDbId;
         if (!dbId || st.initFor === dbId) return;
         st.initFor = dbId;
+        st.nowReady = false; // DB가 바뀌었으면 이전 DB의 시계 차이를 쓰지 않는다
         try {
             const d = await getJson(`/api/perf/db_now?db_id=${encodeURIComponent(dbId)}`);
             const now = parseLocal(d.dbNow);
             st.nowOffsetMs = now.getTime() - Date.now();
+            st.nowReady = true;
             setRange(new Date(now.getTime() - DEFAULT_RANGE_MS), now);
             loadFilters(dbId);
             // 초기 화면(2026-09-26 오케스트레이터 요청): 메뉴에 들어오면 빈 화면 대신 최근 15분을 바로 조회해
@@ -225,6 +238,7 @@
         const from = $('history-start-time').value;
         const to = $('history-end-time').value;
         if (!dbId) return;
+        if (!nowOk()) { rangeMsg('DB 현재 시각을 확인하는 중입니다. 잠시 후 다시 눌러 주세요.'); return; }
         if (!validateRange()) return;
         const minutes = (parseLocal(to) - parseLocal(from)) / 60000;
 
@@ -514,6 +528,9 @@
         st.sel = null;
         st.activity = null;
         st.source = 'store';
+        // 진행 중이던 조회는 gen이 바뀌어 finally에서 오버레이를 못 끄므로 여기서 끈다(db_now 실패 시 "조회 중" 화면이 남는 것 방지)
+        const ov = $('history-loading-overlay');
+        if (ov) ov.style.display = 'none';
         if (activityChart) { activityChart.destroy(); activityChart = null; }
         clearEvents('');
         const meta = $('perf-meta');
@@ -530,6 +547,9 @@
         btn.addEventListener('click', search);
         $('history-start-time').addEventListener('change', onStartChange);
         $('history-end-time').addEventListener('change', validateRange);
+        // 화면을 오래 열어 두면 max(=열 때의 DB 시각)가 낡아 달력에서 최근 시각을 못 고르므로, 입력칸에 들어올 때 갱신한다.
+        $('history-start-time').addEventListener('focus', refreshInputLimits);
+        $('history-end-time').addEventListener('focus', refreshInputLimits);
         document.querySelectorAll('[data-perf-quick]').forEach(b =>
             b.addEventListener('click', () => quickRange(parseInt(b.dataset.perfQuick, 10))));
         const prev = $('perf-range-prev');
