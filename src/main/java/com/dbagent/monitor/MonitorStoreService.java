@@ -64,6 +64,12 @@ public class MonitorStoreService {
                 "buffer_gets_d BIGINT, disk_reads_d BIGINT, rows_d BIGINT, sql_text VARCHAR(1000), " +
                 "PRIMARY KEY (db_id, collect_ts, sql_id, plan_hash_value))");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_mon_sqlstat_delta_sql ON mon_sqlstat_delta (db_id, sql_id, collect_ts)");
+        // 성능 분석 Phase 3(2026-10-09): parse_calls 델타와 FORCE_MATCHING_SIGNATURE(부호 없는 64비트라 long에 안 들어가 문자열로 저장).
+        // 이미 만들어진 테이블에는 컬럼이 없다 - SQLite·H2 모두 ADD COLUMN을 지원한다.
+        for (String col : new String[]{"parse_calls_d BIGINT", "force_matching_signature VARCHAR(24)"}) {
+            // H2는 IF NOT EXISTS를 지원한다 - 컬럼 유무를 조회로 확인하면 예외 스택이 metrics.trace.db에 남는다(QA D12)
+            jdbc.execute("ALTER TABLE mon_sqlstat_delta ADD COLUMN IF NOT EXISTS " + col);
+        }
 
         jdbc.execute("CREATE TABLE IF NOT EXISTS mon_lock_sample (" +
                 "db_id VARCHAR(64) NOT NULL, collect_ts BIGINT NOT NULL, tx_wait_max INTEGER, tm_wait_max INTEGER, " +
@@ -118,14 +124,67 @@ public class MonitorStoreService {
     // ------------------------------------------------------------------ 쓰기
 
     /**
-     * 행: {dbId, collectTs, sqlId, planHashValue, executionsD, elapsedUsD, cpuUsD, bufferGetsD, diskReadsD, rowsD}.
+     * 행: {dbId, collectTs, sqlId, planHashValue, executionsD, elapsedUsD, cpuUsD, bufferGetsD, diskReadsD, rowsD, parseCallsD, fms}.
      * sql_text 컬럼은 기존 파일 호환으로 남겨 두지만 쓰지 않는다(NULL) - SqlStatDeltaCollector 주석 참고(2026-10-02).
      */
     public void saveSqlstatDeltas(List<Object[]> rows) {
         if (rows == null || rows.isEmpty()) return;
         jdbc.batchUpdate(upsert("mon_sqlstat_delta",
-                "db_id, collect_ts, sql_id, plan_hash_value, executions_d, elapsed_us_d, cpu_us_d, buffer_gets_d, disk_reads_d, rows_d",
-                "db_id, collect_ts, sql_id, plan_hash_value", 10), rows);
+                "db_id, collect_ts, sql_id, plan_hash_value, executions_d, elapsed_us_d, cpu_us_d, buffer_gets_d, disk_reads_d, rows_d, " +
+                        "parse_calls_d, force_matching_signature",
+                "db_id, collect_ts, sql_id, plan_hash_value", 12), rows);
+    }
+
+    // ------------------------------------------------------------------ SQL 분석 읽기 (성능 분석 Phase 3, 2026-10-09)
+    // 시각은 앱 epoch ms(collect_ts). 호출자(PerfSqlService)가 DB 시각 ↔ 앱 시각을 바꾼다.
+
+    /** 구간의 SQL_ID별 합계: {sql_id, executions, elapsed_us, cpu_us, buffer_gets, rows, parse_calls, fms, plan_count, last_plan_hash}. */
+    public List<Object[]> sqlstatAggregate(String dbId, long fromMs, long toMs) {
+        return jdbc.query("SELECT sql_id, SUM(executions_d), SUM(elapsed_us_d), SUM(cpu_us_d), SUM(buffer_gets_d), SUM(rows_d), " +
+                        "SUM(parse_calls_d), MAX(force_matching_signature), COUNT(DISTINCT plan_hash_value), MAX(plan_hash_value) " +
+                        "FROM mon_sqlstat_delta WHERE db_id = ? AND collect_ts >= ? AND collect_ts < ? GROUP BY sql_id",
+                (rs, n) -> new Object[]{rs.getString(1), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5), rs.getLong(6),
+                        rs.getLong(7), rs.getString(8), rs.getInt(9), rs.getLong(10)}, dbId, fromMs, toMs);
+    }
+
+    /** 구간의 (collect_ts, sql_id)별 실행 수·Elapsed: {collect_ts, sql_id, executions, elapsed_us}. sqlIds는 호출자가 200개 이하로 준다. */
+    public List<Object[]> sqlstatSeries(String dbId, java.util.Collection<String> sqlIds, long fromMs, long toMs) {
+        if (sqlIds.isEmpty()) return new java.util.ArrayList<>();
+        StringBuilder in = new StringBuilder();
+        List<Object> b = new java.util.ArrayList<>();
+        b.add(dbId);
+        b.add(fromMs);
+        b.add(toMs);
+        for (String id : sqlIds) {
+            in.append(in.length() == 0 ? "?" : ", ?");
+            b.add(id);
+        }
+        return jdbc.query("SELECT collect_ts, sql_id, SUM(executions_d), SUM(elapsed_us_d) FROM mon_sqlstat_delta " +
+                        "WHERE db_id = ? AND collect_ts >= ? AND collect_ts < ? AND sql_id IN (" + in + ") GROUP BY collect_ts, sql_id",
+                (rs, n) -> new Object[]{rs.getLong(1), rs.getString(2), rs.getLong(3), rs.getLong(4)}, b.toArray());
+    }
+
+    /** 한 SQL의 plan_hash별 합계(첫·마지막 시각 포함): {plan_hash, min_ts, max_ts, executions, elapsed_us, buffer_gets}. */
+    public List<Object[]> sqlstatPlanSums(String dbId, String sqlId, long fromMs, long toMs) {
+        return jdbc.query("SELECT plan_hash_value, MIN(collect_ts), MAX(collect_ts), SUM(executions_d), SUM(elapsed_us_d), SUM(buffer_gets_d) " +
+                        "FROM mon_sqlstat_delta WHERE db_id = ? AND sql_id = ? AND collect_ts >= ? AND collect_ts < ? GROUP BY plan_hash_value",
+                (rs, n) -> new Object[]{rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5), rs.getLong(6)},
+                dbId, sqlId, fromMs, toMs);
+    }
+
+    /** 구간에서 plan_hash가 둘 이상 나타난 SQL_ID(Plan 변경 후보). */
+    public List<String> sqlIdsWithMultiplePlans(String dbId, long fromMs, long toMs) {
+        return jdbc.queryForList("SELECT sql_id FROM mon_sqlstat_delta WHERE db_id = ? AND collect_ts >= ? AND collect_ts < ? " +
+                "GROUP BY sql_id HAVING COUNT(DISTINCT plan_hash_value) > 1", String.class, dbId, fromMs, toMs);
+    }
+
+    /** 시간 롤업용 (sql_id, plan_hash)별 합계: {sql_id, plan_hash, executions, elapsed_us, cpu_us, buffer_gets, disk_reads, rows, parse_calls, fms}. */
+    public List<Object[]> sqlstatHourRows(String dbId, long fromMs, long toMs) {
+        return jdbc.query("SELECT sql_id, plan_hash_value, SUM(executions_d), SUM(elapsed_us_d), SUM(cpu_us_d), SUM(buffer_gets_d), " +
+                        "SUM(disk_reads_d), SUM(rows_d), SUM(parse_calls_d), MAX(force_matching_signature) FROM mon_sqlstat_delta " +
+                        "WHERE db_id = ? AND collect_ts >= ? AND collect_ts < ? GROUP BY sql_id, plan_hash_value",
+                (rs, n) -> new Object[]{rs.getString(1), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5), rs.getLong(6),
+                        rs.getLong(7), rs.getLong(8), rs.getLong(9), rs.getString(10)}, dbId, fromMs, toMs);
     }
 
     public void saveLockSample(String dbId, long collectTs, int txWaitMax, int tmWaitMax, int tmHolderOverMax, boolean incident) {
@@ -284,7 +343,9 @@ public class MonitorStoreService {
     void cleanupOldRows() {
         long now = System.currentTimeMillis();
         long cutoff = now - TimeUnit.DAYS.toMillis(settings.getInt(SettingKey.STORE_RETENTION_DAYS));
-        purge("mon_sqlstat_delta", "collect_ts", cutoff);
+        // SQL 1분 델타는 새 커서 행이 늘어 따로 짧게 둔다(기본 7일) - store-retention-days가 더 짧으면 그 값(2026-10-09 쿼리 검토)
+        long deltaDays = Math.min(settings.getInt(SettingKey.STORE_RETENTION_DAYS), settings.getInt(SettingKey.SQLSTAT_DELTA_RETENTION_DAYS));
+        purge("mon_sqlstat_delta", "collect_ts", now - TimeUnit.DAYS.toMillis(deltaDays));
         purge("mon_lock_sample", "collect_ts", cutoff);
         purge("mon_check_result", "check_ts", cutoff);
         purge("mon_segment_size", "snap_date", cutoff);

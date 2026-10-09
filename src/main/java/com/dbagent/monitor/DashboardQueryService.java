@@ -275,13 +275,16 @@ public class DashboardQueryService {
             long toApp = w.to.atZone(zone).toInstant().toEpochMilli() - off;
             r.put("stats", storeService.sqlstatSummary(target.id(), sqlId, fromApp, toApp));
 
-            String textSql = "SELECT DBMS_LOB.SUBSTR(sql_fulltext, 2000, 1) FROM v$sqlstats WHERE sql_id = ?";
+            String textSql = "SELECT sql_fulltext FROM v$sqlstats WHERE sql_id = ? AND ROWNUM = 1";
             String fullText = null;
             try (PreparedStatement ps = conn.prepareStatement(textSql)) {
                 ps.setQueryTimeout(settings.getInt(SettingKey.ASH_ACTIVITY_QUERY_TIMEOUT_SECONDS));
                 ps.setString(1, sqlId);
                 try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) fullText = rs.getString(1);
+                    if (rs.next()) {
+                        fullText = rs.getString(1);
+                        if (fullText != null && fullText.length() > 2000) fullText = fullText.substring(0, 2000);
+                    }
                 }
             }
             r.put("sqlFullText", fullText);

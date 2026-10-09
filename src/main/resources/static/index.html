@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=83">
+    <link rel="stylesheet" href="style.css?v=84">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=14"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -1127,7 +1127,7 @@
                         <button type="button" class="perf-subtab active" role="tab" data-perf-sub="session">세션 분석</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="lock">Lock 분석</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="load">시스템 부하</button>
-                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="sql" hidden>SQL 분석</button>
+                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="sql">SQL 분석</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="cmp" hidden>구간 비교</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="obj" hidden>오브젝트·I/O</button>
                     </div>
@@ -1181,7 +1181,7 @@
                                 <span class="perf-hint">위 그래프를 좌우로 드래그하면 그 구간만 아래에 집계합니다.</span>
                                 <!-- 다른 하위 탭으로 구간 넘기기(Phase 0a): 대상 탭이 노출되기 전에는 비활성 -->
                                 <button type="button" class="perf-link-btn perf-go-btn" id="perf-go-lock" data-perf-go="lock" disabled title="Lock 분석 탭이 추가되면 사용할 수 있습니다.">이 구간 Lock 분석 →</button>
-                                <button type="button" class="perf-link-btn perf-go-btn" id="perf-go-sql" data-perf-go="sql" disabled title="SQL 분석 탭이 추가되면 사용할 수 있습니다.">이 구간 SQL 분석 →</button>
+                                <button type="button" class="perf-link-btn perf-go-btn" id="perf-go-sql" data-perf-go="sql" disabled title="조회한 구간을 SQL 분석 탭에서 봅니다.">이 구간 SQL 분석 →</button>
                             </div>
                             <h3 class="perf-h3">Event별 대기 시간 <span class="perf-hint">막대를 누르면 그 Event의 세션 목록이 열립니다.</span></h3>
                             <div class="perf-chart-box perf-events-box" id="perf-events-container">
@@ -1265,6 +1265,42 @@
                             </div>
                         </div>
                     </div>
+                    <!-- SQL 분석 하위 탭(성능 분석 개편 Phase 3): 비용 Top·실행 빈도·리터럴·Plan 변경 + SQL 상세 패널. 동작은 perf-sql.js -->
+                    <div id="perf-sub-sql" class="perf-sub-pane" data-perf-pane="sql" hidden>
+                        <div class="panel">
+                            <div class="panel-body">
+                                <div class="perf-sel-bar perf-lk-filter">
+                                    <span class="perf-lk-seg" id="perf-sql-view">
+                                        <button type="button" class="active" data-v="cost">비용 Top</button><button type="button" data-v="freq">실행 빈도</button><button type="button" data-v="literal">리터럴 SQL</button><button type="button" data-v="plan">Plan 변경</button>
+                                    </span>
+                                    <span class="perf-lk-seg" id="perf-sql-group" title="같은 FORCE_MATCHING_SIGNATURE의 SQL_ID를 한 행으로 합칩니다(시그니처가 없는 SQL은 합치지 않음).">
+                                        <button type="button" class="active" data-g="id">SQL_ID</button><button type="button" data-g="fms">FMS</button>
+                                    </span>
+                                    <span class="perf-hint">계정·서버 필터는 적용되지 않습니다(v$sqlstats에 없음)</span>
+                                </div>
+                                <div id="perf-sql-notice" class="perf-lk-notice" style="display: none;"></div>
+                                <div id="perf-sql-chart-box" style="display: none;">
+                                    <h3 class="perf-h3"><span id="perf-sql-chart-title">추이</span></h3>
+                                    <div class="perf-chart-box perf-lk-chart"><canvas id="perf-sql-chart"></canvas></div>
+                                </div>
+                                <div class="perf-lk-grid">
+                                    <div class="perf-lk-left">
+                                        <h3 class="perf-h3">SQL 목록 <span class="perf-hint" id="perf-sql-count"></span></h3>
+                                        <div class="perf-lk-tablewrap">
+                                            <table class="perf-lk-table">
+                                                <thead id="perf-sql-head"></thead>
+                                                <tbody id="perf-sql-rows"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                    <div class="perf-lk-right">
+                                        <h3 class="perf-h3">SQL 상세</h3>
+                                        <div class="perf-lk-detail" id="perf-sql-detail"><div class="perf-lk-empty">조회 후 표시됩니다</div></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </section>
 
             </div>
@@ -1333,8 +1369,9 @@
     <script src="nd-top.js?v=4"></script>
     <script src="nd-checks.js?v=7"></script>
     <script src="perf-shell.js?v=4"></script>
-    <script src="perf-analysis.js?v=16"></script>
-    <script src="perf-lock.js?v=5"></script>
+    <script src="perf-analysis.js?v=17"></script>
+    <script src="perf-lock.js?v=6"></script>
     <script src="perf-load.js?v=4"></script>
+    <script src="perf-sql.js?v=3"></script>
 </body>
 </html>

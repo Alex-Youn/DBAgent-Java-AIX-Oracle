@@ -1241,7 +1241,8 @@ public class PerfLockService implements InitializingBean {
                 incidents += jdbc.update("DELETE FROM perf_lock_incident WHERE incident_id = ?", id);
             }
         }
-        int beats = jdbc.update("DELETE FROM perf_collect_min WHERE minute_key < ?", cutoffMin);
+        // 'sqlhour'(SQL 시간 롤업 하트비트)는 롤업 보존 기간(기본 90일)을 따르므로 PerfSqlService.purge가 지운다(2026-10-09 점검 수정)
+        int beats = jdbc.update("DELETE FROM perf_collect_min WHERE minute_key < ? AND kind <> 'sqlhour'", cutoffMin);
         if (incidents > 0 || beats > 0) {
             log.info("perf lock purge: {} incident(s), {} heartbeat(s) older than {} day(s)", incidents, beats,
                     settings.getInt(SettingKey.PERF_RETENTION_DAYS));

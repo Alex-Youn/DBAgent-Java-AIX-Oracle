@@ -307,8 +307,13 @@
         $('perf-lock-go-session').addEventListener('click', () => goSession(d));
     }
 
-    // SQL 분석 탭이 생기기 전에는 대시보드의 SQL 상세 드로어를 연다(설계 1-6, 대시보드 선택 구간 기준으로 보인다)
+    // SQL 분석 탭이 있으면 그 탭의 상세 패널로 보낸다(설계 3-5: 다른 탭의 SQL_ID 링크는 SQL 분석 탭에서 연다). 없으면 대시보드 SQL 상세 드로어
     function openSql(sqlId) {
+        if (/^[A-Za-z0-9]{1,13}$/.test(sqlId || '') && S.goSub) {
+            const before = window.location.hash;
+            S.goSub('sql', `&view=cost&group=id&sql_id=${enc(sqlId)}`);
+            if (window.location.hash !== before) return;
+        }
         const ND = window.ndDashboard;
         try {
             if (ND && ND.drawer && ND.views && ND.views.sql) { ND.drawer.open(() => ND.views.sql(sqlId)); return; }

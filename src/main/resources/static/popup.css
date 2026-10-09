@@ -81,3 +81,4 @@ body.pp-body { padding: 0; }
 /* ERD: 도식 영역이 남은 높이를 채우고 그 안에서 스크롤(Ctrl+휠 확대는 도식에만) */
 .pp-erd-area { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; justify-content: center; align-items: center; border: 1px solid var(--border); border-radius: 6px; background: #0d0d0d; padding: 24px; }
 .pp-erd-area svg { max-width: none; transition: transform 0.1s ease; transform-origin: center center; }
+.pp-table a.pp-sqllink { color: var(--primary); text-decoration: underline; }

@@ -6,7 +6,7 @@
     <title>Event 세션 목록</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
     <link rel="stylesheet" href="style.css?v=56">
-    <link rel="stylesheet" href="popup.css?v=3">
+    <link rel="stylesheet" href="popup.css?v=4">
     <script>
         (function () {
             const saved = localStorage.getItem('dbagent_theme') || 'dark';
@@ -86,11 +86,25 @@
                             ${rows.length ? `<table class="pp-table pp-col-lines"><thead><tr>${cols.map(c => `<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>
                                 ${rows.map((r, i) => `<tr class="clickable" data-i="${i}">${cols.map(c => {
                                     const t = val(c[1](r));
+                                    // SQL ID 열(수집 저장소·원본 모두 라벨이 'SQL ID')은 SQL 분석 탭 링크로 - sql_id 형식이 맞을 때만
+                                    if (c[0] === 'SQL ID' && /^[A-Za-z0-9]{1,13}$/.test(t)) {
+                                        return `<td class="${c[2]}" title="${esc(t)}"><a href="#" class="pp-sqllink" data-sql="${esc(t)}" title="SQL 분석에서 보기">${esc(t)}</a></td>`;
+                                    }
                                     return `<td${c[2] ? ` class="${c[2]}"` : ''} title="${esc(t)}">${esc(t)}</td>`;
                                 }).join('')}</tr>`).join('')}
                             </tbody></table>` : '<div class="pp-empty">이 구간에 해당 Event로 샘플된 세션이 없습니다.</div>'}
                         </div>`;
 
+                    // SQL ID 열: 링크를 누르면 메인 화면의 성능 분석 > SQL 분석 탭에서 그 SQL의 상세를 연다(설계 3-5).
+                    // 이 팝업이 보는 구간(from~to)을 그대로 넘기고, 세션 상세는 열지 않는다. 메인 화면이 닫혀 있으면 링크를 막는다.
+                    contentEl.querySelectorAll('a.pp-sqllink').forEach(a => a.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const main = window.opener && !window.opener.closed ? window.opener : null;
+                        if (!main) { a.title = '메인 화면이 닫혀 있어 SQL 분석을 열 수 없습니다'; a.style.opacity = '0.5'; return; }
+                        main.location.hash = `#history/sql?db_id=${encodeURIComponent(dbId)}&from=${encodeURIComponent(params.get('from') || '')}&to=${encodeURIComponent(params.get('to') || '')}&view=cost&group=id&sql_id=${encodeURIComponent(a.dataset.sql)}`;
+                        try { main.focus(); } catch (err) { /* ignore */ }
+                    }));
                     contentEl.querySelectorAll('tr.clickable').forEach(tr => {
                         tr.addEventListener('click', () => {
                             const r = rows[+tr.dataset.i];

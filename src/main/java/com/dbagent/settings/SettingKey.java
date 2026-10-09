@@ -122,6 +122,29 @@ public enum SettingKey {
     DIAG_SEQ_READ_MS(d("dbagent.perf.diag-seq-read-ms", INT, "10", LOCK, "시스템 부하: 단일 블록 읽기 지연 기준",
             "db file sequential read 평균 대기가 이 시간(ms) 이상이면 스토리지 응답 지연 의심 힌트를 표시합니다.").unit("ms").range(1, 1000)),
 
+    // 성능 분석 개편 Phase 3(2026-10-09, 설계 3장): SQL 분석 - 기존 1분 v$sqlstats 델타 수집을 확장한다(새 원본 조회 없음)
+    SQLSTAT_NEW_CURSOR_MAX_ROWS(d("dbagent.monitor.sqlstat-new-cursor-max-rows", INT, "100", LOCK, "SQL 분석: 새 커서 저장 상한",
+            "1분 수집에서 처음 보는 SQL(주로 리터럴 SQL)의 누적값을 사이클당 이 개수까지만 SQL 단위로 저장합니다. 0이면 새 커서를 저장하지 않습니다(리터럴 보기도 비게 됩니다).").unit("개").range(0, 5000)
+            .detail("처음 보인 커서의 누적 통계를 그 1분의 델타로 인정해야 한 번만 실행되고 사라지는 리터럴 SQL을 잡을 수 있습니다. 상한을 넘는 새 커서는 SQL 단위 행을 저장하지 않고, FORCE_MATCHING_SIGNATURE 단위 집계(리터럴 보기용)에만 반영합니다. 저장 행이 늘어나는 만큼 metrics DB가 커집니다(행당 약 100~150바이트).")),
+    SQLSTAT_NEW_CURSOR_MAX_EXECS(d("dbagent.monitor.sqlstat-new-cursor-max-execs", INT, "1000", LOCK, "SQL 분석: 새 커서 인정 최대 실행 수",
+            "처음 보인 커서의 누적 실행 수가 이 값 이하일 때만 새 SQL로 보고 누적값을 델타로 인정합니다.").unit("회").range(1, 1000000)
+            .detail("오래 살아 있던 커서가 다시 보이기 시작한 경우(누적 실행 수가 큼)에는 지난 누적값 전체가 한 분에 몰려 급등값이 되므로 기준값만 기억하고 다음 분부터 셉니다.")),
+    SQLSTAT_NEW_CURSOR_MAX_ELAPSED_SEC(d("dbagent.monitor.sqlstat-new-cursor-max-elapsed-sec", INT, "120", LOCK, "SQL 분석: 새 커서 인정 최대 Elapsed",
+            "처음 보인 커서의 누적 Elapsed가 이 값(초) 이하일 때만 새 SQL로 보고 누적값을 델타로 인정합니다.").unit("초").range(1, 86400)
+            .detail("오래 쉬다가 돌아온 배치 SQL의 누적 Elapsed 전체가 한 분의 델타로 다시 더해지는 것을 막습니다. 새 커서 인정 최대 실행 수와 함께 적용됩니다.")),
+    DIAG_SQL_SURGE_PCT(d("dbagent.perf.diag-sql-surge-pct", INT, "100", LOCK, "SQL 분석: 급증 기준",
+            "지난주 같은 시간대보다 실행 수가 이 비율(%) 이상 늘면 급증 배지를 표시합니다(구간 실행 수가 급증 최소 실행 수 이상일 때).").unit("%").range(10, 10000)),
+    DIAG_SQL_SURGE_MIN_EXECS(d("dbagent.perf.diag-sql-surge-min-execs", INT, "10000", LOCK, "SQL 분석: 급증 최소 실행 수",
+            "급증 배지를 표시하려면 구간 실행 수가 이 값 이상이어야 합니다.").unit("회").range(1, 100000000)),
+    DIAG_SQL_NPLUS1_EXEC_SEC(d("dbagent.perf.diag-sql-nplus1-exec-sec", INT, "50", LOCK, "SQL 분석: N+1 의심 초당 실행",
+            "SELECT 문이 초당 이 횟수 이상 실행되고 실행당 행 수가 1.01 이하이면 N+1 의심 배지를 표시합니다.").unit("회/초").range(1, 100000)),
+    DIAG_SQL_REUSE_EXEC_SEC(d("dbagent.perf.diag-sql-reuse-exec-sec", INT, "10", LOCK, "SQL 분석: 커서 재사용 안 됨 초당 실행",
+            "Parse/Exec가 기준 이상이고 초당 이 횟수 이상 실행되면 커서 재사용 X 배지를 표시합니다.").unit("회/초").range(1, 100000)),
+    DIAG_SQL_REUSE_PARSE_PCT(d("dbagent.perf.diag-sql-reuse-parse-pct", INT, "90", LOCK, "SQL 분석: 커서 재사용 안 됨 Parse 비율",
+            "실행 1회당 Parse 호출 비율이 이 값(%) 이상이면 커서 재사용 X 배지를 표시합니다.").unit("%").range(10, 1000)),
+    DIAG_SQL_LITERAL_ID_COUNT(d("dbagent.perf.diag-sql-literal-id-count", INT, "50", LOCK, "SQL 분석: 리터럴 SQL_ID 수 기준",
+            "같은 FORCE_MATCHING_SIGNATURE에 속한 SQL_ID가 이 개수 이상이면 리터럴 배지를 표시합니다.").unit("개").range(2, 1000000)),
+
     // ───────────────────────── 점검 알림 ─────────────────────────
     CHECK_INTERVAL_MINUTES(d("dbagent.monitor.check-interval-minutes", INT, "10", CHECK, "점검 수집 주기",
             "점검 알림 수집 작업이 도는 간격입니다.").unit("분").range(1, 1440)
@@ -209,6 +232,13 @@ public enum SettingKey {
     SYS_EVENT_RETENTION_DAYS(d("dbagent.perf.sys-event-retention-days", INT, "15", RETENTION, "시스템 부하 대기 이벤트 보존 기간",
             "시스템 부하 탭의 대기 이벤트 분 데이터를 보관하는 일수입니다. 지표(분당 9행)는 성능 분석 보존 기간을 따릅니다.").unit("일").range(1, 3650)
             .detail("대기 이벤트는 분당 최대 50행이라 저장 용량의 대부분을 차지합니다(DB 1개당 15일에 SQLite 약 200MB 이상, H2는 더 큼). 지난주 같은 시간 비교에는 최소 8일이 필요하므로 8일 미만으로 줄이면 대기 이벤트의 지난주 대비 배지와 힌트가 나오지 않습니다.")),
+    SQL_ROLLUP_RETENTION_DAYS(d("dbagent.perf.rollup-retention-days", INT, "90", RETENTION, "SQL 시간 롤업 보존 기간",
+            "SQL 분석의 시간 단위 롤업(시간당 상위 SQL + Plan 변경 SQL)과 Plan 변경 기록을 보관하는 일수입니다.").unit("일").range(1, 3650)),
+    SQL_ROLLUP_TOP_N(d("dbagent.perf.rollup-top-n", INT, "200", RETENTION, "SQL 시간 롤업 SQL 수",
+            "시간마다 Elapsed 상위 N개와 실행 수 상위 N개(합집합) SQL을 롤업에 남깁니다. 6시간을 넘는 구간 조회와 지난주 대비는 이 롤업을 씁니다.").unit("개").range(10, 5000)),
+    SQLSTAT_DELTA_RETENTION_DAYS(d("dbagent.perf.sqlstat-delta-retention-days", INT, "7", RETENTION, "SQL 1분 델타 보존 기간",
+            "SQL 분석의 1분 단위 SQL 통계(mon_sqlstat_delta)를 보관하는 일수입니다. 점검·Lock 이력 보존 기간보다 길게 두어도 이 값까지만 보관합니다.").unit("일").range(1, 3650)
+            .detail("6시간을 넘는 구간과 지난주 대비는 시간 롤업을 쓰므로 1분 델타를 오래 둘 필요가 없습니다. 새 커서 행이 늘어 이 테이블이 커지므로 기본 7일로 제한합니다.")),
     STORE_RETENTION_DAYS(d("dbagent.monitor.store-retention-days", INT, "30", RETENTION, "점검·Lock 이력 보존 기간",
             "점검 알림·Lock 샘플 이력을 보관하는 일수입니다.").unit("일").range(1, 3650)),
     KILL_AUDIT_RETENTION_DAYS(d("dbagent.monitor.kill-audit-retention-days", INT, "365", RETENTION, "KILL 감사 기록 보존 기간",
@@ -304,7 +334,9 @@ public enum SettingKey {
             SESSION_EXTRA_FAIL_LOG_MINUTES, FLEET_STATUS_TIMEOUT_SECONDS, ACTIVE_ALERTS_TIMEOUT_SECONDS,
             // P5 Lock 백그라운드 수집 켜기/끄기·상한, 접속/응답 대기와 풀 크기(저장하면 풀을 다시 만든다)
             LOCK_KEEPALIVE_MINUTES, LOCK_KEEPALIVE_MAX_DBS, LOCK_COLLECT_ENABLED, BLOCKER_DETAIL_ENABLED, BLOCKER_TM_MODE_ENABLED, LOCK_GAP_SEC,
-            SYS_COLLECT_ENABLED, DIAG_CARD_PCT, DIAG_WAIT_RATIO_PCT, DIAG_HARD_PARSE_PCT, DIAG_SEQ_READ_MS,
+            SYS_COLLECT_ENABLED, DIAG_CARD_PCT, SQLSTAT_NEW_CURSOR_MAX_ROWS, SQLSTAT_NEW_CURSOR_MAX_EXECS,
+            SQLSTAT_NEW_CURSOR_MAX_ELAPSED_SEC, SQLSTAT_DELTA_RETENTION_DAYS, DIAG_SQL_SURGE_PCT, DIAG_SQL_SURGE_MIN_EXECS, DIAG_SQL_NPLUS1_EXEC_SEC, DIAG_SQL_REUSE_EXEC_SEC, DIAG_SQL_REUSE_PARSE_PCT,
+            DIAG_SQL_LITERAL_ID_COUNT, SQL_ROLLUP_RETENTION_DAYS, SQL_ROLLUP_TOP_N, DIAG_WAIT_RATIO_PCT, DIAG_HARD_PARSE_PCT, DIAG_SEQ_READ_MS,
             ORACLE_CONNECT_TIMEOUT_MS, ORACLE_READ_TIMEOUT_MS, ORACLE_POOL_MIN_IDLE, ORACLE_POOL_MAX_SIZE,
             RDB_CONNECT_TIMEOUT_MS, RDB_READ_TIMEOUT_MS, RDB_POOL_MIN_IDLE, RDB_POOL_MAX_SIZE));
 

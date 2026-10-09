@@ -39,10 +39,12 @@ public class PerfAnalysisController {
     private final PerfAnalysisService perfService;
     private final PerfLockService lockService;
     private final PerfSysService sysService;
+    private final PerfSqlService sqlService;
 
     public PerfAnalysisController(AuthService authService, DatabaseConfigService configService, PerfAnalysisService perfService,
-                                  PerfLockService lockService, PerfSysService sysService) {
+                                  PerfLockService lockService, PerfSysService sysService, PerfSqlService sqlService) {
         this.sysService = sysService;
+        this.sqlService = sqlService;
         this.authService = authService;
         this.configService = configService;
         this.perfService = perfService;
@@ -225,6 +227,59 @@ public class PerfAnalysisController {
                                             @RequestParam(required = false) String baseline) {
         return run(db_id, token, from, to, null, null,
                 (t, f, e, fl) -> sysService.loadWaits(t.id(), f, e, "lastweek".equals(baseline)));
+    }
+
+    // ------------------------------------------------------------------ SQL 분석 (성능 분석 개편 Phase 3, 2026-10-09, 설계 3-6)
+    // 수집 저장소만 읽는다(sql_detail의 SQL 전문 단건 조회만 대상 DB). 계정·서버 필터는 적용하지 않는다(v$sqlstats에 없음).
+
+    @GetMapping("/sql_top")
+    public ResponseEntity<Object> sqlTop(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                         @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                         @RequestParam(required = false, defaultValue = "cost") String view,
+                                         @RequestParam(required = false, defaultValue = "id") String group,
+                                         @RequestParam(required = false, defaultValue = "50") int limit,
+                                         @RequestParam(required = false, defaultValue = "lastweek") String baseline) {
+        return run(db_id, token, from, to, null, null,
+                (t, f, e, fl) -> sqlService.sqlTop(t, f, e, view, group, limit, "lastweek".equals(baseline)));
+    }
+
+    @GetMapping("/sql_trend")
+    public ResponseEntity<Object> sqlTrend(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                           @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                           @RequestParam(name = "sql_ids", required = false) String sqlIds,
+                                           @RequestParam(required = false, defaultValue = "elapsed") String metric) {
+        java.util.List<String> ids = new java.util.ArrayList<String>();
+        if (sqlIds != null) {
+            for (String id : sqlIds.split(",")) {
+                String x = id.trim();
+                if (!x.isEmpty() && x.length() <= 13 && x.matches("[A-Za-z0-9]+") && ids.size() < 20) ids.add(x);
+            }
+        }
+        return run(db_id, token, from, to, null, null, (t, f, e, fl) -> sqlService.sqlTrend(t.id(), f, e, ids, metric));
+    }
+
+    @GetMapping("/sql_literal")
+    public ResponseEntity<Object> sqlLiteral(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                             @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                             @RequestParam(name = "min_count", required = false, defaultValue = "2") int minCount) {
+        return run(db_id, token, from, to, null, null, (t, f, e, fl) -> sqlService.sqlLiteral(t, f, e, minCount, true));
+    }
+
+    @GetMapping("/sql_plan_changes")
+    public ResponseEntity<Object> sqlPlanChanges(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                                 @RequestParam(required = false) String from, @RequestParam(required = false) String to) {
+        return run(db_id, token, from, to, null, null, (t, f, e, fl) -> sqlService.sqlPlanChanges(t, f, e));
+    }
+
+    @GetMapping("/sql_detail")
+    public ResponseEntity<Object> sqlDetail(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                            @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                            @RequestParam(name = "sql_id", required = false) String sqlId) {
+        if (sqlId == null || !sqlId.trim().matches("[A-Za-z0-9]{1,13}")) {
+            return error(HttpStatus.BAD_REQUEST, "sql_id가 필요합니다(영문·숫자 13자 이하).");
+        }
+        final String id = sqlId.trim();
+        return run(db_id, token, from, to, null, null, (t, f, e, fl) -> sqlService.sqlDetail(t, id, f, e));
     }
 
     private ResponseEntity<Object> run(String dbId, String token, String from, String to, String users, String machines, Query q) {
