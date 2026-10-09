@@ -240,6 +240,10 @@ public class PerfAnalysisController {
             return dbError(e);
         } catch (IllegalArgumentException e) {
             return error(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (org.springframework.dao.DataAccessException e) {
+            // 수집 저장소(SQLite/H2) 오류도 {"error": 한국어} 규약으로 내린다(Lock 분석 API는 저장소만 읽는다)
+            log.warn("perf store query failed: {}", e.toString());
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "수집 저장소 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
         }
     }
 

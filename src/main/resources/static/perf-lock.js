@@ -68,6 +68,7 @@
         let msg = '';
         if (collect && collect.enabled === false) msg = 'Lock 분석 수집이 꺼져 있습니다(환경설정 → Lock 분석 수집). 이미 쌓인 이력만 보입니다.';
         else if (collect && collect.state === 'unavailable') msg = `ASH 조회 불가 - 판단 보류${collect.reason ? ' (' + collect.reason + ')' : ''}. 이 DB의 v$active_session_history를 읽을 수 없어 락 이력을 만들 수 없습니다.`;
+        else if (collect && collect.state === 'truncated') msg = `락 대기 샘플이 너무 많아 일부만 수집되었습니다${collect.reason ? ' (' + collect.reason + ')' : ''}. 이 시간대의 건수·대기 시간은 실제보다 작을 수 있습니다.`;
         else if (collect && collect.state === 'error') msg = `최근 락 수집에 실패했습니다${collect.reason ? ' (' + collect.reason + ')' : ''}. 그 구간은 수집 공백으로 표시될 수 있습니다.`;
         el.textContent = msg;
         el.style.display = msg ? '' : 'none';
@@ -360,6 +361,7 @@
         if (t !== 'TX' && t !== 'TM' && t !== 'all') return false;
         if (t === st.type) return false;
         st.type = t;
+        S.setUrlExtra('lock', t === 'all' ? '' : '&type=' + t); // 새로고침·링크 공유 때 유형 필터가 복원되게 URL에 남긴다
         document.querySelectorAll('#perf-lock-type button').forEach(x => x.classList.toggle('active', x.dataset.t === t));
         if (st.chart) {
             st.chart.data.datasets[0].hidden = t === 'TM';

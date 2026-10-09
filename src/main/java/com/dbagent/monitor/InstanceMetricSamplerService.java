@@ -289,7 +289,7 @@ public class InstanceMetricSamplerService {
                 perfStore.markCollected(dbId, PerfStoreService.minuteKey(dbAt));
                 // 성공한 수집 분 기록(수집 공백 판정용, 설계 3.1의 5) - 한가해서 행이 없는 분과 수집이 안 된 분을 구분한다
                 perfLock.saveHeartbeat(dbId, PerfStoreService.minuteKey(dbAt), "ash");
-                perfLock.ingest(dbId, perf.lockSamples, dbAt);
+                perfLock.ingest(dbId, perf.lockSamples, dbAt, perf.lockContinuous);
             }
         } catch (Exception e) {
             log.warn("perf store write failed for db_id={}: {}", dbId, e.toString());
@@ -456,6 +456,9 @@ public class InstanceMetricSamplerService {
                 }
             }
         }
+        // 락 대기(TX·TM 전체) 샘플 수 - 반올림 전 값. 0이면 락 4종 행도 없으므로 아래 락 샘플 ASH 스캔을 건너뛴다(쿼리 검토 필수 1)
+        final double lockWaitCount = c7[AshCategories.indexOf(AshCategories.KEYS7, "tx_lock")]
+                + c7[AshCategories.indexOf(AshCategories.KEYS7, "tm_lock")];
         for (int i = 0; i < c7.length; i++) c7[i] = Math.round((c7[i] / windowSeconds) * 100.0) / 100.0;
         for (int i = 0; i < c8.length; i++) c8[i] = Math.round((c8[i] / windowSeconds) * 100.0) / 100.0;
 
@@ -476,7 +479,8 @@ public class InstanceMetricSamplerService {
             // Lock 분석용 락 대기 샘플 - 같은 where/바인딩(같은 sample_id 구간)이라 새 구간 조회가 아니다. 실패하면 null(락 하트비트 없음 = 공백)
             if (perf != null && settings.getBool(SettingKey.LOCK_COLLECT_ENABLED)) {
                 final Connection lockConn = conn;
-                perf.lockSamples = perfLock.query(lockConn, target, where, ps -> {
+                perf.lockContinuous = byIdF; // sample_id 구간(지난 사이클 이후 전부)을 읽었는지 - 재기동 직후 시간 창 사이클은 아님
+                perf.lockSamples = lockWaitCount <= 0 ? perfLock.noScan(target.id()) : perfLock.query(lockConn, target, where, ps -> {
                     if (byIdF) {
                         ps.setLong(1, lastF);
                         ps.setLong(2, latestF);
@@ -757,6 +761,7 @@ public class InstanceMetricSamplerService {
         final List<String[]> sqlTexts;
         final long capturedKey;
         List<PerfLockService.LockSample> lockSamples; // Lock 분석용(null = 수집 안 함·실패)
+        boolean lockContinuous;
 
         PerfSample(List<Object[]> rows, List<String[]> sqlTexts, long capturedKey) {
             this.rows = rows;

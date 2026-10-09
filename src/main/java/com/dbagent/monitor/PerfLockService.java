@@ -58,7 +58,7 @@ public class PerfLockService implements InitializingBean {
     private static final int SAMPLE_ROW_CAP = 50000;
     private static final int LIST_LIMIT = 1000;
     /** 종료 판정 때 허용하는 수집 하트비트 누락 분 수(샘플러 주기 흔들림 허용). 넘으면 공백으로 본다. */
-    private static final int HEARTBEAT_MISS_TOLERANCE = 2;
+    private static final int HEARTBEAT_MISS_TOLERANCE = 1;
 
     @Autowired
     private SettingsService settings;
@@ -96,6 +96,8 @@ public class PerfLockService implements InitializingBean {
                 "obj_id BIGINT, obj_name VARCHAR(200), row_info VARCHAR(200), " +
                 "cause_code VARCHAR(24), cause_text VARCHAR(400), cause_confidence VARCHAR(8), fk_info VARCHAR(400))");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_perf_lock_incident_time ON perf_lock_incident (db_id, start_ts)");
+        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_perf_lock_incident_end ON perf_lock_incident (db_id, end_ts)");
+        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_perf_lock_incident_status ON perf_lock_incident (db_id, status)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS perf_lock_incident_waiter (" +
                 "incident_id VARCHAR(200) NOT NULL, sid BIGINT NOT NULL, serial_no BIGINT NOT NULL, username VARCHAR(128), " +
                 "module VARCHAR(128), machine VARCHAR(64), sql_id VARCHAR(13), wait_sec BIGINT, parent_sid BIGINT, " +
@@ -142,7 +144,6 @@ public class PerfLockService implements InitializingBean {
         Long userId;
         String username;
         String module;
-        String program;
         String machine;
         String sqlId;
         String event;
@@ -167,8 +168,13 @@ public class PerfLockService implements InitializingBean {
             try {
                 List<LockSample> out = runQuery(conn, where, binder, mode);
                 columnMode.put(dbId, mode);
+                // 상한을 넘으면 임의의 행이 잘린 것이다 - 조용히 완전한 데이터처럼 보이지 않게 상태에 남긴다(2026-10-09 쿼리 검토 필수 2)
+                boolean truncated = out.size() > SAMPLE_ROW_CAP;
+                if (truncated) out.remove(out.size() - 1);
                 enrich(conn, dbId, out, userResolver);
-                collectState.put(dbId, new String[]{"ok", "", String.valueOf(System.currentTimeMillis())});
+                collectState.put(dbId, truncated
+                        ? new String[]{"truncated", "락 대기 샘플이 " + SAMPLE_ROW_CAP + "건을 넘어 일부만 수집", String.valueOf(System.currentTimeMillis())}
+                        : new String[]{"ok", "", String.valueOf(System.currentTimeMillis())});
                 return out;
             } catch (SQLException e) {
                 // ORA-00904(부적합한 식별자): 11g에 없는 ASH 컬럼 - 해당 컬럼을 NULL로 바꿔 한 번 더 시도한다.
@@ -185,16 +191,22 @@ public class PerfLockService implements InitializingBean {
         return null;
     }
 
+    /** 락 대기가 없어 락 샘플 ASH 스캔을 건너뛴 사이클 - 빈 목록(= 이번 구간 락 없음, 하트비트·종료 판정은 그대로)과 수집 상태 ok. */
+    public List<LockSample> noScan(String dbId) {
+        collectState.put(dbId, new String[]{"ok", "", String.valueOf(System.currentTimeMillis())});
+        return new ArrayList<LockSample>();
+    }
+
     private List<LockSample> runQuery(Connection conn, String where, Binder binder, int mode) throws SQLException {
         String bser = mode >= 2 ? "NULL" : "h.blocking_session_serial#";
         String binst = mode >= 1 ? "NULL" : "h.blocking_inst_id";
         String sql = "SELECT TO_CHAR(h.sample_time, 'YYYY-MM-DD HH24:MI:SS') AS st, h.session_id AS sid, h.session_serial# AS ser, " +
-                "h.user_id, h.module, h.program, h.machine, h.sql_id, h.event, h.p1, h.p2, " +
+                "h.user_id, h.module, h.machine, h.sql_id, h.event, h.p1, h.p2, " +
                 "h.blocking_session AS bsid, " + bser + " AS bser, " + binst + " AS binst, h.current_obj# AS obj " +
                 "FROM v$active_session_history h WHERE " + where +
                 "AND h.session_type = 'FOREGROUND' AND h.session_state = 'WAITING' " + // WAITING 조건이 없으면 마지막 대기 이벤트가 남은 CPU 샘플이 섞인다
                 "AND h.event IN " + LOCK_EVENTS_SQL + " " + AshRange.EXCLUDE_SELF_SQL +
-                "AND ROWNUM <= " + SAMPLE_ROW_CAP;
+                "AND ROWNUM <= " + (SAMPLE_ROW_CAP + 1); // 한 건 더 읽어 상한 초과를 알아챈다
         List<LockSample> out = new ArrayList<LockSample>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setQueryTimeout(settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS));
@@ -208,7 +220,6 @@ public class PerfLockService implements InitializingBean {
                     long uid = rs.getLong("user_id");
                     s.userId = rs.wasNull() ? null : Long.valueOf(uid);
                     s.module = cut(rs.getString("module"), 128);
-                    s.program = cut(rs.getString("program"), 128);
                     s.machine = cut(rs.getString("machine"), 64);
                     s.sqlId = rs.getString("sql_id");
                     s.event = rs.getString("event");
@@ -310,6 +321,8 @@ public class PerfLockService implements InitializingBean {
         int maxWaiters;
         long waitSessionSec;
         String key;
+        Long objId;      // 저장된 대상 오브젝트(이번 사이클에 오브젝트를 모르면 이 값을 유지한다)
+        String objName;
         List<Map<String, Object>> waiters;   // 피크 시점 스냅샷(새 피크가 나올 때만 교체)
         boolean touched;
         boolean isNew;
@@ -318,17 +331,22 @@ public class PerfLockService implements InitializingBean {
     /**
      * 읽어 온 락 대기 샘플을 락 발생 건으로 묶어 저장한다. samples가 null이면(읽기 실패) 아무것도 하지 않는다 - 이번 분은 수집
      * 하트비트도 남기지 않아 공백이 된다. collectedUntil = 이번 사이클의 DB 시각.
+     * continuous = 지난 사이클 이후의 ASH 구간을 빠짐없이 읽었는지(sample_id 구간). 앱 재기동 직후 첫 사이클처럼 최근 60초만
+     * 읽은 사이클은 그 사이가 비어 있을 수 있어 하트비트를 남기지 않고 종료도 확정하지 않는다(2026-10-09 점검 보고 2).
      */
-    public void ingest(String dbId, List<LockSample> samples, LocalDateTime collectedUntil) {
+    public void ingest(String dbId, List<LockSample> samples, LocalDateTime collectedUntil, boolean continuous) {
         if (samples == null) return;
         long nowSec = collectedUntil.toEpochSecond(ZoneOffset.UTC);
         long nowMinute = PerfStoreService.minuteKey(collectedUntil);
-        saveHeartbeat(dbId, nowMinute, "lock");
+        if (continuous) saveHeartbeat(dbId, nowMinute, "lock");
         long gap = settings.getInt(SettingKey.LOCK_GAP_SEC);
 
         List<Episode> episodes = buildEpisodes(samples, gap);
         Map<String, List<Incident>> open = loadOpen(dbId);
         List<Incident> changed = new ArrayList<Incident>();
+        // 건마다 이번 사이클에 마지막으로 이어 붙인 구간(원인 분류용). 같은 키가 한 사이클에 두 건으로 나뉘면 키만으로 찾을 때
+        // 뒤 건의 구간이 앞 건 분류에 쓰였다(2026-10-09 Phase 1a 점검 수정).
+        Map<Incident, Episode> lastEp = new HashMap<Incident, Episode>();
 
         for (Episode ep : episodes) {
             List<Incident> list = open.get(ep.key);
@@ -347,12 +365,13 @@ public class PerfLockService implements InitializingBean {
             }
             mergeEpisode(target, ep);
             target.touched = true;
+            lastEp.put(target, ep);
             if (!changed.contains(target)) changed.add(target);
         }
 
         for (Incident inc : changed) {
             try {
-                persist(dbId, inc, "OPEN", classify(inc, lastEpisodeFor(episodes, inc)));
+                persist(dbId, inc, "OPEN", classify(inc, lastEp.get(inc)));
             } catch (Exception e) {
                 log.warn("perf lock incident write failed for db_id={}: {}", dbId, e.toString());
             }
@@ -360,6 +379,7 @@ public class PerfLockService implements InitializingBean {
 
         // 이번 사이클에 이어지지 않은 진행 중인 건: 끊김 기준이 지났으면 종료를 확정한다(수집 공백이 있으면 확정하지 않는다)
         for (List<Incident> list : open.values()) {
+            if (!continuous) break; // 연속 구간이 아니면 종료를 확정하지 않는다(다음 연속 사이클에서 공백 여부와 함께 판정)
             for (Incident inc : list) {
                 if (inc.touched || nowSec - inc.end <= gap) continue;
                 long missing = missingHeartbeats(dbId, inc.end, nowMinute);
@@ -371,14 +391,6 @@ public class PerfLockService implements InitializingBean {
                 }
             }
         }
-    }
-
-    private static Episode lastEpisodeFor(List<Episode> eps, Incident inc) {
-        Episode found = null;
-        for (Episode e : eps) {
-            if (e.key.equals(inc.key) && e.end >= inc.end - 1) found = e;
-        }
-        return found;
     }
 
     /** end 이후 ~ 지금 사이에 수집 하트비트가 없는 분 수(경계 두 분은 제외). */
@@ -523,7 +535,10 @@ public class PerfLockService implements InitializingBean {
         inc.start = ep.start;
         inc.end = ep.end;
         inc.peakTs = ep.peakTs;
-        inc.id = dbId + "_" + ep.type + "_" + ep.bsid + "_" + ep.bserial + "_" + ep.start;
+        // id는 묶는 키 전체로 만든다 - 블로커 미상(bsid=0) 건은 키에 대상 오브젝트가 들어가는데 id에 빠져 있으면, 서로 다른
+        // 오브젝트의 ITL·인덱스 경합이 같은 초에 시작할 때 id가 겹쳐 뒤 건 INSERT가 PK 위반으로 버려졌다(2026-10-09 Phase 1a 점검 수정).
+        // 블로커를 아는 건은 예전 형식(db_TX_sid_serial_start)과 같다.
+        inc.id = dbId + "_" + ep.key.replace('|', '_') + "_" + ep.start;
         return inc;
     }
 
@@ -612,7 +627,7 @@ public class PerfLockService implements InitializingBean {
     private Map<String, List<Incident>> loadOpen(String dbId) {
         Map<String, List<Incident>> out = new HashMap<String, List<Incident>>();
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT incident_id, lock_type, blocker_sid, blocker_serial, start_ts, end_ts, peak_ts, max_waiters, wait_session_sec, obj_id " +
+                "SELECT incident_id, lock_type, blocker_sid, blocker_serial, start_ts, end_ts, peak_ts, max_waiters, wait_session_sec, obj_id, obj_name " +
                         "FROM perf_lock_incident WHERE db_id = ? AND status = 'OPEN'", dbId);
         for (Map<String, Object> r : rows) {
             Incident inc = new Incident();
@@ -626,6 +641,8 @@ public class PerfLockService implements InitializingBean {
             inc.maxWaiters = ((Number) r.get("max_waiters")).intValue();
             inc.waitSessionSec = ((Number) r.get("wait_session_sec")).longValue();
             long obj = r.get("obj_id") == null ? 0 : ((Number) r.get("obj_id")).longValue();
+            inc.objId = r.get("obj_id") == null ? null : Long.valueOf(obj);
+            inc.objName = (String) r.get("obj_name");
             inc.key = inc.type + "|" + inc.bsid + "|" + inc.bserial + (inc.bsid == 0 ? "|OBJ" + obj : "");
             List<Incident> l = out.get(inc.key);
             if (l == null) { l = new ArrayList<Incident>(); out.put(inc.key, l); }
@@ -636,6 +653,16 @@ public class PerfLockService implements InitializingBean {
 
     private void persist(String dbId, Incident inc, String status, Cause c) {
         long duration = Math.max(1, inc.end - inc.start);
+        // 이번 사이클에 대상 오브젝트를 모르면(current_obj# 미상, dba_objects 조회 실패·캐시 비움) 저장된 값을 유지한다 - 덮어쓰면
+        // 진행 중인 건의 오브젝트명이 마지막 사이클 사정으로 영구히 지워졌다(2026-10-09 Phase 1a 점검 수정).
+        if (c.objId == null) {
+            c.objId = inc.objId;
+            c.objName = inc.objName;
+        } else if (c.objName == null && c.objId.equals(inc.objId)) {
+            c.objName = inc.objName;
+        }
+        inc.objId = c.objId;
+        inc.objName = c.objName;
         String causeCode = c.code;
         Object[] vals = new Object[]{status, inc.start, inc.end, inc.peakTs, duration, inc.maxWaiters, inc.waitSessionSec,
                 c.reqMode, c.event, c.objId, c.objName, causeCode, c.text, c.confidence};
@@ -681,7 +708,8 @@ public class PerfLockService implements InitializingBean {
         int incidents = 0;
         // 한 번에 지우면 쓰기 잠금이 길어지므로 천 건씩(기존 purge 패턴)
         while (true) {
-            List<String> ids = jdbc.queryForList("SELECT incident_id FROM perf_lock_incident WHERE start_ts < ? AND status <> 'OPEN' LIMIT 1000",
+            // 상태와 무관하게 마지막 샘플이 보관 기간보다 오래된 건을 지운다 - DB 등록 삭제·수집 끔으로 영영 닫히지 않는 OPEN 건 정리(쿼리 검토 필수 3)
+            List<String> ids = jdbc.queryForList("SELECT incident_id FROM perf_lock_incident WHERE end_ts < ? LIMIT 1000",
                     String.class, cutoffSec);
             if (ids.isEmpty()) break;
             for (String id : ids) {

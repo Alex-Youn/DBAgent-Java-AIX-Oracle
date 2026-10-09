@@ -306,6 +306,7 @@ public class PerfAnalysisService {
     // 접속 컨테이너는 등록(풀)을 바꾸기 전에는 달라지지 않으므로 1시간 캐시해 Oracle 조회를 DB당 시간당 1회로 묶는다.
     private final Map<String, Object[]> containerCache = new java.util.concurrent.ConcurrentHashMap<String, Object[]>();
     private static final long CONTAINER_CACHE_MS = 60L * 60 * 1000;
+    private static final long CONTAINER_FAIL_CACHE_MS = 60L * 1000;
 
     /**
      * 접속 컨테이너 이름(12c+ CDB의 CON_NAME: CDB$ROOT 또는 PDB 이름). 11g(non-CDB, ORA-02003)나 조회 실패는 null이다 -
@@ -319,6 +320,7 @@ public class PerfAnalysisService {
             return v.isEmpty() ? null : v;
         }
         String name = "";
+        long ttl = CONTAINER_CACHE_MS;
         try (Connection conn = poolManager.getConnection(target);
              Statement st = conn.createStatement()) {
             st.setQueryTimeout(AshRange.META_QUERY_TIMEOUT_SECONDS);
@@ -326,10 +328,12 @@ public class PerfAnalysisService {
                 if (rs.next() && rs.getString(1) != null) name = rs.getString(1);
             }
         } catch (SQLException e) {
-            // 11g는 CON_NAME이 없어 ORA-02003 - 정상. 그 밖의 실패도 표시만 생략하고 짧게 캐시한다(재시도 폭주 방지).
+            // 11g는 CON_NAME이 없어 ORA-02003 - 정상(1시간 캐시). 그 밖의 실패(접속 실패·타임아웃 등)는 표시만 생략하고 짧게(1분)
+            // 캐시한다 - 예전에는 일시 실패도 1시간 캐시돼 그동안 PDB 이름·CDB$ROOT 경고가 안 보였다(2026-10-09 Phase 0b 점검 수정).
             name = "";
+            if (e.getErrorCode() != 2003) ttl = CONTAINER_FAIL_CACHE_MS;
         }
-        containerCache.put(target.id(), new Object[] { now + CONTAINER_CACHE_MS, name });
+        containerCache.put(target.id(), new Object[] { now + ttl, name });
         return name.isEmpty() ? null : name;
     }
 

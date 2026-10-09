@@ -57,6 +57,7 @@
         conName: null,     // 접속 컨테이너(12c+ CDB: CDB$ROOT 또는 PDB 이름, 11g·조회 불가는 null)
         sub: 'session',    // 현재 하위 탭
         pending: null,     // URL에서 읽은 복원할 조건 {dbId, from, to}
+        urlExtra: {},      // 하위 탭별로 URL에 더 남길 조건(예: lock → '&type=TX') - 새로고침·공유 때 복원되게
         notice: '',        // 조건 복원을 못 했을 때의 안내(사용자가 다시 조작하기 전까지 입력칸 아래에 남긴다)
         lastMsg: ''        // 마지막 validateRange 문구
     };
@@ -250,6 +251,7 @@
         st.gen++;
         st.range = null;
         st.sel = null;
+        st.notice = '';   // DB가 바뀌면 이전 조건 복원 안내는 거둔다
         resetFns.forEach(fn => { try { fn(); } catch (e) { console.error('[DBAgent] perf onReset 실패:', e); } });
         refreshGoButtons();
     }
@@ -270,7 +272,13 @@
         if (!st.range || !st.dbId) return;
         if (window.location.hash.substring(1).split(/[/?]/)[0] !== 'history') return;
         history.replaceState(null, null,
-            `#history/${st.sub}?db_id=${enc(st.dbId)}&from=${enc(st.range.from)}&to=${enc(st.range.to)}`);
+            `#history/${st.sub}?db_id=${enc(st.dbId)}&from=${enc(st.range.from)}&to=${enc(st.range.to)}${st.urlExtra[st.sub] || ''}`);
+    }
+
+    // 하위 탭이 URL에 남길 추가 조건을 정한다(Lock 분석의 유형 필터 등).
+    function setUrlExtra(sub, extra) {
+        st.urlExtra[sub] = extra || '';
+        syncUrl();
     }
 
     function parseQuery(q) {
@@ -321,6 +329,9 @@
         st.conName = null;
         try {
             const d = await getJson(`/api/perf/db_now?db_id=${enc(dbId)}`);
+            // 응답을 기다리는 사이 다른 DB로 바뀌었으면(새 DB의 db_now가 이미 나갔다) 버린다 - 늦게 온 이전 DB 응답이
+            // 시계 차이·접속 컨테이너를 덮어써 새 DB에 이전 DB의 PDB 이름이 남았다(2026-10-09 Phase 0b 점검 수정).
+            if (st.initFor !== dbId) return;
             const now = parseLocal(d.dbNow);
             st.nowOffsetMs = now.getTime() - Date.now();
             st.nowReady = true;
@@ -330,13 +341,15 @@
             loadFilters(dbId);
             // URL에 조건이 있으면 그 구간을 복원해 조회하고, 없거나 적용할 수 없으면 기본 구간(최근 15분)을 바로 조회한다
             // (2026-09-26 오케스트레이터 요청: 빈 화면 대신 상단 차트와 하단 event 막대를 보여 준다).
-            st.notice = '';
-            if (st.pending && applyPending()) return;
-            st.pending = null;
+            if (st.pending) {
+                st.notice = '';
+                if (applyPending()) return;
+                st.pending = null;
+            }
             setRange(defFrom, now); // 복원에 실패했으면 입력칸을 기본 구간으로 되돌린다(안내 문구는 st.notice로 남는다)
             if (!st.range && dbId === window.currentDbId) search();
         } catch (e) {
-            st.initFor = null; // 다음에 다시 시도
+            if (st.initFor === dbId) st.initFor = null; // 다음에 다시 시도(그사이 다른 DB로 바뀌었으면 그 DB의 진행을 건드리지 않는다)
             console.warn('[DBAgent] perf db_now 실패:', e.message);
         }
     }
@@ -456,7 +469,8 @@
         sub: () => st.sub,
         dbNowDate,
         refreshGoButtons,
-        goSub
+        goSub,
+        setUrlExtra
     };
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
