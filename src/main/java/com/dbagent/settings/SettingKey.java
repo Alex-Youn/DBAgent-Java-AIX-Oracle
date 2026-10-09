@@ -205,6 +205,10 @@ public enum SettingKey {
             "추이 차트용 지표(instance_metric_history)를 보관하는 일수입니다.").unit("일").range(1, 3650)),
     PERF_RETENTION_DAYS(d("dbagent.monitor.perf-retention-days", INT, "15", RETENTION, "성능 분석 보존 기간",
             "성능 분석 수집 이력을 보관하는 일수입니다.").unit("일").range(1, 3650)),
+    // 성능 분석 Phase 2(2026-10-09 오케스트레이터 결정: 기본 15일, 필요하면 화면에서 변경): 대기 이벤트 분 데이터는 행이 많아(분당 최대 50행) 지표와 따로 정한다
+    SYS_EVENT_RETENTION_DAYS(d("dbagent.perf.sys-event-retention-days", INT, "15", RETENTION, "시스템 부하 대기 이벤트 보존 기간",
+            "시스템 부하 탭의 대기 이벤트 분 데이터를 보관하는 일수입니다. 지표(분당 9행)는 성능 분석 보존 기간을 따릅니다.").unit("일").range(1, 3650)
+            .detail("대기 이벤트는 분당 최대 50행이라 저장 용량의 대부분을 차지합니다(DB 1개당 15일에 SQLite 약 200MB 이상, H2는 더 큼). 지난주 같은 시간 비교에는 최소 8일이 필요하므로 8일 미만으로 줄이면 대기 이벤트의 지난주 대비 배지와 힌트가 나오지 않습니다.")),
     STORE_RETENTION_DAYS(d("dbagent.monitor.store-retention-days", INT, "30", RETENTION, "점검·Lock 이력 보존 기간",
             "점검 알림·Lock 샘플 이력을 보관하는 일수입니다.").unit("일").range(1, 3650)),
     KILL_AUDIT_RETENTION_DAYS(d("dbagent.monitor.kill-audit-retention-days", INT, "365", RETENTION, "KILL 감사 기록 보존 기간",
@@ -288,7 +292,7 @@ public enum SettingKey {
             // P3-2 AI · 튜닝 (주소·응답 대기 시간)
             AIDBA_RESTAPI_URL, AIDBA_OLLAMA_TIMEOUT_MS, SQLTUNING_API_URL, SQLTUNING_API_TIMEOUT_MS, SQLTUNEADVISOR_API_TIMEOUT_MS,
             // P3-2 보존 기간
-            METRIC_RETENTION_DAYS, PERF_RETENTION_DAYS, STORE_RETENTION_DAYS, KILL_AUDIT_RETENTION_DAYS,
+            METRIC_RETENTION_DAYS, PERF_RETENTION_DAYS, SYS_EVENT_RETENTION_DAYS, STORE_RETENTION_DAYS, KILL_AUDIT_RETENTION_DAYS,
             // P3-2 점검 알림 임계치 (수집 주기·시각은 스케줄러 기동 때 한 번 읽으므로 재시작 키로 남는다)
             CHECK_QUERY_TIMEOUT_SECONDS, CHECK_DAILY_QUERY_TIMEOUT_SECONDS, CHECK_JOB_INTERVAL_MINUTES,
             CHECK_TABLESPACE_WARN_PCT, CHECK_TABLESPACE_CRIT_PCT, CHECK_SEGMENT_SNAPSHOT_MIN_GB,

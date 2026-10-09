@@ -203,11 +203,14 @@ public class PerfSysService implements InitializingBean {
 
     @Scheduled(cron = "0 35 4 * * *")
     void purge() {
-        long cutoff = PerfStoreService.minuteKey(LocalDateTime.now(ZoneOffset.UTC)) - settings.getInt(SettingKey.PERF_RETENTION_DAYS) * 1440L;
+        long nowKey = PerfStoreService.minuteKey(LocalDateTime.now(ZoneOffset.UTC));
         int total = 0;
         // 기본키가 db_id부터라 minute_key만으로는 범위 탐색이 안 된다(덩어리마다 전체 스캔, 실측 H2 2.7초) - DB별 기본키 범위로 지운다
         List<String> dbIds = jdbc.queryForList("SELECT db_id FROM perf_sys_metric UNION SELECT db_id FROM perf_sys_event", String.class);
         for (String table : new String[]{"perf_sys_event", "perf_sys_metric"}) {
+            // 지표는 성능 분석 보존 기간, 대기 이벤트(행이 많음)는 자체 보존 기간(기본 15일, 2026-10-09 오케스트레이터 결정)
+            final long cutoff = nowKey - 1440L * settings.getInt("perf_sys_event".equals(table)
+                    ? SettingKey.SYS_EVENT_RETENTION_DAYS : SettingKey.PERF_RETENTION_DAYS);
             for (String id : dbIds) {
                 List<Long> min = jdbc.queryForList("SELECT MIN(minute_key) FROM " + table + " WHERE db_id = ?", Long.class, id);
                 Long cur = min.isEmpty() ? null : min.get(0);
@@ -219,7 +222,7 @@ public class PerfSysService implements InitializingBean {
                 }
             }
         }
-        if (total > 0) log.info("perf sys purge: {} row(s) older than {} day(s)", total, settings.getInt(SettingKey.PERF_RETENTION_DAYS));
+        if (total > 0) log.info("perf sys purge: {} row(s) (지표 {}일·대기 이벤트 {}일 보관)", total, settings.getInt(SettingKey.PERF_RETENTION_DAYS), settings.getInt(SettingKey.SYS_EVENT_RETENTION_DAYS));
     }
 
     // ------------------------------------------------------------------ 조회(화면 API)
