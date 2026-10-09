@@ -433,7 +433,7 @@
                 dbMgmtMainError.style.display = 'none';
                 dbSelect.innerHTML = '<option>불러오는 중...</option>';
                 try {
-                    const res = await fetch('/api/config');
+                    const res = await fetch('/api/config?token=' + encodeURIComponent(sessionStorage.getItem('dbagent_token') || ''));
                     const data = await res.json();
 
                     const groupOptions = document.getElementById('db-group-options');

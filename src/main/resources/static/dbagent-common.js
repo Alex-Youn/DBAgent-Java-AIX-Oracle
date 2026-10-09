@@ -219,7 +219,7 @@
 
     /** /api/config 를 받아 dbagentInstancesFromConfig() 로 넘긴다. */
     window.dbagentLoadDbInstances = function () {
-        return fetch('/api/config')
+        return fetch('/api/config?token=' + encodeURIComponent(sessionStorage.getItem('dbagent_token') || ''))
             .then(function (res) {
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 return res.json();
@@ -306,8 +306,11 @@
         (instances || []).forEach(function (inst) {
             if (inst.engine === 'oracle') totalOracle += 1; else totalRdb += 1;
         });
-        acc.emptyOracle = totalOracle === 0;
-        acc.emptyRdb = totalRdb === 0;
+        // 2026-10-09 B안: 일반 사용자의 /api/config 는 숨김 DB 를 서버에서 이미 뺀다. 그래서 숨김 DB 가 하나라도
+        // 있는 일반 계정은 "0건"이 미등록인지 권한 때문인지 구분할 수 없다 - 이때는 권한 쪽(버튼 감춤)으로 취급한다.
+        var cannotTellEmpty = !window.dbagentIsAdmin() && window.dbagentAccountHiddenDbs().size > 0;
+        acc.emptyOracle = totalOracle === 0 && !cannotTellEmpty;
+        acc.emptyRdb = totalRdb === 0 && !cannotTellEmpty;
         acc.allowed = !!token && acc.oracle.length > 0 && acc.rdb.length > 0;
         return acc;
     };

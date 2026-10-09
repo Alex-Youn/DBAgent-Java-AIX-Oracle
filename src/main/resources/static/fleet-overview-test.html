@@ -547,7 +547,7 @@
                 // shows a "접속중..." spinner in place of status/metrics - instead of leaving the
                 // whole page blank until /api/fleet_status finishes, which can take several seconds
                 // (bounded by the slowest down DB's connect timeout, not the fastest) (사용자 요청).
-                const configData = await (await fetch('/api/config')).json();
+                const configData = await (await fetch('/api/config?token=' + encodeURIComponent(sessionStorage.getItem('dbagent_token') || ''))).json();
                 if (configData.fleet_overview_polling_interval_ms) {
                     fleetOverviewPollingIntervalMs = configData.fleet_overview_polling_interval_ms;
                 }

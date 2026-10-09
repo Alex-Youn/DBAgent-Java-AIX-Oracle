@@ -8,9 +8,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import com.dbagent.auth.AuthService;
 
 import java.util.Map;
+import java.util.Optional;
 
 @RestController
 public class ConfigController {
@@ -41,14 +44,32 @@ public class ConfigController {
     // - see application.properties (dbagent.sql-runner.*) for the values and tuning notes.
 
 
-    public ConfigController(DatabaseConfigService configService, SqlQueryService sqlQueryService) {
+    private final AuthService authService;
+
+    public ConfigController(DatabaseConfigService configService, SqlQueryService sqlQueryService,
+                            AuthService authService) {
         this.configService = configService;
         this.sqlQueryService = sqlQueryService;
+        this.authService = authService;
     }
 
+    /**
+     * 토큰은 선택. 신분에 따라 DB 목록 수준을 나눈다(2026-10-09 B안, 점검 B-2 - 인증 없이 host/sid/계정명이 노출되던 문제).
+     * 토큰 없음/무효 = id·name·db_type만, 관리자 = 전체, 일반 사용자 = 숨김 DB 제외 + id·name·db_type·session_thresholds.
+     * UI 설정값(폴링 주기 등)은 로그인 전 화면도 쓰므로 항상 포함한다.
+     */
     @GetMapping("/api/config")
-    public Map<String, Object> getConfig() {
-        Map<String, Object> result = configService.safeConfig();
+    public Map<String, Object> getConfig(@RequestParam(value = "token", required = false) String token) {
+        Optional<AuthService.AuthSession> session = (token == null || token.trim().isEmpty())
+                ? Optional.<AuthService.AuthSession>empty() : authService.sessionForToken(token);
+        Map<String, Object> result;
+        if (!session.isPresent()) {
+            result = configService.safeConfig(DatabaseConfigService.ConfigLevel.MINIMAL, null);
+        } else if ("admin".equals(session.get().role())) {
+            result = configService.safeConfig();
+        } else {
+            result = configService.safeConfig(DatabaseConfigService.ConfigLevel.USER, session.get().hiddenDbs());
+        }
         result.put("polling_interval_ms", settings.getInt(SettingKey.UI_POLLING_INTERVAL_MS));
         result.put("fleet_overview_polling_interval_ms", settings.getInt(SettingKey.FLEET_OVERVIEW_POLLING_INTERVAL_MS));
         result.put("session_refresh_seconds", settings.getInt(SettingKey.UI_SESSION_REFRESH_SECONDS));

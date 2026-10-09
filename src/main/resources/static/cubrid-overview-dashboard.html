@@ -6,7 +6,7 @@
 <title>CUBRID Overview</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
 <script src="lib/lucide.js"></script>
-<script src="dbagent-common.js?v=13"></script>
+<script src="dbagent-common.js?v=14"></script>
 <script src="rdb-session-views.js?v=10"></script>
 <style>
     :root {
@@ -673,7 +673,7 @@
     }
     (function buildDbTree() {
         const mount = document.getElementById('dbTree');
-        fetch('/api/config').then(res => res.json()).then(cfg => {
+        fetch('/api/config?token=' + encodeURIComponent(sessionStorage.getItem('dbagent_token') || '')).then(res => res.json()).then(cfg => {
             const groups = cfg.groups || [];
 
             // ORA/CLE 버튼은 오라클·RDB 양쪽 모두에 접근 권한이 있는 계정에게만 보인다
@@ -1270,7 +1270,7 @@
             });
         }
 
-        fetch('/api/config').then(function (res) { return res.json(); }).then(function (cfg) {
+        fetch('/api/config?token=' + encodeURIComponent(sessionStorage.getItem('dbagent_token') || '')).then(function (res) { return res.json(); }).then(function (cfg) {
             applyInterval();
 
             if (!hostSel) return;
@@ -1304,7 +1304,7 @@
                         return '<div class="td-item' + (active ? ' active' : '') + '"'
                             + (active ? '' : ' data-href="' + esc(href) + '"') + '>'
                             + '<span>' + esc(inst.name || inst.id) + '</span>'
-                            + '<span class="td-host">' + esc((inst.host || '') + ':' + inst.port) + '</span></div>';
+                            + '<span class="td-host">' + esc(inst.host ? inst.host + (inst.port ? ':' + inst.port : '') : '') + '</span></div>';
                     }).join('');
                 });
                 titleDd.innerHTML = ddHtml || '<div class="td-group">등록된 RDB DB가 없습니다</div>';
@@ -1338,8 +1338,9 @@
                 const href = page + '?db_id=' + encodeURIComponent(inst.id)
                     + '&db_type=' + encodeURIComponent(inst.db_type)
                     + '&name=' + encodeURIComponent(inst.name || inst.id);
-                const host = inst.host || '(host 미지정)';
-                const label = host + ':' + inst.port + ' \u00b7 ' + (inst.name || inst.id);
+                const host = inst.host || '';
+                // \uc77c\ubc18 \uc0ac\uc6a9\uc790 \uc751\ub2f5\uc5d4 host/port \uac00 \uc5c6\ub2e4(2026-10-09 B\uc548) - \uc788\uc744 \ub54c\ub9cc \ubd99\uc5ec "undefined" \ud45c\uc2dc\ub97c \ub9c9\ub294\ub2e4.
+                const label = (host ? host + (inst.port ? ':' + inst.port : '') + ' \u00b7 ' : '') + (inst.name || inst.id);
                 return '<option value="' + esc(href) + '"' + (inst.id === dbId ? ' selected' : '') + '>' + esc(label) + '</option>';
             }).join('');
             hostSel.addEventListener('change', function () {

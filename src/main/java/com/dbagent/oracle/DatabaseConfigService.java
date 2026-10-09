@@ -17,6 +17,7 @@ import javax.annotation.PostConstruct;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -530,17 +531,36 @@ public class DatabaseConfigService {
 
     /** Java port of api_server.py's /api/config: same groups/instances shape, with passwords stripped. */
     public Map<String, Object> safeConfig() {
+        return safeConfig(ConfigLevel.FULL, null);
+    }
+
+    /**
+     * /api/config 응답 수준(2026-10-09 B안). 인증 없는 호출에 host/sid/계정명이 노출되던 문제(점검 B-2)를 막으려고
+     * 호출자 신분에 따라 인스턴스 필드를 줄인다.
+     * FULL = 관리자(기존 전체 응답), USER = 일반 사용자(id·name·db_type·session_thresholds), MINIMAL = 토큰 없음/무효(id·name·db_type).
+     */
+    public enum ConfigLevel { FULL, USER, MINIMAL }
+
+    /**
+     * 수준별 /api/config. hiddenDbs 는 USER 수준에서만 쓰며, AuthService.canAccessDb 와 같은 normalizeDbId 기준으로
+     * 비교해 숨김 DB 를 서버에서 제외한다. 인스턴스가 없어진 그룹은 그룹째 뺀다.
+     */
+    public Map<String, Object> safeConfig(ConfigLevel level, Collection<String> hiddenDbs) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT * FROM db_instances ORDER BY group_order, instance_order");
         LinkedHashMap<String, List<Map<String, Object>>> byGroup = new LinkedHashMap<>();
         for (Map<String, Object> row : rows) {
+            if (level == ConfigLevel.USER && hiddenDbs != null
+                    && hiddenDbs.contains(normalizeDbId((String) row.get("id")))) {
+                continue;
+            }
             String groupName = (String) row.get("group_name");
             List<Map<String, Object>> list = byGroup.get(groupName);
             if (list == null) {
                 list = new ArrayList<>();
                 byGroup.put(groupName, list);
             }
-            list.add(toSafeInstanceMap(row));
+            list.add(toSafeInstanceMap(row, level));
         }
         List<Map<String, Object>> groups = new ArrayList<>();
         for (Map.Entry<String, List<Map<String, Object>>> entry : byGroup.entrySet()) {
@@ -554,11 +574,19 @@ public class DatabaseConfigService {
         return result;
     }
 
-    private Map<String, Object> toSafeInstanceMap(Map<String, Object> row) {
+    private Map<String, Object> toSafeInstanceMap(Map<String, Object> row, ConfigLevel level) {
         Map<String, Object> safe = new LinkedHashMap<>();
         safe.put("id", row.get("id"));
         safe.put("name", row.get("name"));
         safe.put("db_type", row.get("db_type"));
+        if (level == ConfigLevel.MINIMAL) {
+            return safe;
+        }
+        if (level == ConfigLevel.USER) {
+            // 일반 사용자는 화면 표시에 필요한 임계값만 받는다(host/port/sid/계정/풀 정보는 관리자 전용, 2026-10-09 B안).
+            putSessionThresholds(safe, row);
+            return safe;
+        }
         safe.put("host", row.get("host"));
         safe.put("port", row.get("port"));
         safe.put("sid", row.get("sid"));
@@ -574,14 +602,7 @@ public class DatabaseConfigService {
             safe.put("expected_instance_name", expectedInstanceName);
         }
         safe.put("oracle_cdb", isCdbFlag(row.get("oracle_cdb")));
-        String sessionThresholdsJson = (String) row.get("session_thresholds");
-        if (sessionThresholdsJson != null) {
-            try {
-                safe.put("session_thresholds", mapper.readValue(sessionThresholdsJson, List.class));
-            } catch (IOException ignored) {
-                // Malformed - just omit the override, global default applies on the frontend.
-            }
-        }
+        putSessionThresholds(safe, row);
         String accountsJson = (String) row.get("accounts");
         if (accountsJson != null) {
             try {
@@ -602,6 +623,17 @@ public class DatabaseConfigService {
             }
         }
         return safe;
+    }
+
+    private void putSessionThresholds(Map<String, Object> safe, Map<String, Object> row) {
+        String sessionThresholdsJson = (String) row.get("session_thresholds");
+        if (sessionThresholdsJson != null) {
+            try {
+                safe.put("session_thresholds", mapper.readValue(sessionThresholdsJson, List.class));
+            } catch (IOException ignored) {
+                // Malformed - just omit the override, global default applies on the frontend.
+            }
+        }
     }
 
     // 실제 AES-256-GCM 암호화(oracle.env 제거 마이그레이션 6단계, 2026-09-21). 저장 포맷과 키 관리는

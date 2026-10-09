@@ -708,7 +708,7 @@ function dbagentSectionVisible(id) {
         }
 
         // Load config and build tree
-        fetch(`/api/config`)
+        fetch('/api/config?token=' + encodeURIComponent(sessionStorage.getItem('dbagent_token') || ''))
             .then(res => res.json())
             .then(data => {
                 const container = document.getElementById('db-groups-container');
@@ -3962,7 +3962,7 @@ let layoutHTML = "";
     const dashRefreshBtn = document.getElementById('dash-refresh-btn');
     const dashToggleBtn = document.getElementById('dash-toggle-btn');
     try {
-        const pollingRes = await fetch('/api/config');
+        const pollingRes = await fetch('/api/config?token=' + encodeURIComponent(sessionStorage.getItem('dbagent_token') || ''));
         if (pollingRes.ok) {
             const pollingData = await pollingRes.json();
             if (pollingData.polling_interval_ms) dashboardPollingIntervalMs = pollingData.polling_interval_ms;
