@@ -94,7 +94,13 @@ public class PerfLockService implements InitializingBean {
                 "blocker_program VARCHAR(128), blocker_machine VARCHAR(64), blocker_status VARCHAR(16), blocker_idle_sec BIGINT, " +
                 "blocker_sql_id VARCHAR(13), req_mode INTEGER, held_mode INTEGER, wait_event VARCHAR(64), " +
                 "obj_id BIGINT, obj_name VARCHAR(200), row_info VARCHAR(200), " +
-                "cause_code VARCHAR(24), cause_text VARCHAR(400), cause_confidence VARCHAR(8), fk_info VARCHAR(400))");
+                "cause_code VARCHAR(24), cause_text VARCHAR(400), cause_confidence VARCHAR(8), fk_info VARCHAR(400), cause_stats VARCHAR(2000))");
+        // 이미 만들어진 테이블(Phase 1a 배포본)에는 누적 원인 통계 컬럼이 없다 - SQLite·H2 모두 ADD COLUMN을 지원한다.
+        try {
+            jdbc.queryForList("SELECT cause_stats FROM perf_lock_incident WHERE 1 = 0");
+        } catch (Exception e) {
+            jdbc.execute("ALTER TABLE perf_lock_incident ADD COLUMN cause_stats VARCHAR(2000)");
+        }
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_perf_lock_incident_time ON perf_lock_incident (db_id, start_ts)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_perf_lock_incident_end ON perf_lock_incident (db_id, end_ts)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_perf_lock_incident_status ON perf_lock_incident (db_id, status)");
@@ -323,6 +329,11 @@ public class PerfLockService implements InitializingBean {
         String key;
         Long objId;      // 저장된 대상 오브젝트(이번 사이클에 오브젝트를 모르면 이 값을 유지한다)
         String objName;
+        // 건 전체에서 본 대기 이벤트·요청 모드·대상 오브젝트별 샘플 수(사이클마다 누적) - 원인 분류는 마지막 사이클이 아니라 이 누적 기준이다
+        final Map<String, Long> evCounts = new HashMap<String, Long>();
+        final Map<Long, Long> modeCounts = new HashMap<Long, Long>();
+        final Map<Long, Long> objCounts = new HashMap<Long, Long>();
+        final Map<Long, String> objNames = new HashMap<Long, String>();
         List<Map<String, Object>> waiters;   // 피크 시점 스냅샷(새 피크가 나올 때만 교체)
         boolean touched;
         boolean isNew;
@@ -344,9 +355,6 @@ public class PerfLockService implements InitializingBean {
         List<Episode> episodes = buildEpisodes(samples, gap);
         Map<String, List<Incident>> open = loadOpen(dbId);
         List<Incident> changed = new ArrayList<Incident>();
-        // 건마다 이번 사이클에 마지막으로 이어 붙인 구간(원인 분류용). 같은 키가 한 사이클에 두 건으로 나뉘면 키만으로 찾을 때
-        // 뒤 건의 구간이 앞 건 분류에 쓰였다(2026-10-09 Phase 1a 점검 수정).
-        Map<Incident, Episode> lastEp = new HashMap<Incident, Episode>();
 
         for (Episode ep : episodes) {
             List<Incident> list = open.get(ep.key);
@@ -365,13 +373,12 @@ public class PerfLockService implements InitializingBean {
             }
             mergeEpisode(target, ep);
             target.touched = true;
-            lastEp.put(target, ep);
             if (!changed.contains(target)) changed.add(target);
         }
 
         for (Incident inc : changed) {
             try {
-                persist(dbId, inc, "OPEN", classify(inc, lastEp.get(inc)));
+                persist(dbId, inc, "OPEN", classify(inc));
             } catch (Exception e) {
                 log.warn("perf lock incident write failed for db_id={}: {}", dbId, e.toString());
             }
@@ -512,6 +519,11 @@ public class PerfLockService implements InitializingBean {
         if (s.sqlId != null) a.sqlId = s.sqlId;
     }
 
+    private static <K> void add(Map<K, Long> m, K k, long n) {
+        Long v = m.get(k);
+        m.put(k, v == null ? n : v + n);
+    }
+
     private static <K> void inc(Map<K, Long> m, K k) {
         Long v = m.get(k);
         m.put(k, v == null ? 1L : v + 1);
@@ -546,6 +558,10 @@ public class PerfLockService implements InitializingBean {
         inc.start = Math.min(inc.start, ep.start);
         inc.end = Math.max(inc.end, ep.end);
         inc.waitSessionSec += ep.samples;
+        for (Map.Entry<String, Long> e : ep.eventCounts.entrySet()) add(inc.evCounts, e.getKey(), e.getValue());
+        for (Map.Entry<Long, Long> e : ep.modeCounts.entrySet()) add(inc.modeCounts, e.getKey(), e.getValue());
+        for (Map.Entry<Long, Long> e : ep.objCounts.entrySet()) add(inc.objCounts, e.getKey(), e.getValue());
+        inc.objNames.putAll(ep.objNames);
         if (ep.maxWaiters > inc.maxWaiters) { // 기존 피크보다 클 때만 대기자 스냅샷을 바꾼다(불러온 진행 중 건은 스냅샷을 메모리에 두지 않는다)
             inc.maxWaiters = ep.maxWaiters;
             inc.peakTs = ep.peakTs;
@@ -583,14 +599,15 @@ public class PerfLockService implements InitializingBean {
     }
 
     /** 판정 순서: 이벤트명 → 요청 모드. 블로커 상세(1b)가 있어야 가능한 분류(TX_UNCOMMITTED, TM_DDL, TM_LOCK_TABLE, TM_FK_NOINDEX)는 하지 않는다. */
-    private Cause classify(Incident inc, Episode ep) {
+    private Cause classify(Incident inc) {
+        // 건 전체(여러 사이클 누적)에서 가장 많이 본 이벤트·요청 모드·오브젝트로 분류한다(2026-10-09 오케스트레이터 결정) - 마지막 사이클만
+        // 보면 건이 길어질수록 마지막 1분의 성격이 건 전체의 원인처럼 표시된다.
         Cause c = new Cause();
-        if (ep == null) return c;
-        c.event = top(ep.eventCounts);
-        Long mode = top(ep.modeCounts);
+        c.event = top(inc.evCounts);
+        Long mode = top(inc.modeCounts);
         c.reqMode = mode == null ? null : Integer.valueOf(mode.intValue());
-        c.objId = top(ep.objCounts);
-        c.objName = c.objId == null ? null : ep.objNames.get(c.objId);
+        c.objId = top(inc.objCounts);
+        c.objName = c.objId == null ? null : inc.objNames.get(c.objId);
         String ev = c.event == null ? "" : c.event;
         if (ev.indexOf("allocate ITL") >= 0) {
             c.code = "TX_ITL";
@@ -627,7 +644,7 @@ public class PerfLockService implements InitializingBean {
     private Map<String, List<Incident>> loadOpen(String dbId) {
         Map<String, List<Incident>> out = new HashMap<String, List<Incident>>();
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT incident_id, lock_type, blocker_sid, blocker_serial, start_ts, end_ts, peak_ts, max_waiters, wait_session_sec, obj_id, obj_name " +
+                "SELECT incident_id, lock_type, blocker_sid, blocker_serial, start_ts, end_ts, peak_ts, max_waiters, wait_session_sec, obj_id, obj_name, cause_stats " +
                         "FROM perf_lock_incident WHERE db_id = ? AND status = 'OPEN'", dbId);
         for (Map<String, Object> r : rows) {
             Incident inc = new Incident();
@@ -643,6 +660,7 @@ public class PerfLockService implements InitializingBean {
             long obj = r.get("obj_id") == null ? 0 : ((Number) r.get("obj_id")).longValue();
             inc.objId = r.get("obj_id") == null ? null : Long.valueOf(obj);
             inc.objName = (String) r.get("obj_name");
+            parseStats(inc, (String) r.get("cause_stats"));
             inc.key = inc.type + "|" + inc.bsid + "|" + inc.bserial + (inc.bsid == 0 ? "|OBJ" + obj : "");
             List<Incident> l = out.get(inc.key);
             if (l == null) { l = new ArrayList<Incident>(); out.put(inc.key, l); }
@@ -665,15 +683,15 @@ public class PerfLockService implements InitializingBean {
         inc.objName = c.objName;
         String causeCode = c.code;
         Object[] vals = new Object[]{status, inc.start, inc.end, inc.peakTs, duration, inc.maxWaiters, inc.waitSessionSec,
-                c.reqMode, c.event, c.objId, c.objName, causeCode, c.text, c.confidence};
+                c.reqMode, c.event, c.objId, c.objName, causeCode, c.text, c.confidence, formatStats(inc)};
         if (!inc.isNew) {
             jdbc.update("UPDATE perf_lock_incident SET status = ?, start_ts = ?, end_ts = ?, peak_ts = ?, duration_sec = ?, max_waiters = ?, " +
                     "wait_session_sec = ?, req_mode = ?, wait_event = ?, obj_id = ?, obj_name = ?, cause_code = ?, cause_text = ?, " +
-                    "cause_confidence = ? WHERE incident_id = ?", concat(vals, inc.id));
+                    "cause_confidence = ?, cause_stats = ? WHERE incident_id = ?", concat(vals, inc.id));
         } else {
             jdbc.update("INSERT INTO perf_lock_incident (status, start_ts, end_ts, peak_ts, duration_sec, max_waiters, wait_session_sec, " +
-                    "req_mode, wait_event, obj_id, obj_name, cause_code, cause_text, cause_confidence, incident_id, db_id, lock_type, " +
-                    "blocker_sid, blocker_serial) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "req_mode, wait_event, obj_id, obj_name, cause_code, cause_text, cause_confidence, cause_stats, incident_id, db_id, " +
+                    "lock_type, blocker_sid, blocker_serial) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     concat(concat(vals, inc.id), dbId, inc.type, inc.bsid > 0 ? Long.valueOf(inc.bsid) : null,
                             inc.bsid > 0 ? Long.valueOf(inc.bserial) : null));
             inc.isNew = false;
@@ -688,6 +706,45 @@ public class PerfLockService implements InitializingBean {
             jdbc.batchUpdate("INSERT INTO perf_lock_incident_waiter (incident_id, sid, serial_no, username, module, machine, sql_id, " +
                     "wait_sec, parent_sid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args);
             inc.waiters = null; // 이번 사이클에 저장했다 - 다음 병합에서 새 피크가 나올 때만 다시 쓴다
+        }
+    }
+
+    /** 누적 통계 저장 형식: 줄마다 `E|개수|이벤트`, `M|개수|요청모드`, `O|개수|object_id|이름`. 오브젝트는 많이 본 8개까지만(컬럼 길이 상한). */
+    private static String formatStats(Incident inc) {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Long> e : inc.evCounts.entrySet()) sb.append("E|").append(e.getValue()).append('|').append(e.getKey()).append('\n');
+        for (Map.Entry<Long, Long> e : inc.modeCounts.entrySet()) sb.append("M|").append(e.getValue()).append('|').append(e.getKey()).append('\n');
+        List<Map.Entry<Long, Long>> objs = new ArrayList<Map.Entry<Long, Long>>(inc.objCounts.entrySet());
+        Collections.sort(objs, new Comparator<Map.Entry<Long, Long>>() {
+            @Override
+            public int compare(Map.Entry<Long, Long> a, Map.Entry<Long, Long> b) {
+                return Long.compare(b.getValue(), a.getValue());
+            }
+        });
+        for (int i = 0; i < objs.size() && i < 8; i++) {
+            String name = inc.objNames.get(objs.get(i).getKey());
+            sb.append("O|").append(objs.get(i).getValue()).append('|').append(objs.get(i).getKey()).append('|').append(name == null ? "" : name).append('\n');
+        }
+        String out = sb.toString();
+        return out.length() > 2000 ? out.substring(0, out.lastIndexOf('\n', 1999) + 1) : out;
+    }
+
+    private static void parseStats(Incident inc, String text) {
+        if (text == null || text.isEmpty()) return;
+        for (String line : text.split("\n")) {
+            String[] p = line.split("\\|", 4);
+            try {
+                if (p.length >= 3 && "E".equals(p[0])) inc.evCounts.put(p[2], Long.valueOf(p[1]));
+                else if (p.length >= 3 && "M".equals(p[0])) inc.modeCounts.put(Long.valueOf(p[2]), Long.valueOf(p[1]));
+                else if (p.length >= 3 && "O".equals(p[0])) {
+                    String[] q = line.split("\\|", 4);
+                    long id = Long.parseLong(q[2].contains("|") ? q[2].substring(0, q[2].indexOf('|')) : q[2]);
+                    inc.objCounts.put(id, Long.valueOf(q[1]));
+                    if (q.length >= 4 && !q[3].isEmpty()) inc.objNames.put(id, q[3]);
+                }
+            } catch (NumberFormatException ignored) {
+                // 깨진 줄은 건너뛴다 - 통계는 분류용 보조값이라 일부가 빠져도 건 자체는 유지된다
+            }
         }
     }
 
