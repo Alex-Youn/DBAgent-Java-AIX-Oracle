@@ -398,7 +398,7 @@ public class PerfLockService implements InitializingBean {
         //    49초 전례) 대기자가 많은 폭주 구간·최근 실패 후 일정 시간·제한 시간이 지난 뒤에는 건너뛴다. 힌트는 쓰지 않는다 - 폐쇄망에서
         //    검증된 /*+ rule */은 v$lock JOIN v$session 형태였고 이 단일 뷰 조회에는 근거가 없다(2026-10-09 쿼리 검토).
         Long skipUntil = tmLockSkipUntil.get(dbId);
-        boolean skipTmLock = waiterCount > TM_LOCK_MAX_WAITERS || System.nanoTime() > deadline
+        boolean skipTmLock = !settings.getBool(SettingKey.BLOCKER_TM_MODE_ENABLED) || waiterCount > TM_LOCK_MAX_WAITERS || System.nanoTime() > deadline
                 || (skipUntil != null && skipUntil > System.currentTimeMillis());
         if (!skipTmLock) try (PreparedStatement ps = conn.prepareStatement("SELECT sid, id1, lmode FROM v$lock WHERE type = 'TM' AND sid IN (" +
                 qmarks(padded) + ")")) {
