@@ -54,7 +54,7 @@
 
     const typeBadge = (t) => `<span class="perf-lk-badge perf-lk-${t === 'TM' ? 'tm' : 'tx'}">${esc(t)}</span>`;
     const blockerText = (it) => it.blockerSid === null || it.blockerSid === undefined ? '<span class="perf-hint">블로커 미상</span>'
-        : `SID ${esc(it.blockerSid)}${it.blockerSerial ? ',' + esc(it.blockerSerial) : ''}${it.blockerModule ? ' · ' + esc(it.blockerModule) : ''}`;
+        : `SID ${esc(it.blockerSid)}${it.blockerSerial ? ',' + esc(it.blockerSerial) : ''}${it.blockerInst ? ' <span class="perf-hint">(인스턴스 ' + esc(it.blockerInst) + ')</span>' : ''}${it.blockerModule ? ' · ' + esc(it.blockerModule) : ''}`;
 
     function currentWindow() { return st.listSel || S.getRange(); }
 
@@ -144,7 +144,8 @@
             card('최장 지속', d.longestSec === null ? '-' : esc(dur(d.longestSec)), esc(d.longestObject || '')),
             card('최대 동시 대기', none ? '-' : `${d.maxWaiters}세션`, ''),
             card('누적 대기', none ? '-' : `${(d.waitSessionSec / 60).toFixed(1)}세션·분`, `${d.waitSessionSec}세션·초`),
-            card('고유 블로커', none ? '-' : `${d.distinctBlockers}세션`, '모듈은 블로커 상세 수집 후 표시')
+            card('고유 블로커', none ? '-' : (d.distinctBlockerModules > 0 ? `${d.distinctBlockerModules}개 모듈` : `${d.distinctBlockers}세션`),
+                none ? '' : (d.distinctBlockerModules > 0 ? `블로커 세션 ${d.distinctBlockers}개` : '모듈은 블로커 상세 수집을 켜면 표시'))
         ].join('');
     }
 
@@ -224,13 +225,25 @@
         const blk = $('perf-lock-top-blockers');
         const obj = $('perf-lock-top-objects');
         blk.innerHTML = tb._err ? `<tr><td colspan="3" class="perf-lk-empty">판단 보류</td></tr>`
-            : ((tb.blockers || []).map(b => `<tr><td>${b.blockerSid === null ? '<span class="perf-hint">블로커 미상</span>' : 'SID ' + esc(b.blockerSid) + (b.blockerSerial ? ',' + esc(b.blockerSerial) : '') + (b.blockerModule ? ' · ' + esc(b.blockerModule) : '')}</td>` +
+            : ((tb.blockers || []).map(b => `<tr><td>${b.blockerModule && (b.blockerSid === null || b.blockerSid === undefined) ? '모듈 ' + esc(b.blockerModule) : (b.blockerSid === null || b.blockerSid === undefined ? '<span class="perf-hint">블로커 미상</span>' : 'SID ' + esc(b.blockerSid) + (b.blockerSerial ? ',' + esc(b.blockerSerial) : '') + (b.blockerModule ? ' · ' + esc(b.blockerModule) : ''))}</td>` +
                 `<td class="num">${esc(b.count)}</td><td class="num">${esc(dur(b.maxDurationSec))}</td></tr>`).join('') || '<tr><td colspan="3" class="perf-lk-empty">없음</td></tr>');
         obj.innerHTML = to._err ? `<tr><td colspan="3" class="perf-lk-empty">판단 보류</td></tr>`
             : ((to.objects || []).map(o => `<tr><td title="${esc(o.objName)}">${esc(String(o.objName).replace(/^[^.]+\./, ''))}</td><td>${typeBadge(o.lockType)}</td><td class="num">${esc(o.count)}</td></tr>`).join('') || '<tr><td colspan="3" class="perf-lk-empty">없음</td></tr>');
     }
 
     // ------------------------------------------------------------------ 블로킹 상세
+
+    // 블로커 세션 정보 한 줄(상세 수집을 켠 경우). 다른 인스턴스 블로커는 v$로 볼 수 없어 상세가 없다.
+    function blockerInfo(it) {
+        if (it.blockerInst) return `다른 인스턴스(${esc(it.blockerInst)}) 블로커라 상세를 볼 수 없습니다`;
+        const parts = [it.blockerUser, it.blockerModule, it.blockerProgram, it.blockerMachine].filter(Boolean).map(esc);
+        const stat = it.blockerStatus ? `${esc(it.blockerStatus)}${it.blockerIdleSec !== null && it.blockerIdleSec !== undefined ? ' ' + esc(dur(it.blockerIdleSec)) : ''}` : '';
+        // 상세 수집이 켜져 있는데 값이 없으면 "켜면 표시"가 아니라 못 얻은 것이다(수집 전 건, 조회 전에 블로커가 끝남·SID 재사용, 조회 실패)
+        if (!parts.length && !stat) return it.collect && it.collect.blockerDetail
+            ? '블로커 세션 정보 없음 (상세 수집 전의 건이거나, 조회 시점에 블로커가 이미 끝났거나 조회에 실패)'
+            : '블로커 세션 정보는 블로커 상세 수집을 켜면 표시됩니다';
+        return parts.join(' · ') + (stat ? ` <b>(${stat})</b>` : '');
+    }
 
     function treeHtml(it, waiters) {
         // 목록이 많으면 대기 시간이 긴 3세션까지만 보이고 "외 N세션"으로 접는다(설계 1-6)
@@ -248,7 +261,7 @@
         // 부모가 보이는 대기자가 아니면(블로커이거나 접힌 대기자) 블로커 바로 아래에 둔다
         const roots = shown.filter(w => !shownIds[w.parentSid] || w.parentSid === w.sid);
         const head = `<div class="perf-lk-tree-row"><b>${it.blockerSid === null || it.blockerSid === undefined ? '블로커 미상' : 'SID ' + esc(it.blockerSid) + (it.blockerSerial ? ',' + esc(it.blockerSerial) : '')}</b>` +
-            ` <span class="perf-hint">${it.blockerModule ? esc(it.blockerModule) : '블로커 세션 정보는 블로커 상세 수집을 켜면 표시됩니다'}</span></div>`;
+            ` <span class="perf-hint">${blockerInfo(it)}</span></div>`;
         return head + roots.map(w => row(w, 0)).join('') +
             (more > 0 ? `<div class="perf-lk-tree-row perf-hint" style="padding-left:18px">└ 외 ${more}세션</div>` : '');
     }
@@ -276,16 +289,19 @@
             ['누적 대기', `${d.waitSessionSec}세션·초 (최대 ${d.maxWaiters}세션 동시)`],
             ['같은 시간대 반복', `최근 7일 같은 시간대(±1시간) ${d.repeatCount7d || 0}건`]
         ];
+        if (d.fkInfo) kv.splice(4, 0, ['FK 인덱스', d.fkInfo]);
         const hint = d.causeText
             ? `<div class="perf-lk-hint"><b>${esc(d.causeCode || '')}</b>${conf ? ` <span class="perf-hint">(판정 신뢰도 ${conf})</span>` : ''}<br>${esc(d.causeText)}</div>` : '';
-        const off = '<div class="perf-hint" style="margin-top:6px">블로커 상세 수집이 꺼져 있어 일부 원인(커밋 누락, DDL, FK 인덱스 등)은 판정하지 않습니다.</div>';
+        const detailOn = d.collect && d.collect.blockerDetail;
+        const off = detailOn ? '' : '<div class="perf-hint" style="margin-top:6px">블로커 상세 수집이 꺼져 있어 일부 원인(커밋 누락, DDL, LOCK TABLE, FK 인덱스 등)은 판정하지 않습니다(환경설정 → Lock 분석: 블로커 상세 수집).</div>';
         box.innerHTML = `<div class="perf-lk-detail-head">${typeBadge(d.lockType)} <b>${esc(full(d.startTime))} ~ ${d.status === 'OPEN' ? '진행 중' : esc(hm(d.endTime))}</b>` +
             ` <span class="perf-hint">${esc(dur(d.durationSec))} 지속 · 대상 ${esc(d.objName || '-')}</span></div>` +
             `<div class="perf-hint" style="margin:10px 0 4px">블로킹 트리 (최대 대기 시점 ${esc(hm(d.peakTime))})</div>` +
             `<div class="perf-lk-tree">${treeHtml(d, waiters)}</div>` +
             `<table class="perf-lk-kv">${kv.map(r => `<tr><th>${esc(r[0])}</th><td>${esc(r[1])}</td></tr>`).join('')}</table>` +
             hint + off +
-            `<div class="perf-lk-actions">${sqlIds.length ? `<button type="button" class="perf-link-btn perf-lk-sql" data-sql="${esc(sqlIds[0])}">SQL 상세</button>` : ''}` +
+            `<div class="perf-lk-actions">${sqlIds.length ? `<button type="button" class="perf-link-btn perf-lk-sql" data-sql="${esc(sqlIds[0])}">대기자 SQL 상세</button>` : ''}` +
+            `${d.blockerSqlId ? `<button type="button" class="perf-link-btn perf-lk-sql" data-sql="${esc(d.blockerSqlId)}">블로커 SQL 상세</button>` : ''}` +
             `<button type="button" class="perf-link-btn" id="perf-lock-go-session">세션 분석에서 이 시점 보기</button></div>`;
         box.querySelectorAll('.perf-lk-sql').forEach(b => b.addEventListener('click', () => openSql(b.dataset.sql)));
         $('perf-lock-go-session').addEventListener('click', () => goSession(d));

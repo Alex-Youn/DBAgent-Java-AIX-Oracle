@@ -96,6 +96,10 @@ public enum SettingKey {
     LOCK_COLLECT_ENABLED(d("dbagent.perf.lock-collect-enabled", BOOL, "true", LOCK, "Lock 분석 수집",
             "성능 분석의 Lock 분석에 쓰는 락 대기 이력(TX·TM)을 수집합니다.")
             .detail("기존 60초 ASH 수집에 락 이벤트 4종의 컬럼을 더 읽습니다(새 원본 조회 없음, 같은 ASH 구간). 끄면 새 락 발생 건이 쌓이지 않고 이미 쌓인 이력은 보관 기간까지 남습니다.")),
+    BLOCKER_DETAIL_ENABLED(d("dbagent.perf.blocker-detail-enabled", BOOL, "false", LOCK, "Lock 분석: 블로커 상세 수집",
+            "락이 잡혔을 때 블로커 세션 정보·TM 보유 모드·FK 인덱스 여부를 대상 DB에서 추가로 조회해 원인을 더 정확히 판정합니다.")
+            .detail("락 대기자가 있을 때만 v$session(블로커 SID 목록, 바인드), v$lock(TM 건의 블로커만, type='TM'), v$sqlstats(TM 건의 블로커 SQL 앞부분), 필요 시 dba_constraints·dba_ind_columns(테이블 단위 하루 1회 캐시)를 조회합니다. 모두 lock-query-timeout-seconds 제한이 걸립니다. 꺼져 있으면 TX_UNCOMMITTED·TM_DDL·TM_LOCK_TABLE·TM_FK_NOINDEX는 판정하지 않습니다.")
+            .warning("대상 DB에 락 발생 중에만 추가 조회가 나갑니다. 켜기 전에 DB 부하 영향을 확인하세요.")),
     LOCK_GAP_SEC(d("dbagent.perf.lock-gap-sec", INT, "30", LOCK, "Lock 발생 건 끊김 기준",
             "같은 블로커·같은 락 유형의 대기 샘플이 이 시간보다 오래 끊기면 별개의 락 발생 건으로 나눕니다.").unit("초").range(5, 600)
             .detail("ASH 샘플은 약 1초 간격입니다. 낮추면 짧은 중단에도 건이 잘게 나뉘고, 높이면 간헐적으로 이어지는 락이 한 건으로 묶입니다.")),
@@ -277,7 +281,7 @@ public enum SettingKey {
             ASH_AWR_QUERY_TIMEOUT_SECONDS, ASH_AWR_FALLBACK, SQLSTAT_QUERY_TIMEOUT_SECONDS, HEALTH_BUSY_MAX_SECONDS,
             SESSION_EXTRA_FAIL_LOG_MINUTES, FLEET_STATUS_TIMEOUT_SECONDS, ACTIVE_ALERTS_TIMEOUT_SECONDS,
             // P5 Lock 백그라운드 수집 켜기/끄기·상한, 접속/응답 대기와 풀 크기(저장하면 풀을 다시 만든다)
-            LOCK_KEEPALIVE_MINUTES, LOCK_KEEPALIVE_MAX_DBS, LOCK_COLLECT_ENABLED, LOCK_GAP_SEC,
+            LOCK_KEEPALIVE_MINUTES, LOCK_KEEPALIVE_MAX_DBS, LOCK_COLLECT_ENABLED, BLOCKER_DETAIL_ENABLED, LOCK_GAP_SEC,
             ORACLE_CONNECT_TIMEOUT_MS, ORACLE_READ_TIMEOUT_MS, ORACLE_POOL_MIN_IDLE, ORACLE_POOL_MAX_SIZE,
             RDB_CONNECT_TIMEOUT_MS, RDB_READ_TIMEOUT_MS, RDB_POOL_MIN_IDLE, RDB_POOL_MAX_SIZE));
 
