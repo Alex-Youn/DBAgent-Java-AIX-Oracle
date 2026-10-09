@@ -515,12 +515,32 @@ public class LockRealtimeService {
     }
 
     private void resolveObjectNames(Connection conn, String dbId, List<Map<String, Object>> holders) {
+        Set<Long> ids = new HashSet<>();
+        for (Map<String, Object> h : holders) {
+            Long id = (Long) h.get("objId");
+            if (id != null) ids.add(id);
+        }
+        Map<Long, String> names = objectNamesFor(conn, dbId, ids);
+        for (Map<String, Object> h : holders) {
+            Long id = (Long) h.get("objId");
+            String name = id == null ? null : names.get(id);
+            int cnt = (Integer) h.get("objCnt");
+            String label = name != null ? name : (id == null ? "-" : "OBJ#" + id);
+            h.put("object", cnt > 1 ? label + " 외 " + (cnt - 1) + "개" : label);
+        }
+    }
+
+    /**
+     * object_id → "OWNER.NAME" 캐시 조회. 모르는 값만 dba_objects에서 한 번에 읽고(못 찾으면 10분, 조회 실패면 1분 재조회 안 함 -
+     * 2026-10-09 점검 수정 A2-10), 이 캐시는 Lock 실시간과 성능 분석 Lock 수집(PerfLockService, 2026-10-09 Phase 1a)이 같이 쓴다.
+     * 반환 맵은 이 DB의 캐시 그 자체이므로 읽기 전용으로만 쓴다(없는 id는 키가 없다).
+     */
+    Map<Long, String> objectNamesFor(Connection conn, String dbId, java.util.Collection<Long> ids) {
         Map<Long, String> names = objectNames.computeIfAbsent(dbId, k -> new ConcurrentHashMap<>());
         Map<Long, Long> missing = objectMissingUntil.computeIfAbsent(dbId, k -> new ConcurrentHashMap<>());
         long nowMs = System.currentTimeMillis();
         Set<Long> unknown = new HashSet<>();
-        for (Map<String, Object> h : holders) {
-            Long id = (Long) h.get("objId");
+        for (Long id : ids) {
             if (id == null || names.containsKey(id)) continue;
             Long until = missing.get(id);
             if (until != null && until > nowMs) continue; // 최근에 못 찾은 id
@@ -548,13 +568,7 @@ public class LockRealtimeService {
             if (missing.size() > 5000) missing.clear();
             if (names.size() > 5000) names.clear(); // 캐시 상한 - 객체가 계속 바뀌는 환경 대비
         }
-        for (Map<String, Object> h : holders) {
-            Long id = (Long) h.get("objId");
-            String name = id == null ? null : names.get(id);
-            int cnt = (Integer) h.get("objCnt");
-            String label = name != null ? name : (id == null ? "-" : "OBJ#" + id);
-            h.put("object", cnt > 1 ? label + " 외 " + (cnt - 1) + "개" : label);
-        }
+        return names;
     }
 
     /** 한 번 조회한 Holder 목록을 장애 판정 수와 KILL 대상으로 나눈다. */

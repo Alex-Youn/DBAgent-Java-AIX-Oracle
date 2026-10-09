@@ -148,6 +148,11 @@
 #dbagent.monitor.lock-keepalive-minutes=0
 # 동시에 백그라운드 수집하는 DB 수 상한(넘으면 가장 오래 전에 본 DB부터 제외, 0=상한 없음)
 #dbagent.monitor.lock-keepalive-max-dbs=5
+# 성능 분석 개편 Phase 1a(2026-10-09): Lock 분석용 락 대기 이력 수집. 기존 60초 ASH 수집의 같은 구간에서 락 이벤트 4종(TX row lock·
+# ITL·index contention, TM)의 행만 더 읽는다(새 원본 조회 종류 없음, 쿼리 제한 시간은 lock-query-timeout-seconds). 끄려면 false.
+#dbagent.perf.lock-collect-enabled=true
+# 같은 블로커·같은 락 유형의 대기 샘플이 이 초보다 오래 끊기면 별개의 락 발생 건으로 나눈다(ASH 샘플은 약 1초 간격).
+#dbagent.perf.lock-gap-sec=30
 # ⑧ 점검 알림 "장시간 실행 쿼리" 실시간 카드(2026-09-30): ACTIVE 사용자 세션의 현재 호출이 이 초 이상이면 표시(0=끔).
 # Idle 이벤트로 대기 중인 세션(AQ 리스너·sleep 등 늘 ACTIVE인 대기형)은 세지 않는다.
 # 10분 점검이 아니라 3초 Lock 조회에 함께 센다(추가 조회는 해당 세션이 있을 때 상위 5개 목록, DB별 15초에 1회)

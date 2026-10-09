@@ -92,6 +92,13 @@ public enum SettingKey {
     LOCK_KEEPALIVE_MAX_DBS(d("dbagent.monitor.lock-keepalive-max-dbs", INT, "5", LOCK, "백그라운드 수집 최대 DB 수",
             "백그라운드 수집을 동시에 유지할 DB 개수의 상한입니다.").unit("개").range(1, 50)
             .detail("수집 유지 기능이 꺼져 있으면(0분) 의미가 없습니다.")),
+    // 성능 분석 개편 Phase 1a(2026-10-09, 설계문서/성능분석 메뉴 설계.md 6장): Lock 분석용 대기 이력 수집
+    LOCK_COLLECT_ENABLED(d("dbagent.perf.lock-collect-enabled", BOOL, "true", LOCK, "Lock 분석 수집",
+            "성능 분석의 Lock 분석에 쓰는 락 대기 이력(TX·TM)을 수집합니다.")
+            .detail("기존 60초 ASH 수집에 락 이벤트 4종의 컬럼을 더 읽습니다(새 원본 조회 없음, 같은 ASH 구간). 끄면 새 락 발생 건이 쌓이지 않고 이미 쌓인 이력은 보관 기간까지 남습니다.")),
+    LOCK_GAP_SEC(d("dbagent.perf.lock-gap-sec", INT, "30", LOCK, "Lock 발생 건 끊김 기준",
+            "같은 블로커·같은 락 유형의 대기 샘플이 이 시간보다 오래 끊기면 별개의 락 발생 건으로 나눕니다.").unit("초").range(5, 600)
+            .detail("ASH 샘플은 약 1초 간격입니다. 낮추면 짧은 중단에도 건이 잘게 나뉘고, 높이면 간헐적으로 이어지는 락이 한 건으로 묶입니다.")),
 
     // ───────────────────────── 점검 알림 ─────────────────────────
     CHECK_INTERVAL_MINUTES(d("dbagent.monitor.check-interval-minutes", INT, "10", CHECK, "점검 수집 주기",
@@ -270,7 +277,7 @@ public enum SettingKey {
             ASH_AWR_QUERY_TIMEOUT_SECONDS, ASH_AWR_FALLBACK, SQLSTAT_QUERY_TIMEOUT_SECONDS, HEALTH_BUSY_MAX_SECONDS,
             SESSION_EXTRA_FAIL_LOG_MINUTES, FLEET_STATUS_TIMEOUT_SECONDS, ACTIVE_ALERTS_TIMEOUT_SECONDS,
             // P5 Lock 백그라운드 수집 켜기/끄기·상한, 접속/응답 대기와 풀 크기(저장하면 풀을 다시 만든다)
-            LOCK_KEEPALIVE_MINUTES, LOCK_KEEPALIVE_MAX_DBS,
+            LOCK_KEEPALIVE_MINUTES, LOCK_KEEPALIVE_MAX_DBS, LOCK_COLLECT_ENABLED, LOCK_GAP_SEC,
             ORACLE_CONNECT_TIMEOUT_MS, ORACLE_READ_TIMEOUT_MS, ORACLE_POOL_MIN_IDLE, ORACLE_POOL_MAX_SIZE,
             RDB_CONNECT_TIMEOUT_MS, RDB_READ_TIMEOUT_MS, RDB_POOL_MIN_IDLE, RDB_POOL_MAX_SIZE));
 

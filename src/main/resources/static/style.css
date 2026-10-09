@@ -2036,6 +2036,45 @@ body.app-shell { overflow-y: hidden; }
 .perf-loading-overlay { position: absolute; inset: 0; background: var(--nd-overlay-bg); z-index: 20; align-items: center; justify-content: center; flex-direction: column; gap: 12px; border-radius: 16px; }
 .perf-loading-text { color: var(--nd-overlay-text); font-weight: 600; }
 .perf-shell { margin-bottom: 12px; }
+/* 성능 분석 > Lock 분석(Phase 1a, 2026-10-09) - 색은 기존 변수, TX/TM 색은 7분류 변수 */
+.perf-lk-filter { flex-wrap: wrap; margin-top: 0; }
+.perf-lk-seg { display: inline-flex; border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden; }
+.perf-lk-seg button { background: var(--bg-card); color: var(--text-secondary); border: 0; padding: 4px 12px; cursor: pointer; font-size: 0.85rem; }
+.perf-lk-seg button.active { background: var(--primary); color: var(--nd-overlay-text); }
+.perf-lk-notice { margin: 4px 0 10px; padding: 7px 10px; border-left: 3px solid var(--warning); color: var(--warning); font-size: 0.85rem; }
+.perf-lk-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 6px 0 12px; }
+.perf-lk-kpi { border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; background: var(--bg-card); }
+.perf-lk-kpi .l { color: var(--text-secondary); font-size: 0.78rem; }
+.perf-lk-kpi .v { font-size: 1.25rem; font-weight: 700; margin-top: 2px; }
+.perf-lk-kpi .d { color: var(--text-secondary); font-size: 0.75rem; margin-top: 2px; min-height: 1em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perf-lk-chart { height: 200px; }
+.perf-lk-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.perf-lk-tablewrap { max-height: 340px; overflow: auto; border: 1px solid var(--border-color); border-radius: 6px; }
+.perf-lk-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.perf-lk-table th { position: sticky; top: 0; background: var(--bg-card); color: var(--text-secondary); text-align: left; padding: 6px 8px; font-weight: 600; white-space: nowrap; border-bottom: 1px solid var(--border-color); }
+.perf-lk-table td { padding: 5px 8px; border-bottom: 1px solid var(--border-color); white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.perf-lk-table .num { text-align: right; }
+.perf-lk-row { cursor: pointer; }
+.perf-lk-row:hover td { background: var(--bg-card); }
+.perf-lk-row.sel td { background: var(--nd-sel-fill); }
+.perf-lk-badge { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 0.72rem; font-weight: 700; color: var(--nd-overlay-text); }
+.perf-lk-tx { background: var(--nd-wc-tx-lock); }
+.perf-lk-tm { background: var(--nd-wc-tm-lock); }
+.perf-lk-empty { padding: 22px; text-align: center; color: var(--text-secondary); }
+.perf-lk-top { margin-top: 12px; }
+.perf-lk-top summary { cursor: pointer; color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 6px; }
+.perf-lk-top-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.perf-lk-detail { border: 1px solid var(--border-color); border-radius: 6px; padding: 10px 12px; min-height: 120px; }
+.perf-lk-detail-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.perf-lk-tree { font-family: var(--nd-font-mono, monospace); font-size: 0.78rem; }
+.perf-lk-tree-row { padding: 2px 0; }
+.perf-lk-sql { background: none; border: 0; color: var(--primary); cursor: pointer; font: inherit; text-decoration: underline; padding: 0 2px; }
+.perf-lk-kv { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.8rem; }
+.perf-lk-kv th { text-align: left; color: var(--text-secondary); width: 110px; font-weight: 600; padding: 3px 6px; vertical-align: top; }
+.perf-lk-kv td { padding: 3px 6px; word-break: break-word; }
+.perf-lk-hint { margin-top: 10px; padding: 8px 10px; border-left: 3px solid var(--warning); background: var(--bg-card); font-size: 0.82rem; }
+.perf-lk-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+@media (max-width: 1100px) { .perf-lk-grid { grid-template-columns: 1fr; } .perf-lk-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* 성능 분석 하위 탭 줄(Phase 0a, 2026-10-09) - 색은 기존 변수 */
 .perf-subtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-color); margin: 0 0 12px; flex-wrap: wrap; }
 .perf-subtab { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-secondary); padding: 8px 16px; cursor: pointer; font: inherit; font-size: 0.92rem; }

@@ -966,12 +966,18 @@ function dbagentSectionVisible(id) {
         if (!targetNav || !targetSection) return;
 
         if (targetId === 'history') {
+            // 로그인 확인 직후처럼 메뉴 id(`history`)만 넘어와도 주소창에 이미 하위 경로(#history/lock?...)가 있으면 그걸 유지한다.
+            let rest = routeRest;
+            if (!rest) {
+                const cur = window.location.hash.substring(1);
+                if (cur.split(/[/?]/)[0] === 'history') rest = cur.slice('history'.length);
+            }
             // `#history` → `#history/session`: replaceState라 뒤로 가기 기록이 쌓이지 않는다(hashchange도 안 뜬다).
-            if (!routeRest) {
+            if (!rest) {
                 history.replaceState(null, null, '#history/session');
                 window.dispatchEvent(new CustomEvent('perf:route', { detail: { sub: 'session', query: '' } }));
             } else {
-                const m = routeRest.match(/^\/?([^?]*)(?:\?(.*))?$/);
+                const m = rest.match(/^\/?([^?]*)(?:\?(.*))?$/);
                 window.dispatchEvent(new CustomEvent('perf:route', { detail: { sub: (m && m[1]) || 'session', query: (m && m[2]) || '' } }));
             }
         }

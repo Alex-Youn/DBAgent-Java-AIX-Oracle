@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=81">
+    <link rel="stylesheet" href="style.css?v=82">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=14"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -1125,7 +1125,7 @@
                          구현된 하위 탭만 노출한다(hidden 제거로 추가). 해시는 #history/{sub} - 동작은 perf-analysis.js. -->
                     <div class="perf-subtabs" id="perf-subtabs" role="tablist">
                         <button type="button" class="perf-subtab active" role="tab" data-perf-sub="session">세션 분석</button>
-                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="lock" hidden>Lock 분석</button>
+                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="lock">Lock 분석</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="load" hidden>시스템 부하</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="sql" hidden>SQL 분석</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="cmp" hidden>구간 비교</button>
@@ -1188,9 +1188,64 @@
                                 <canvas id="perf-events-chart"></canvas>
                                 <div id="perf-events-empty" class="perf-empty" style="display: none;"></div>
                             </div>
+                            <div class="perf-sel-bar" id="perf-events-lock-links" style="display: none;">
+                                <span class="perf-hint">락 대기 이벤트가 있습니다.</span>
+                                <button type="button" class="perf-link-btn" data-perf-lock-type="TX">TX 락을 Lock 분석에서 보기 →</button>
+                                <button type="button" class="perf-link-btn" data-perf-lock-type="TM">TM 락을 Lock 분석에서 보기 →</button>
+                            </div>
                         </div>
                     </div>
                     </div><!-- /#perf-sub-session -->
+                    <!-- Lock 분석 하위 탭(성능 분석 개편 Phase 1a): 락 발생 건 목록·추이·블로킹 상세. 동작은 perf-lock.js -->
+                    <div id="perf-sub-lock" class="perf-sub-pane" data-perf-pane="lock" hidden>
+                        <div class="panel">
+                            <div class="panel-body">
+                                <div class="perf-sel-bar perf-lk-filter">
+                                    <span class="perf-lk-seg" id="perf-lock-type">
+                                        <button type="button" class="active" data-t="all">전체</button><button type="button" data-t="TX">TX 락</button><button type="button" data-t="TM">TM 락</button>
+                                    </span>
+                                    <select id="perf-lock-min" class="form-input perf-select" title="이 시간 이상 이어진 락 발생 건만 봅니다.">
+                                        <option value="0">지속시간 전체</option><option value="30">30초 이상</option><option value="60">1분 이상</option><option value="180">3분 이상</option>
+                                    </select>
+                                    <span class="perf-hint">실시간 현황은 상단 Lock Holder/Waiter Tree 탭에서 봅니다 · 블로커 상세 수집이 꺼져 있으면 TM 보유 모드는 "미상"으로 표시됩니다</span>
+                                </div>
+                                <div id="perf-lock-notice" class="perf-lk-notice" style="display: none;"></div>
+                                <div class="perf-lk-kpis" id="perf-lock-kpis"></div>
+                                <h3 class="perf-h3">락 대기 세션 수 추이 <span class="perf-hint" id="perf-lock-chart-note"></span></h3>
+                                <div class="perf-chart-box perf-lk-chart" id="perf-lock-chart-box">
+                                    <canvas id="perf-lock-chart"></canvas>
+                                    <div id="perf-lock-brush" class="perf-brush"></div>
+                                </div>
+                                <div class="perf-sel-bar">
+                                    <span id="perf-lock-sel-text">선택 구간: 전체</span>
+                                    <button type="button" id="perf-lock-sel-reset" class="perf-link-btn" style="display: none;">전체 구간으로</button>
+                                    <span class="perf-hint">위 그래프를 좌우로 드래그하면 목록·KPI를 그 구간으로 좁힙니다.</span>
+                                </div>
+                                <div class="perf-lk-grid">
+                                    <div class="perf-lk-left">
+                                        <h3 class="perf-h3">락 발생 목록 <span class="perf-hint" id="perf-lock-count"></span></h3>
+                                        <div class="perf-lk-tablewrap">
+                                            <table class="perf-lk-table">
+                                                <thead><tr><th>시작</th><th>종료</th><th class="num">지속</th><th>유형</th><th id="perf-lock-mode-h">모드</th><th>최초 블로커</th><th class="num">최대 대기</th><th>대상 오브젝트</th></tr></thead>
+                                                <tbody id="perf-lock-rows"></tbody>
+                                            </table>
+                                        </div>
+                                        <details class="perf-lk-top" open>
+                                            <summary>Top 블로커 · Top 락 대상 오브젝트</summary>
+                                            <div class="perf-lk-top-grid">
+                                                <div><table class="perf-lk-table"><thead><tr><th>블로커</th><th class="num">건수</th><th class="num">최장 지속</th></tr></thead><tbody id="perf-lock-top-blockers"></tbody></table></div>
+                                                <div><table class="perf-lk-table"><thead><tr><th>오브젝트</th><th>유형</th><th class="num">건수</th></tr></thead><tbody id="perf-lock-top-objects"></tbody></table></div>
+                                            </div>
+                                        </details>
+                                    </div>
+                                    <div class="perf-lk-right">
+                                        <h3 class="perf-h3">블로킹 상세</h3>
+                                        <div class="perf-lk-detail" id="perf-lock-detail"><div class="perf-lk-empty">조회 후 표시됩니다</div></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </section>
 
             </div>
@@ -1252,13 +1307,14 @@
     </div>
 
 
-    <script src="app.js?v=196"></script>
+    <script src="app.js?v=197"></script>
     <script src="nd-dashboard.js?v=21"></script>
     <script src="nd-aas.js?v=12"></script>
     <script src="nd-lock.js?v=13"></script>
     <script src="nd-top.js?v=4"></script>
     <script src="nd-checks.js?v=7"></script>
-    <script src="perf-shell.js?v=1"></script>
-    <script src="perf-analysis.js?v=12"></script>
+    <script src="perf-shell.js?v=2"></script>
+    <script src="perf-analysis.js?v=13"></script>
+    <script src="perf-lock.js?v=1"></script>
 </body>
 </html>

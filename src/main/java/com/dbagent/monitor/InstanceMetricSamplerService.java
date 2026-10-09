@@ -65,6 +65,9 @@ public class InstanceMetricSamplerService {
     // 두므로 앱 재기동 직후 첫 사이클은 예전처럼 시간 창으로 센다.
     private final ConcurrentHashMap<String, Long> ashWatermark = new ConcurrentHashMap<>();
 
+    // 성능 분석 Lock 분석(Phase 1a, 2026-10-09): 같은 ASH 구간의 락 대기 샘플을 읽어 락 발생 건으로 묶는다.
+    private final PerfLockService perfLock;
+
     // C4(2026-09-25): 인스턴스별 "DB SYSDATE - 앱 시각"(ms). 저장값(sampled_at)은 앱 시각이고 ASH 조회는 DB
     // 시각이라, 화면에서 고른 구간을 DB 시각으로 바꿀 때 쓴다(도커/폐쇄망에서 DB와 앱 서버 시간대가 다를 수
     // 있음). 매 사이클 갱신하며 /api/metric_history가 dbClockOffsetMs로 내려준다.
@@ -117,8 +120,9 @@ public class InstanceMetricSamplerService {
 
     public InstanceMetricSamplerService(OracleConnectionPoolManager poolManager, DatabaseConfigService configService,
                                          InstanceMetricHistoryService historyService, PerfStoreService perfStore,
-                                         SettingsService settings) {
+                                         SettingsService settings, PerfLockService perfLock) {
         this.settings = settings;
+        this.perfLock = perfLock;
         this.poolManager = poolManager;
         this.configService = configService;
         this.historyService = historyService;
@@ -283,6 +287,9 @@ public class InstanceMetricSamplerService {
             if (sampledAt > 0 && off != null) {
                 LocalDateTime dbAt = LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(sampledAt + off), ZoneId.systemDefault());
                 perfStore.markCollected(dbId, PerfStoreService.minuteKey(dbAt));
+                // 성공한 수집 분 기록(수집 공백 판정용, 설계 3.1의 5) - 한가해서 행이 없는 분과 수집이 안 된 분을 구분한다
+                perfLock.saveHeartbeat(dbId, PerfStoreService.minuteKey(dbAt), "ash");
+                perfLock.ingest(dbId, perf.lockSamples, dbAt);
             }
         } catch (Exception e) {
             log.warn("perf store write failed for db_id={}: {}", dbId, e.toString());
@@ -466,6 +473,18 @@ public class InstanceMetricSamplerService {
                     ps.setInt(1, sampleIntervalSeconds);
                 }
             }, null);
+            // Lock 분석용 락 대기 샘플 - 같은 where/바인딩(같은 sample_id 구간)이라 새 구간 조회가 아니다. 실패하면 null(락 하트비트 없음 = 공백)
+            if (perf != null && settings.getBool(SettingKey.LOCK_COLLECT_ENABLED)) {
+                final Connection lockConn = conn;
+                perf.lockSamples = perfLock.query(lockConn, target, where, ps -> {
+                    if (byIdF) {
+                        ps.setLong(1, lastF);
+                        ps.setLong(2, latestF);
+                    } else {
+                        ps.setInt(1, sampleIntervalSeconds);
+                    }
+                }, ids -> resolveUsernames(lockConn, target.id(), ids));
+            }
         } catch (SQLException perfFailed) {
             log.debug("perf sampling skipped for db_id={}: {}", target.id(), perfFailed.toString());
         }
@@ -737,6 +756,7 @@ public class InstanceMetricSamplerService {
         final List<Object[]> rows;
         final List<String[]> sqlTexts;
         final long capturedKey;
+        List<PerfLockService.LockSample> lockSamples; // Lock 분석용(null = 수집 안 함·실패)
 
         PerfSample(List<Object[]> rows, List<String[]> sqlTexts, long capturedKey) {
             this.rows = rows;

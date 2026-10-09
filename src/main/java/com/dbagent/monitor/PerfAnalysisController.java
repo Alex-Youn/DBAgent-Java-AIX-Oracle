@@ -37,11 +37,14 @@ public class PerfAnalysisController {
     private final AuthService authService;
     private final DatabaseConfigService configService;
     private final PerfAnalysisService perfService;
+    private final PerfLockService lockService;
 
-    public PerfAnalysisController(AuthService authService, DatabaseConfigService configService, PerfAnalysisService perfService) {
+    public PerfAnalysisController(AuthService authService, DatabaseConfigService configService, PerfAnalysisService perfService,
+                                  PerfLockService lockService) {
         this.authService = authService;
         this.configService = configService;
         this.perfService = perfService;
+        this.lockService = lockService;
     }
 
     private interface Query {
@@ -129,6 +132,78 @@ public class PerfAnalysisController {
         boolean oracle = "oracle".equals(source);
         return run(db_id, token, from, to, users, machines, (t, f, e, fl) -> oracle
                 ? perfService.eventSessions(t, event, f, e, fl) : perfService.storeEventSessions(t, event, f, e, fl));
+    }
+
+    // ------------------------------------------------------------------ Lock 분석 (성능 분석 개편 Phase 1a, 2026-10-09, 설계 1-5)
+    // 수집 저장소만 읽는다(운영 DB 조회 없음). 파라미터는 공통(db_id, from, to, users, machines) + type(all/TX/TM), min_sec.
+    // 응답 JSON 키는 camelCase. 수집이 안 되는 DB는 응답의 collect.state(unavailable·error)로 "판단 보류"를 알린다.
+
+    private static String lockType(String type) {
+        return "TX".equalsIgnoreCase(type) ? "TX" : "TM".equalsIgnoreCase(type) ? "TM" : "all";
+    }
+
+    @GetMapping("/lock_summary")
+    public ResponseEntity<Object> lockSummary(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                              @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                              @RequestParam(required = false) String users, @RequestParam(required = false) String machines,
+                                              @RequestParam(required = false, defaultValue = "all") String type,
+                                              @RequestParam(name = "min_sec", required = false, defaultValue = "0") int minSec) {
+        return run(db_id, token, from, to, users, machines,
+                (t, f, e, fl) -> lockService.summary(t.id(), f, e, fl, lockType(type), Math.max(0, minSec)));
+    }
+
+    @GetMapping("/lock_timeline")
+    public ResponseEntity<Object> lockTimeline(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                               @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                               @RequestParam(required = false) String users, @RequestParam(required = false) String machines) {
+        return run(db_id, token, from, to, users, machines, (t, f, e, fl) -> lockService.timeline(t.id(), f, e, fl));
+    }
+
+    @GetMapping("/lock_incidents")
+    public ResponseEntity<Object> lockIncidents(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                                @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                                @RequestParam(required = false) String users, @RequestParam(required = false) String machines,
+                                                @RequestParam(required = false, defaultValue = "all") String type,
+                                                @RequestParam(name = "min_sec", required = false, defaultValue = "0") int minSec) {
+        return run(db_id, token, from, to, users, machines,
+                (t, f, e, fl) -> lockService.incidents(t.id(), f, e, fl, lockType(type), Math.max(0, minSec)));
+    }
+
+    @GetMapping("/lock_top_blockers")
+    public ResponseEntity<Object> lockTopBlockers(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                                  @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                                  @RequestParam(required = false) String users, @RequestParam(required = false) String machines,
+                                                  @RequestParam(required = false, defaultValue = "all") String type) {
+        return run(db_id, token, from, to, users, machines, (t, f, e, fl) -> lockService.topBlockers(t.id(), f, e, fl, lockType(type)));
+    }
+
+    @GetMapping("/lock_top_objects")
+    public ResponseEntity<Object> lockTopObjects(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                                 @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                                 @RequestParam(required = false) String users, @RequestParam(required = false) String machines,
+                                                 @RequestParam(required = false, defaultValue = "all") String type) {
+        return run(db_id, token, from, to, users, machines, (t, f, e, fl) -> lockService.topObjects(t.id(), f, e, fl, lockType(type)));
+    }
+
+    /** 락 발생 건 하나(구간 조건 없음) - 상세 패널용. */
+    @GetMapping("/lock_incident")
+    public ResponseEntity<Object> lockIncident(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                               @RequestParam(name = "incident_id", required = false) String incidentId) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return error(HttpStatus.FORBIDDEN, "해당 DB에 대한 접근 권한이 없습니다.");
+        }
+        if (incidentId == null || incidentId.trim().isEmpty() || incidentId.length() > 200) {
+            return error(HttpStatus.BAD_REQUEST, "incident_id가 필요합니다.");
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null || !"oracle".equalsIgnoreCase(target.dbType())) {
+            return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
+        }
+        java.util.Map<String, Object> r = lockService.incident(target.id(), incidentId.trim());
+        if (r == null) {
+            return error(HttpStatus.NOT_FOUND, "락 발생 건을 찾을 수 없습니다(보관 기간이 지났을 수 있습니다).");
+        }
+        return ResponseEntity.ok(r);
     }
 
     private ResponseEntity<Object> run(String dbId, String token, String from, String to, String users, String machines, Query q) {

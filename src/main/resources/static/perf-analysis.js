@@ -249,8 +249,21 @@
 
     // ------------------------------------------------------------------ 하단: event별 막대
 
+    // 락 대기 이벤트가 있으면 Lock 분석으로 바로 갈 수 있는 버튼을 보인다(설계 5, 유형 필터 적용)
+    function updateLockLinks(events) {
+        const box = $('perf-events-lock-links');
+        if (!box) return;
+        const hasTx = events.some(e => /^enq: TX/.test(e.event));
+        const hasTm = events.some(e => /^enq: TM/.test(e.event));
+        box.style.display = hasTx || hasTm ? '' : 'none';
+        box.querySelectorAll('[data-perf-lock-type]').forEach(b => {
+            b.style.display = (b.dataset.perfLockType === 'TX' ? hasTx : hasTm) ? '' : 'none';
+        });
+    }
+
     function clearEvents(msg) {
         lastEvents = [];
+        updateLockLinks([]);
         if (eventsChart) { eventsChart.destroy(); eventsChart = null; }
         const empty = $('perf-events-empty');
         if (empty) { empty.textContent = msg || ''; empty.style.display = msg ? 'flex' : 'none'; }
@@ -261,6 +274,7 @@
         if (!events.length) { clearEvents('선택 구간에 대기 이벤트 샘플이 없습니다.'); return; }
         $('perf-events-empty').style.display = 'none';
         lastEvents = events;
+        updateLockLinks(events);
         const box = $('perf-events-container');
         box.style.height = Math.max(160, 40 + events.length * 26) + 'px';
         const colors = events.map(e => (CAT_BY_KEY[e.category] || CAT_BY_KEY.other).color);
@@ -355,6 +369,8 @@
         $('perf-sel-reset').addEventListener('click', () => { S.setSel(null); renderSelection(); loadEvents(); });
         attachBrush();
         attachEventsClick();
+        document.querySelectorAll('[data-perf-lock-type]').forEach(b =>
+            b.addEventListener('click', () => S.goSub('lock', '&type=' + b.dataset.perfLockType)));
         // 다른 하위 탭으로 가면 원본 조회 상태를 버리고 수집 저장소로 돌아온다(설계 3.2).
         window.addEventListener('perf:route', (ev) => {
             const sub = (ev && ev.detail && ev.detail.sub) || 'session';

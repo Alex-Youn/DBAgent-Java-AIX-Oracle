@@ -388,10 +388,11 @@
     }
 
     // 현재 조회·선택 구간을 조건으로 실어 다른 하위 탭으로 이동한다(드래그로 고른 구간이 있으면 그 구간).
-    function goSub(sub) {
+    // extra: 대상 탭이 읽는 추가 조건(예: '&type=TX' - Lock 분석의 유형 필터)
+    function goSub(sub, extra) {
         if (!subAvailable(sub) || !st.range || !st.dbId) return;
         const w = currentWindow();
-        window.location.hash = `#history/${sub}?db_id=${enc(st.dbId)}&from=${enc(w.from)}&to=${enc(w.to)}`;
+        window.location.hash = `#history/${sub}?db_id=${enc(st.dbId)}&from=${enc(w.from)}&to=${enc(w.to)}${extra || ''}`;
     }
 
     // ------------------------------------------------------------------ 연결
@@ -454,7 +455,8 @@
         gen: () => st.gen,
         sub: () => st.sub,
         dbNowDate,
-        refreshGoButtons
+        refreshGoButtons,
+        goSub
     };
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
