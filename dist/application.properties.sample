@@ -159,6 +159,14 @@
 #dbagent.perf.blocker-detail-enabled=false
 # 블로커 상세 수집이 켜진 경우 TM 건 블로커의 TM 보유 모드를 v$lock 으로 따로 조회할지(기본 true). 락 발생 때 v$lock 이 느리면 false.
 #dbagent.perf.blocker-tm-mode-enabled=true
+# 성능 분석 "시스템 부하" 수집(2026-10-09, 기본 꺼짐): 60초 샘플러가 v$sysmetric(60초 그룹 지표 9개)·v$eventmetric(Idle 제외, 대기 시간 상위 50개(분당 100µs 미만 제외))을 1분마다 읽는다.
+# PDB 서비스로 등록한 DB는 두 뷰가 비어 있어 수집하지 않는다(화면에 판단 보류). 켜기 전에 DB 부하를 확인할 것.
+#dbagent.perf.sys-collect-enabled=false
+# 시스템 부하 진단 기준(%, ms): 지표 카드 강조 / 대기 평균 악화 배수(200=2배) / Hard parse 증가(현재 초당 1건 이상일 때만 힌트) / db file sequential read 지연
+#dbagent.perf.diag-card-pct=30
+#dbagent.perf.diag-wait-ratio-pct=200
+#dbagent.perf.diag-hard-parse-pct=100
+#dbagent.perf.diag-seq-read-ms=10
 # ⑧ 점검 알림 "장시간 실행 쿼리" 실시간 카드(2026-09-30): ACTIVE 사용자 세션의 현재 호출이 이 초 이상이면 표시(0=끔).
 # Idle 이벤트로 대기 중인 세션(AQ 리스너·sleep 등 늘 ACTIVE인 대기형)은 세지 않는다.
 # 10분 점검이 아니라 3초 Lock 조회에 함께 센다(추가 조회는 해당 세션이 있을 때 상위 5개 목록, DB별 15초에 1회)

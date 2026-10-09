@@ -108,6 +108,20 @@ public enum SettingKey {
             "같은 블로커·같은 락 유형의 대기 샘플이 이 시간보다 오래 끊기면 별개의 락 발생 건으로 나눕니다.").unit("초").range(5, 600)
             .detail("ASH 샘플은 약 1초 간격입니다. 낮추면 짧은 중단에도 건이 잘게 나뉘고, 높이면 간헐적으로 이어지는 락이 한 건으로 묶입니다.")),
 
+    // 성능 분석 개편 Phase 2(2026-10-09, 설계 2장): 시스템 부하 수집(v$sysmetric·v$eventmetric 60초 값) - 새 원본 조회라 기본 꺼짐
+    SYS_COLLECT_ENABLED(d("dbagent.perf.sys-collect-enabled", BOOL, "false", LOCK, "시스템 부하 수집",
+            "성능 분석의 시스템 부하 탭에 쓰는 지표(DB Time·Executions 등)와 대기 이벤트를 1분마다 수집합니다.")
+            .detail("60초 샘플러가 이미 접속한 연결로 v$sysmetric(60초 그룹 9개 지표)과 v$eventmetric(Idle 제외, 대기가 있는 이벤트 대기 시간 상위 50개(분당 100µs 미만 제외))을 한 번씩 읽습니다. 지난주 같은 시간 대비는 설치 후 1주일이 지나야 의미가 있습니다. PDB 서비스로 등록한 DB는 이 뷰가 비어 있어 수집하지 않고 화면에 판단 보류로 표시합니다.")
+            .warning("대상 DB에 1분마다 조회 2건이 추가됩니다. 켜기 전에 부하 영향을 확인하세요.")),
+    DIAG_CARD_PCT(d("dbagent.perf.diag-card-pct", INT, "30", LOCK, "시스템 부하: 지표 카드 강조 기준",
+            "지난주 같은 시간 대비 이 비율(%) 이상 늘거나 줄면 지표 카드를 색으로 강조합니다.").unit("%").range(5, 500)),
+    DIAG_WAIT_RATIO_PCT(d("dbagent.perf.diag-wait-ratio-pct", INT, "200", LOCK, "시스템 부하: 대기 평균 악화 기준",
+            "대기 이벤트 평균 대기가 지난주 평균의 이 비율(%) 이상이면 배지와 진단 힌트(redo 쓰기 지연 의심)를 표시합니다.").unit("%").range(110, 2000)),
+    DIAG_HARD_PARSE_PCT(d("dbagent.perf.diag-hard-parse-pct", INT, "100", LOCK, "시스템 부하: Hard parse 증가 기준",
+            "Hard parse(초당)가 지난주 같은 시간보다 이 비율(%) 이상 늘고 현재 초당 1건 이상일 때 리터럴 SQL 점검 힌트를 표시합니다(기준이 아주 작을 때의 작은 변동 제외).").unit("%").range(10, 2000)),
+    DIAG_SEQ_READ_MS(d("dbagent.perf.diag-seq-read-ms", INT, "10", LOCK, "시스템 부하: 단일 블록 읽기 지연 기준",
+            "db file sequential read 평균 대기가 이 시간(ms) 이상이면 스토리지 응답 지연 의심 힌트를 표시합니다.").unit("ms").range(1, 1000)),
+
     // ───────────────────────── 점검 알림 ─────────────────────────
     CHECK_INTERVAL_MINUTES(d("dbagent.monitor.check-interval-minutes", INT, "10", CHECK, "점검 수집 주기",
             "점검 알림 수집 작업이 도는 간격입니다.").unit("분").range(1, 1440)
@@ -286,6 +300,7 @@ public enum SettingKey {
             SESSION_EXTRA_FAIL_LOG_MINUTES, FLEET_STATUS_TIMEOUT_SECONDS, ACTIVE_ALERTS_TIMEOUT_SECONDS,
             // P5 Lock 백그라운드 수집 켜기/끄기·상한, 접속/응답 대기와 풀 크기(저장하면 풀을 다시 만든다)
             LOCK_KEEPALIVE_MINUTES, LOCK_KEEPALIVE_MAX_DBS, LOCK_COLLECT_ENABLED, BLOCKER_DETAIL_ENABLED, BLOCKER_TM_MODE_ENABLED, LOCK_GAP_SEC,
+            SYS_COLLECT_ENABLED, DIAG_CARD_PCT, DIAG_WAIT_RATIO_PCT, DIAG_HARD_PARSE_PCT, DIAG_SEQ_READ_MS,
             ORACLE_CONNECT_TIMEOUT_MS, ORACLE_READ_TIMEOUT_MS, ORACLE_POOL_MIN_IDLE, ORACLE_POOL_MAX_SIZE,
             RDB_CONNECT_TIMEOUT_MS, RDB_READ_TIMEOUT_MS, RDB_POOL_MIN_IDLE, RDB_POOL_MAX_SIZE));
 

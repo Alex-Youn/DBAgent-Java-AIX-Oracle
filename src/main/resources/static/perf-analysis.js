@@ -101,25 +101,36 @@
 
     // ------------------------------------------------------------------ 상단: wait class 막대
 
-    function renderActivity(d) {
+    // 상단 조회 정보 줄. 하위 탭을 옮길 때도 다시 그린다(2026-10-09 Phase 2 점검 수정) - 다른 하위 탭에서 조회하면 빈 구간 경고·원본
+    // 조회 버튼을 빼고 그리는데, 세션 분석으로 돌아와도 다시 그리지 않아 빈 구간에서 원본 조회 버튼이 사라진 채 남았다.
+    function renderMeta(d) {
         const series = d.series || [];
         // null = 아직 수집이 끝나지 않은 막대(서버 collectedTo 이후) - 0으로 그리지 않고 비워 둔다(2026-09-30 QA)
         const total = series.reduce((a, p) => a + p.values.reduce((x, y) => x + (y || 0), 0), 0);
         const pendingCount = series.filter(p => p.values.some(v => v === null)).length;
         const pendingNote = pendingCount ? ` · <span class="perf-hint" title="수집 완료 ${esc(human(d.collectedTo || ''))}까지">최근 ${pendingCount * d.step_minutes}분은 수집 중</span>` : '';
         const store = d.source === 'store';
-        const empty = total === 0
+        // 세션 분석이 아닌 하위 탭(Lock 분석·시스템 부하)은 ASH 막대 기준의 빈 구간 경고·원본 조회 버튼을 보이지 않는다(설계 3.2: 신규 탭은 원본 조회를 지원하지 않는다)
+        const onSession = S.sub() === 'session';
+        const empty = !onSession ? '' : total === 0
             ? (store ? ` · <span class="perf-warn">이 구간에 수집 데이터가 없습니다${d.storedFrom ? ` (수집 시작 ${esc(human(d.storedFrom))})` : ''}</span>`
                 : ' · <span class="perf-warn">이 구간에 샘플이 없습니다(ASH/AWR 보관 기간 밖일 수 있음)</span>')
             : '';
         // 수집 저장소가 비어 있는 구간(수집 시작 전·앱이 꺼져 있던 시간)만 원본 ASH/AWR로 볼 수 있게 - 운영 DB 조회라 버튼으로만
-        const switchBtn = store
+        const switchBtn = !onSession ? '' : store
             ? (total === 0 ? ' <button type="button" class="perf-link-btn" id="perf-src-toggle" data-src="oracle">원본 DB(ASH/AWR)에서 조회</button>' : '')
             : ' <span class="perf-warn">운영 DB 조회</span> <button type="button" class="perf-link-btn" id="perf-src-toggle" data-src="store">수집 저장소로 돌아가기</button>';
+        // 세션 분석이 아닌 탭에는 ASH 막대 정보(데이터 원본·막대 단위·CPU 수)가 의미 없어 조회 구간만 보인다(QA D4)
+        if (!onSession) { S.setMeta(`조회 구간 <b>${esc(human(d.from))} ~ ${esc(human(d.to))}</b>`); return; }
         S.setMeta(`조회 구간 <b>${esc(human(d.from))} ~ ${esc(human(d.to))}</b> · 데이터 <b>${esc(sourceText(d.source))}</b>` +
             ` · ${d.step_minutes}분 막대 · CPU ${d.cpu_cores || '-'}` + pendingNote + empty + switchBtn);
         const tg = $('perf-src-toggle');
         if (tg) tg.addEventListener('click', () => { st.source = tg.dataset.src; S.search({ toggle: true }); });
+    }
+
+    function renderActivity(d) {
+        const series = d.series || [];
+        renderMeta(d);
         const datasets = CATS.map((c, i) => ({
             label: c.label,
             data: series.map(p => ({ x: parseLocal(p.time).getTime(), y: p.values[i] })),
@@ -375,6 +386,8 @@
         window.addEventListener('perf:route', (ev) => {
             const sub = (ev && ev.detail && ev.detail.sub) || 'session';
             if (sub !== 'session') st.source = 'store';
+            // 조회 정보 줄을 지금 탭 기준으로 다시 그린다(perf-shell의 perf:route 처리가 먼저 등록돼 S.sub()는 이미 바뀌어 있다)
+            if (st.activity) renderMeta(st.activity);
         });
     }
 

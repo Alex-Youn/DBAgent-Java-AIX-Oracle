@@ -38,9 +38,11 @@ public class PerfAnalysisController {
     private final DatabaseConfigService configService;
     private final PerfAnalysisService perfService;
     private final PerfLockService lockService;
+    private final PerfSysService sysService;
 
     public PerfAnalysisController(AuthService authService, DatabaseConfigService configService, PerfAnalysisService perfService,
-                                  PerfLockService lockService) {
+                                  PerfLockService lockService, PerfSysService sysService) {
+        this.sysService = sysService;
         this.authService = authService;
         this.configService = configService;
         this.perfService = perfService;
@@ -204,6 +206,25 @@ public class PerfAnalysisController {
             return error(HttpStatus.NOT_FOUND, "락 발생 건을 찾을 수 없습니다(보관 기간이 지났을 수 있습니다).");
         }
         return ResponseEntity.ok(r);
+    }
+
+    // ------------------------------------------------------------------ 시스템 부하 (성능 분석 개편 Phase 2, 2026-10-09, 설계 2-3)
+    // 수집 저장소만 읽는다(운영 DB 조회 없음). baseline=lastweek 이면 7일 전 같은 구간을 함께 준다. 응답 JSON 키는 camelCase.
+
+    @GetMapping("/load_metrics")
+    public ResponseEntity<Object> loadMetrics(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                              @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                              @RequestParam(required = false) String baseline) {
+        return run(db_id, token, from, to, null, null,
+                (t, f, e, fl) -> sysService.loadMetrics(t.id(), f, e, "lastweek".equals(baseline)));
+    }
+
+    @GetMapping("/load_waits")
+    public ResponseEntity<Object> loadWaits(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                            @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                            @RequestParam(required = false) String baseline) {
+        return run(db_id, token, from, to, null, null,
+                (t, f, e, fl) -> sysService.loadWaits(t.id(), f, e, "lastweek".equals(baseline)));
     }
 
     private ResponseEntity<Object> run(String dbId, String token, String from, String to, String users, String machines, Query q) {

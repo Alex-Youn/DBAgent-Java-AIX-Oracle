@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -67,6 +68,8 @@ public class InstanceMetricSamplerService {
 
     // 성능 분석 Lock 분석(Phase 1a, 2026-10-09): 같은 ASH 구간의 락 대기 샘플을 읽어 락 발생 건으로 묶는다.
     private final PerfLockService perfLock;
+    @Autowired
+    private PerfSysService perfSys;
 
     // C4(2026-09-25): 인스턴스별 "DB SYSDATE - 앱 시각"(ms). 저장값(sampled_at)은 앱 시각이고 ASH 조회는 DB
     // 시각이라, 화면에서 고른 구간을 DB 시각으로 바꿀 때 쓴다(도커/폐쇄망에서 DB와 앱 서버 시간대가 다를 수
@@ -248,6 +251,22 @@ public class InstanceMetricSamplerService {
             log.warn("Instance metric history write failed for db_id={}: {}", r.instanceId, e.toString());
         }
         savePerf(r.instanceId, r.perf, r.sampledAt);
+        saveSys(r);
+    }
+
+    /** 시스템 부하 지표 저장 - 실패해도 다른 수집값에는 영향 없게 삼킨다. */
+    private void saveSys(SampleResult r) {
+        if (r.sys == null) return;
+        try {
+            Long off = dbClockOffsetMs.get(r.instanceId);
+            // Oracle 구간 시각(sys.at)을 알면 시계 오프셋 없이도 저장한다(분 키가 그 구간 기준이므로)
+            if (r.sys.at == null && (r.sampledAt <= 0 || off == null)) return;
+            LocalDateTime dbAt = (r.sampledAt > 0 && off != null)
+                    ? LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(r.sampledAt + off), ZoneId.systemDefault()) : r.sys.at;
+            perfSys.ingest(r.instanceId, r.sys, dbAt);
+        } catch (Exception e) {
+            log.warn("perf sys write failed for db_id={}: {}", r.instanceId, e.toString());
+        }
     }
 
     private void recordHistory(SampleResult r) {
@@ -377,8 +396,17 @@ public class InstanceMetricSamplerService {
                 log.debug("ASH category sampling skipped for db_id={}: {}", target.id(), ashScanFailed.toString());
             }
 
-            return new SampleResult(target.id(), sampledAt, cpuPct, dbTimeAas, tmLockWaiting, txLockWaiting,
+            // 시스템 부하 수집(성능 분석 Phase 2, 기본 꺼짐): 같은 연결로 v$sysmetric·v$eventmetric 60초 값을 읽는다. 실패해도 다른 값은 버리지 않는다
+            PerfSysService.SysBatch sys = null;
+            try {
+                sys = perfSys.query(conn, target.id());
+            } catch (RuntimeException sysFailed) {
+                log.debug("sys load sampling skipped for db_id={}: {}", target.id(), sysFailed.toString());
+            }
+            SampleResult res = new SampleResult(target.id(), sampledAt, cpuPct, dbTimeAas, tmLockWaiting, txLockWaiting,
                     cpuCores, cpuCoresPhys, ashCategoryAas, ashWaitClassAas, perf);
+            res.sys = sys;
+            return res;
         } catch (Exception e) {
             log.warn("Instance metric sampling failed for db_id={}: {}", target.id(), e.toString());
             return null;
@@ -782,6 +810,7 @@ public class InstanceMetricSamplerService {
         final double[] ashCategoryAas; // 7분류(AshCategories.KEYS7 순서), ASH 조회 실패 시 null
         final double[] ashWaitClassAas; // 8분류(AshCategories.KEYS8 순서), ASH 조회 실패 시 null (2026-09-25)
         final PerfSample perf; // 성능 분석 수집, 실패 시 null (2026-09-26)
+        PerfSysService.SysBatch sys; // 시스템 부하 수집(꺼짐·실패·PDB는 null)
 
         SampleResult(String instanceId, long sampledAt, Double cpuPct, Double dbTimeAas,
                      int tmLockWaiting, int txLockWaiting, double cpuCores, double cpuCoresPhys, double[] ashCategoryAas,
