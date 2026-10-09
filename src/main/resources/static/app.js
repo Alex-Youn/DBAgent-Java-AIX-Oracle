@@ -951,14 +951,30 @@ function dbagentSectionVisible(id) {
 
 
 
-    function switchTab(targetId) {
-        if (!targetId) return;
-        
+    function switchTab(rawTarget) {
+        if (!rawTarget) return;
+
+        // 해시의 첫 구간(`/`·`?` 앞)만 섹션 id로 쓴다(성능 분석 개편 Phase 0a, 2026-10-09, 설계 2.2).
+        // 예) history/lock?db_id=A → 섹션 history. 나머지(하위 탭·조건)는 아래에서 perf:route 이벤트로 넘긴다.
+        const targetId = String(rawTarget).split(/[/?]/)[0];
+        const routeRest = String(rawTarget).slice(targetId.length);
+
         // Find target item and section
         const targetNav = document.querySelector(`.nav-item[data-target="${targetId}"]`);
         const targetSection = document.getElementById(targetId);
         
         if (!targetNav || !targetSection) return;
+
+        if (targetId === 'history') {
+            // `#history` → `#history/session`: replaceState라 뒤로 가기 기록이 쌓이지 않는다(hashchange도 안 뜬다).
+            if (!routeRest) {
+                history.replaceState(null, null, '#history/session');
+                window.dispatchEvent(new CustomEvent('perf:route', { detail: { sub: 'session', query: '' } }));
+            } else {
+                const m = routeRest.match(/^\/?([^?]*)(?:\?(.*))?$/);
+                window.dispatchEvent(new CustomEvent('perf:route', { detail: { sub: (m && m[1]) || 'session', query: (m && m[2]) || '' } }));
+            }
+        }
 
         // Remove active class from all nav items and sections
         navItems.forEach(nav => nav.classList.remove('active'));
@@ -1048,11 +1064,12 @@ function dbagentSectionVisible(id) {
         item.addEventListener('click', (e) => {
             e.preventDefault();
             const targetId = item.getAttribute('data-target');
-            // Update URL hash
-            if (window.location.hash !== `#${targetId}`) {
+            // Update URL hash - 같은 메뉴 안의 하위 경로(#history/lock 등)에 있을 때 메뉴를 다시 눌러도 기록을 쌓지 않는다.
+            const curBase = window.location.hash.substring(1).split(/[/?]/)[0];
+            if (curBase !== targetId) {
                 history.pushState(null, null, `#${targetId}`);
             }
-            switchTab(targetId);
+            switchTab(curBase === targetId ? window.location.hash.substring(1) : targetId);
         });
     });
 

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=78">
+    <link rel="stylesheet" href="style.css?v=79">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=14"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -1121,6 +1121,17 @@
                     <!-- G3 성능 분석(구 "성능 이력 조회", 2026-09-26) - 상단 wait class 막대(드래그로 구간 선택) →
                          하단 선택 구간의 event별 막대 → 막대 클릭 시 세션 목록 팝업(perf-event-sessions.html).
                          동작은 perf-analysis.js. 시각은 모두 DB 시각. -->
+                    <!-- 하위 탭 줄(성능 분석 개편 Phase 0a, 2026-10-09, 설계문서/성능분석 메뉴 설계.md 2.1·2.2).
+                         구현된 하위 탭만 노출한다(hidden 제거로 추가). 해시는 #history/{sub} - 동작은 perf-analysis.js. -->
+                    <div class="perf-subtabs" id="perf-subtabs" role="tablist">
+                        <button type="button" class="perf-subtab active" role="tab" data-perf-sub="session">세션 분석</button>
+                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="lock" hidden>Lock 분석</button>
+                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="load" hidden>시스템 부하</button>
+                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="sql" hidden>SQL 분석</button>
+                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="cmp" hidden>구간 비교</button>
+                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="obj" hidden>오브젝트·I/O</button>
+                    </div>
+                    <div id="perf-sub-session" class="perf-sub-pane" data-perf-pane="session">
                     <div class="panel">
                         <div class="panel-header">
                             <h2>성능 분석 <span class="perf-subtitle">(Active Session History · DB 시각)</span></h2>
@@ -1162,6 +1173,9 @@
                                 <span id="perf-sel-text">선택 구간: 전체</span>
                                 <button type="button" id="perf-sel-reset" class="perf-link-btn" style="display: none;">전체 구간으로</button>
                                 <span class="perf-hint">위 그래프를 좌우로 드래그하면 그 구간만 아래에 집계합니다.</span>
+                                <!-- 다른 하위 탭으로 구간 넘기기(Phase 0a): 대상 탭이 노출되기 전에는 비활성 -->
+                                <button type="button" class="perf-link-btn perf-go-btn" id="perf-go-lock" data-perf-go="lock" disabled title="Lock 분석 탭이 추가되면 사용할 수 있습니다.">이 구간 Lock 분석 →</button>
+                                <button type="button" class="perf-link-btn perf-go-btn" id="perf-go-sql" data-perf-go="sql" disabled title="SQL 분석 탭이 추가되면 사용할 수 있습니다.">이 구간 SQL 분석 →</button>
                             </div>
                             <h3 class="perf-h3">Event별 대기 시간 <span class="perf-hint">막대를 누르면 그 Event의 세션 목록이 열립니다.</span></h3>
                             <div class="perf-chart-box perf-events-box" id="perf-events-container">
@@ -1170,6 +1184,7 @@
                             </div>
                         </div>
                     </div>
+                    </div><!-- /#perf-sub-session -->
                 </section>
 
             </div>
@@ -1231,12 +1246,12 @@
     </div>
 
 
-    <script src="app.js?v=195"></script>
+    <script src="app.js?v=196"></script>
     <script src="nd-dashboard.js?v=21"></script>
     <script src="nd-aas.js?v=12"></script>
     <script src="nd-lock.js?v=13"></script>
     <script src="nd-top.js?v=4"></script>
     <script src="nd-checks.js?v=7"></script>
-    <script src="perf-analysis.js?v=10"></script>
+    <script src="perf-analysis.js?v=11"></script>
 </body>
 </html>

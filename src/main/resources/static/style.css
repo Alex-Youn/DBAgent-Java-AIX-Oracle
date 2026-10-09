@@ -2017,6 +2017,16 @@ body.app-shell { overflow-y: hidden; }
 .perf-hint { color: var(--text-secondary); font-size: 0.8rem; font-weight: 400; }
 .perf-h3 { margin: 0 0 8px; color: var(--text-primary); font-size: 1.05rem; }
 .perf-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); }
+/* 성능 분석 하위 탭 줄(Phase 0a, 2026-10-09) - 색은 기존 변수 */
+.perf-subtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-color); margin: 0 0 12px; flex-wrap: wrap; }
+.perf-subtab { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-secondary); padding: 8px 16px; cursor: pointer; font: inherit; font-size: 0.92rem; }
+.perf-subtab:hover { color: var(--text-main); }
+.perf-subtab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.perf-subtab[hidden] { display: none; }
+.perf-sub-pane[hidden] { display: none; }
+.perf-go-btn { margin-left: auto; }
+.perf-go-btn + .perf-go-btn { margin-left: 0; }
+.perf-go-btn:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ============================================================================
    대시보드 통합 프레임(2026-10-01, 설계문서/대시보드_통합프레임_체크리스트_2026-10-01.md)

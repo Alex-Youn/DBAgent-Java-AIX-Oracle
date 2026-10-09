@@ -394,6 +394,7 @@
         const w = currentWindow();
         $('perf-sel-text').textContent = st.sel ? `선택 구간: ${human(w.from)} ~ ${human(w.to)}` : `선택 구간: 전체 (${human(w.from)} ~ ${human(w.to)})`;
         $('perf-sel-reset').style.display = st.sel ? '' : 'none';
+        refreshGoButtons();
         if (activityChart) activityChart.update('none');
     }
 
@@ -519,6 +520,67 @@
         if (popup) popup.focus();
     }
 
+    // ------------------------------------------------------------------ 하위 탭 프레임(성능 분석 개편 Phase 0a, 2026-10-09)
+    // 설계문서 `성능분석 메뉴 설계.md` 2.1·2.2. 해시는 #history/{sub}[?조건]이고 app.js switchTab이 첫 구간만 섹션 id로 쓰며
+    // 나머지를 perf:route 이벤트로 넘긴다. 노출된 하위 탭(hidden 아닌 버튼)만 열 수 있고, 없는 탭이면 세션 분석으로 돌린다.
+
+    function subButtons() { return Array.prototype.slice.call(document.querySelectorAll('[data-perf-sub]')); }
+
+    function subAvailable(sub) {
+        return subButtons().some(b => b.dataset.perfSub === sub && !b.hidden);
+    }
+
+    // "이 구간 ○○ 분석 →" 버튼: 대상 탭이 노출돼 있고 조회한 구간이 있을 때만 켠다.
+    function refreshGoButtons() {
+        document.querySelectorAll('[data-perf-go]').forEach(b => {
+            const ok = subAvailable(b.dataset.perfGo) && !!st.range;
+            b.disabled = !ok;
+            if (ok) b.removeAttribute('title');
+        });
+    }
+
+    function showSub(sub) {
+        subButtons().forEach(b => {
+            const on = b.dataset.perfSub === sub;
+            b.classList.toggle('active', on);
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        document.querySelectorAll('[data-perf-pane]').forEach(p => { p.hidden = p.dataset.perfPane !== sub; });
+        refreshGoButtons();
+    }
+
+    function onRoute(ev) {
+        let sub = (ev && ev.detail && ev.detail.sub) || 'session';
+        if (!subAvailable(sub)) {
+            // 아직 없는 하위 탭(#history/lock 등)이면 세션 분석으로 - 기록을 쌓지 않도록 replaceState
+            sub = 'session';
+            if (window.location.hash.indexOf('#history') === 0) history.replaceState(null, null, '#history/session');
+        }
+        showSub(sub);
+    }
+
+    // 현재 조회·선택 구간을 조건으로 실어 다른 하위 탭으로 이동한다(드래그로 고른 구간이 있으면 그 구간).
+    function goSub(sub) {
+        if (!subAvailable(sub) || !st.range || !st.dbId) return;
+        const w = currentWindow();
+        window.location.hash = '#history/' + sub + '?db_id=' + encodeURIComponent(st.dbId)
+            + '&from=' + encodeURIComponent(w.from) + '&to=' + encodeURIComponent(w.to);
+    }
+
+    function initSubTabs() {
+        window.addEventListener('perf:route', onRoute);
+        subButtons().forEach(b => b.addEventListener('click', () => {
+            const sub = b.dataset.perfSub;
+            if (!subAvailable(sub)) return;
+            const target = '#history/' + sub;
+            if (window.location.hash.split('?')[0] !== target) window.location.hash = target;
+            else showSub(sub);
+        }));
+        document.querySelectorAll('[data-perf-go]').forEach(b =>
+            b.addEventListener('click', () => goSub(b.dataset.perfGo)));
+        refreshGoButtons();
+    }
+
     // ------------------------------------------------------------------ 연결
 
     function reset() {
@@ -539,6 +601,7 @@
         if (sel) sel.textContent = '선택 구간: 전체';
         const r = $('perf-sel-reset');
         if (r) r.style.display = 'none';
+        refreshGoButtons();
     }
 
     function init() {
@@ -559,6 +622,7 @@
         $('perf-sel-reset').addEventListener('click', () => { st.sel = null; renderSelection(); loadEvents(); });
         attachBrush();
         attachEventsClick();
+        initSubTabs();
         // 메뉴에 들어올 때·DB가 바뀔 때 기본 구간을 DB 시각으로 다시 잡고, 다른 DB 결과는 지운다.
         setInterval(() => {
             if (typeof dbagentSectionVisible === 'function' && !dbagentSectionVisible('history')) return;
