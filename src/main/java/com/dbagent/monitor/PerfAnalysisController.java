@@ -59,7 +59,11 @@ public class PerfAnalysisController {
             return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
         }
         try {
-            return ResponseEntity.ok(Collections.singletonMap("dbNow", perfService.dbNow(target)));
+            java.util.Map<String, Object> body = new java.util.LinkedHashMap<String, Object>();
+            body.put("dbNow", perfService.dbNow(target));
+            // 접속 컨테이너(CDB$ROOT·PDB 이름). 11g·조회 불가는 null(화면은 표시만 생략)
+            body.put("conName", perfService.containerName(target));
+            return ResponseEntity.ok(body);
         } catch (SQLException e) {
             return dbError(e);
         }

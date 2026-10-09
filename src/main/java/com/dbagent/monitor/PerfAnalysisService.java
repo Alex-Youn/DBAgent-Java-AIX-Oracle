@@ -302,6 +302,37 @@ public class PerfAnalysisService {
         return dbNowTime(target).format(ISO);
     }
 
+    // 접속 컨테이너 이름 캐시(dbId -> {만료 시각 ms, 이름}). 이름이 빈 문자열이면 CDB가 아니거나(11g) 조회할 수 없다는 뜻.
+    // 접속 컨테이너는 등록(풀)을 바꾸기 전에는 달라지지 않으므로 1시간 캐시해 Oracle 조회를 DB당 시간당 1회로 묶는다.
+    private final Map<String, Object[]> containerCache = new java.util.concurrent.ConcurrentHashMap<String, Object[]>();
+    private static final long CONTAINER_CACHE_MS = 60L * 60 * 1000;
+
+    /**
+     * 접속 컨테이너 이름(12c+ CDB의 CON_NAME: CDB$ROOT 또는 PDB 이름). 11g(non-CDB, ORA-02003)나 조회 실패는 null이다 -
+     * 화면은 접속 컨테이너 표시를 생략할 뿐 "0"처럼 잘못된 값을 보이지 않는다(성능 분석 개편 Phase 0b, 설계 3.6).
+     */
+    public String containerName(TargetDbConfig target) {
+        long now = System.currentTimeMillis();
+        Object[] hit = containerCache.get(target.id());
+        if (hit != null && ((Long) hit[0]) > now) {
+            String v = (String) hit[1];
+            return v.isEmpty() ? null : v;
+        }
+        String name = "";
+        try (Connection conn = poolManager.getConnection(target);
+             Statement st = conn.createStatement()) {
+            st.setQueryTimeout(AshRange.META_QUERY_TIMEOUT_SECONDS);
+            try (ResultSet rs = st.executeQuery("SELECT SYS_CONTEXT('USERENV', 'CON_NAME') FROM dual")) {
+                if (rs.next() && rs.getString(1) != null) name = rs.getString(1);
+            }
+        } catch (SQLException e) {
+            // 11g는 CON_NAME이 없어 ORA-02003 - 정상. 그 밖의 실패도 표시만 생략하고 짧게 캐시한다(재시도 폭주 방지).
+            name = "";
+        }
+        containerCache.put(target.id(), new Object[] { now + CONTAINER_CACHE_MS, name });
+        return name.isEmpty() ? null : name;
+    }
+
     /** 선택 구간의 event별 합계(상위 EVENT_LIMIT개) + 구간 전체 합계. */
     public Map<String, Object> events(TargetDbConfig target, LocalDateTime from, LocalDateTime to, AshRange.Filter filter) throws SQLException {
         try (Connection conn = poolManager.getConnection(target)) {

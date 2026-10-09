@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=79">
+    <link rel="stylesheet" href="style.css?v=81">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=14"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -1131,8 +1131,9 @@
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="cmp" hidden>구간 비교</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="obj" hidden>오브젝트·I/O</button>
                     </div>
-                    <div id="perf-sub-session" class="perf-sub-pane" data-perf-pane="session">
-                    <div class="panel">
+                    <!-- 공통 조건 바(성능 분석 개편 Phase 0b): 계정·접속 호스트·시작·종료·조회, 빠른 선택, 메타 줄. 모든 하위 탭이 같이 쓴다.
+                         동작은 perf-shell.js(PerfShell), 세션 분석 화면은 perf-analysis.js. -->
+                    <div class="panel perf-shell" id="perf-shell">
                         <div class="panel-header">
                             <h2>성능 분석 <span class="perf-subtitle">(Active Session History · DB 시각)</span></h2>
                             <div class="search-bar perf-toolbar">
@@ -1146,11 +1147,7 @@
                                 <button id="perf-search-btn" class="primary-btn"><i data-lucide="search"></i> 조회</button>
                             </div>
                         </div>
-                        <div class="panel-body" style="position: relative;">
-                            <div id="history-loading-overlay" style="display: none; position: absolute; inset: 0; background: rgba(0,0,0,0.35); z-index: 20; align-items: center; justify-content: center; flex-direction: column; gap: 12px; border-radius: 16px;">
-                                <div class="circular-progress"></div>
-                                <span style="color: #fff; font-weight: 600;">조회 중입니다...</span>
-                            </div>
+                        <div class="panel-body">
                             <!-- 빠른 선택(2026-10-09): 종료=DB 현재 시각, 시작=종료-N분으로 채우고 바로 조회. 동작은 perf-analysis.js -->
                             <div class="perf-quick">
                                 <button type="button" class="perf-link-btn" id="perf-range-prev" title="현재 폭만큼 이전 구간으로 이동">◀ 이전</button>
@@ -1165,6 +1162,15 @@
                                 <span id="perf-range-msg" class="perf-range-msg" style="display: none;"></span>
                             </div>
                             <div class="perf-meta" id="perf-meta">조회할 구간을 정하고 조회 버튼을 눌러 주세요. 최대 24시간, ASH 보관 범위 밖은 AWR로 보충합니다.</div>
+                        </div>
+                    </div>
+                    <div id="perf-sub-session" class="perf-sub-pane" data-perf-pane="session">
+                    <div class="panel">
+                        <div class="panel-body" style="position: relative;">
+                            <div id="history-loading-overlay" class="perf-loading-overlay" style="display: none;">
+                                <div class="circular-progress"></div>
+                                <span class="perf-loading-text">조회 중입니다...</span>
+                            </div>
                             <div class="perf-chart-box" id="perf-activity-container">
                                 <canvas id="perf-activity-chart"></canvas>
                                 <div id="perf-activity-selection-box" class="perf-brush"></div>
@@ -1252,6 +1258,7 @@
     <script src="nd-lock.js?v=13"></script>
     <script src="nd-top.js?v=4"></script>
     <script src="nd-checks.js?v=7"></script>
-    <script src="perf-analysis.js?v=11"></script>
+    <script src="perf-shell.js?v=1"></script>
+    <script src="perf-analysis.js?v=12"></script>
 </body>
 </html>

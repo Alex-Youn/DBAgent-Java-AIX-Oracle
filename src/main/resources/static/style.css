@@ -2008,7 +2008,7 @@ body.app-shell { overflow-y: hidden; }
 .perf-meta b { color: var(--text-main); }
 .perf-chart-box { position: relative; height: 300px; margin-bottom: 8px; user-select: none; }
 .perf-events-box { height: 360px; }
-.perf-brush { position: absolute; top: 0; height: 100%; border: 1px dashed #3987e5; background: rgba(57,135,229,0.2); pointer-events: none; display: none; z-index: 10; }
+.perf-brush { position: absolute; top: 0; height: 100%; border: 1px dashed var(--nd-sel-line); background: var(--nd-sel-bg); pointer-events: none; display: none; z-index: 10; }
 .perf-sel-bar { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; font-size: 0.9rem; }
 .perf-sel-bar #perf-sel-text { font-weight: 600; }
 .perf-quick { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 0 0 10px; }
@@ -2017,6 +2017,25 @@ body.app-shell { overflow-y: hidden; }
 .perf-hint { color: var(--text-secondary); font-size: 0.8rem; font-weight: 400; }
 .perf-h3 { margin: 0 0 8px; color: var(--text-primary); font-size: 1.05rem; }
 .perf-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); }
+/* 성능 분석 색(Phase 0b, 2026-10-09): 7분류 wait class 색(Current Session 차트와 같은 색)·구간 선택 색을 변수로. 두 테마 모두 같은 값 */
+:root {
+    --nd-wc-cpu: #22d3ee;
+    --nd-wc-latch: #808000;
+    --nd-wc-user-io: #2ecc71;
+    --nd-wc-tx-lock: #7c3aed;
+    --nd-wc-system-io: #e67e22;
+    --nd-wc-tm-lock: #be123c;
+    --nd-wc-other: #94a3b8;
+    --nd-sel-line: #3987e5;
+    --nd-sel-bg: rgba(57, 135, 229, 0.2);
+    --nd-sel-fill: rgba(57, 135, 229, 0.14);
+    --nd-overlay-bg: rgba(0, 0, 0, 0.35);
+    --nd-overlay-text: #fff;
+}
+.perf-warn { color: var(--warning); }
+.perf-loading-overlay { position: absolute; inset: 0; background: var(--nd-overlay-bg); z-index: 20; align-items: center; justify-content: center; flex-direction: column; gap: 12px; border-radius: 16px; }
+.perf-loading-text { color: var(--nd-overlay-text); font-weight: 600; }
+.perf-shell { margin-bottom: 12px; }
 /* 성능 분석 하위 탭 줄(Phase 0a, 2026-10-09) - 색은 기존 변수 */
 .perf-subtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-color); margin: 0 0 12px; flex-wrap: wrap; }
 .perf-subtab { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-secondary); padding: 8px 16px; cursor: pointer; font: inherit; font-size: 0.92rem; }
