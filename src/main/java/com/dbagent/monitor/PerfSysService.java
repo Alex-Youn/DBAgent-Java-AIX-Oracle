@@ -54,6 +54,8 @@ public class PerfSysService implements InitializingBean {
     /** Hard parse 증가 힌트를 내는 최소 초당 값 - 지난주 기준이 아주 작을 때 작은 변동이 +100%를 넘는 것을 막는다. */
     private static final double HARD_PARSE_HINT_MIN_PER_SEC = 1.0;
     private static final int WAIT_ROWS = 50;
+    /** 구간 비교 표에 보이는 대기 이벤트 수(대기 시간이 큰 순). */
+    private static final int COMPARE_WAIT_ROWS = 30;
     /** 평균 비교(×배)에 쓰는 최소 대기 횟수 - 몇 번 안 되는 대기의 평균은 흔들린다. */
     private static final long MIN_WAITS_FOR_AVG = 10;
     private static final int MAX_RANGE_MIN = 24 * 60;
@@ -377,6 +379,63 @@ public class PerfSysService implements InitializingBean {
 
     private static Double avgMs(Agg a) {
         return a == null || a.waits < MIN_WAITS_FOR_AVG ? null : a.timeUs / 1000.0 / a.waits;
+    }
+
+    /**
+     * 구간 비교용 대기 이벤트 평균(성능 분석 Phase 4, 2026-10-11) - A·B를 같은 이벤트 목록으로 맞춘다.
+     * 평균은 시스템 부하 탭과 같은 식(avgMs: 횟수가 너무 적으면 null)이라 두 화면 값이 같다. 구간은 컨트롤러가 24시간 이하로 검증한다.
+     * 배지: slow = B 평균이 A의 지연 기준(diag-wait-ratio-pct) 배수 이상, new = A에 없던 이벤트(A 데이터가 아예 없으면 달지 않는다).
+     */
+    public Map<String, Object> compareWaits(String dbId, LocalDateTime aFrom, LocalDateTime aTo, LocalDateTime bFrom, LocalDateTime bTo) {
+        long af = keyOf(aFrom);
+        long at = Math.min(keyOf(aTo), af + MAX_RANGE_MIN);
+        long bf = keyOf(bFrom);
+        long bt = Math.min(keyOf(bTo), bf + MAX_RANGE_MIN);
+        final Map<String, Agg> a = loadWaitAgg(dbId, af, at);
+        final Map<String, Agg> b = loadWaitAgg(dbId, bf, bt);
+        int ratioPct = settings.getInt(SettingKey.DIAG_WAIT_RATIO_PCT);
+        List<String> names = new ArrayList<String>(a.keySet());
+        for (String n : b.keySet()) if (!a.containsKey(n)) names.add(n);
+        // 정렬은 분당 대기 시간으로 한다 - 구간 길이가 다른 A·B(예: A 3시간·B 10분)를 합계로 견주면 긴 쪽 이벤트가 상위를 차지해
+        // 짧은 쪽에만 있는 신규 이벤트가 30개 밖으로 밀려난다(2026-10-11 점검).
+        final double minA = Math.max(1, at - af);
+        final double minB = Math.max(1, bt - bf);
+        java.util.Collections.sort(names, new java.util.Comparator<String>() {
+            @Override
+            public int compare(String x, String y) {
+                return Double.compare(Math.max(t(a.get(y), minA), t(b.get(y), minB)), Math.max(t(a.get(x), minA), t(b.get(x), minB)));
+            }
+            private double t(Agg g, double minutes) { return g == null ? 0 : g.timeUs / minutes; }
+        });
+        List<Object> rows = new ArrayList<Object>();
+        for (String n : names) {
+            if (rows.size() >= COMPARE_WAIT_ROWS) break;
+            Agg ga = a.get(n);
+            Agg gb = b.get(n);
+            Double avgA = avgMs(ga);
+            Double avgB = avgMs(gb);
+            Double ratio = avgA != null && avgB != null && avgA > 0 ? avgB / avgA : null;
+            String badge = null;
+            if (ratio != null && avgB * 100.0 >= avgA * ratioPct) badge = "slow";
+            else if (!a.isEmpty() && ga == null && avgB != null) badge = "new";
+            Map<String, Object> r = new LinkedHashMap<String, Object>();
+            r.put("event", n);
+            r.put("waitClass", gb != null ? gb.waitClass : ga.waitClass);
+            r.put("aAvgMs", avgA == null ? null : round(avgA, 3));
+            r.put("bAvgMs", avgB == null ? null : round(avgB, 3));
+            r.put("ratio", ratio == null ? null : round(ratio, 2));
+            r.put("aWaits", ga == null ? 0L : ga.waits);
+            r.put("bWaits", gb == null ? 0L : gb.waits);
+            r.put("aTimeSec", ga == null ? null : round(ga.timeUs / 1e6, 2));
+            r.put("bTimeSec", gb == null ? null : round(gb.timeUs / 1e6, 2));
+            r.put("badge", badge);
+            rows.add(r);
+        }
+        Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("rows", rows);
+        m.put("hasA", !a.isEmpty());
+        m.put("hasB", !b.isEmpty());
+        return m;
     }
 
     /** 대기 이벤트 표(대기 시간 상위) + 지난주 평균 대비 배지·진단 힌트. */

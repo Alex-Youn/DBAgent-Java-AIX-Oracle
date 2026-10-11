@@ -2230,3 +2230,24 @@ body.app-shell { overflow-y: hidden; }
 .perf-sq-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
 .perf-sq-kpis .perf-lk-kpi { padding: 6px 10px; }
 .perf-sq-kpis .perf-lk-kpi .v { font-size: 1.05rem; }
+/* 구간 비교(성능 분석 Phase 4, 2026-10-11) - 색은 변수로, 두 테마 모두 어두운 배경 */
+.perf-cmp-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
+.perf-cmp-tag { display: inline-block; min-width: 20px; text-align: center; padding: 0 7px; border-radius: 4px; font-size: 0.78rem; font-weight: 700; color: var(--nd-overlay-text); }
+.perf-cmp-tag.a { background: var(--primary); }
+.perf-cmp-tag.b { background: var(--warning); color: #1a1a1a; }
+.perf-cmp-btext { font-weight: 700; margin-right: 8px; }
+.perf-cmp-top .perf-link-btn.active { color: var(--primary); border-color: var(--primary); font-weight: 700; }
+.perf-cmp-top input[readonly] { opacity: 0.75; }
+.perf-cmp-cov { display: flex; flex-direction: column; gap: 3px; margin: 8px 0; font-size: 0.82rem; color: var(--text-secondary); }
+.perf-cmp-cov b { color: var(--text-main); }
+.perf-cmp-cov b.perf-cmp-low { color: var(--warning); }
+.perf-cmp-sum { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.perf-cmp-v { font-size: 1.05rem !important; }
+.perf-cmp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.perf-cmp-chg.up { color: var(--danger); font-weight: 700; }
+.perf-cmp-chg.down { color: var(--success); font-weight: 700; }
+.perf-cmp-barcol { width: 28%; }
+.perf-cmp-bar2 { height: 6px; border-radius: 2px; background: var(--primary); }
+.perf-cmp-bar2.up { background: var(--danger); }
+.perf-cmp-bar2.down { background: var(--success); }
+@media (max-width: 1100px) { .perf-cmp-sum { grid-template-columns: repeat(2, minmax(0, 1fr)); } .perf-cmp-grid { grid-template-columns: minmax(0, 1fr); } }

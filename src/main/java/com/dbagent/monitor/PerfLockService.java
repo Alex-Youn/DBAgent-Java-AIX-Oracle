@@ -1393,6 +1393,28 @@ public class PerfLockService implements InitializingBean {
         return res;
     }
 
+    /**
+     * 구간 비교용 락 건수(성능 분석 Phase 4, 2026-10-11) - 목록 상한(LIST_LIMIT 1000)에 잘리지 않도록 집계 SQL로 센다.
+     * 구간과 겹친 건 기준이라 락 목록·요약과 같은 조건이다(계정·호스트 필터는 쓰지 않는다).
+     */
+    public Map<String, Object> compareCounts(String dbId, LocalDateTime from, LocalDateTime to) {
+        final long[] c = new long[4]; // tx, tm, 대기 세션·초, 최장 지속 초
+        jdbc.query("SELECT lock_type, COUNT(*), SUM(wait_session_sec), MAX(duration_sec) FROM perf_lock_incident " +
+                        "WHERE db_id = ? AND start_ts < ? AND end_ts >= ? GROUP BY lock_type",
+                rs -> {
+                    if ("TM".equals(rs.getString(1))) c[1] += rs.getLong(2); else c[0] += rs.getLong(2);
+                    c[2] += rs.getLong(3);
+                    c[3] = Math.max(c[3], rs.getLong(4));
+                }, dbId, sec(to), sec(from));
+        Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("tx", c[0]);
+        m.put("tm", c[1]);
+        m.put("total", c[0] + c[1]);
+        m.put("longestSec", c[0] + c[1] == 0 ? null : Long.valueOf(c[3]));
+        m.put("waitSessionSec", c[2]);
+        return m;
+    }
+
     /** 락 발생 건 하나 + 피크 시점 대기자 + 같은 오브젝트의 최근 7일 같은 시간대(±1시간) 반복 건수. */
     public Map<String, Object> incident(String dbId, String incidentId) {
         List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM perf_lock_incident WHERE db_id = ? AND incident_id = ?", dbId, incidentId);

@@ -40,9 +40,12 @@ public class PerfAnalysisController {
     private final PerfLockService lockService;
     private final PerfSysService sysService;
     private final PerfSqlService sqlService;
+    private final PerfCompareService compareService;
 
     public PerfAnalysisController(AuthService authService, DatabaseConfigService configService, PerfAnalysisService perfService,
-                                  PerfLockService lockService, PerfSysService sysService, PerfSqlService sqlService) {
+                                  PerfLockService lockService, PerfSysService sysService, PerfSqlService sqlService,
+                                  PerfCompareService compareService) {
+        this.compareService = compareService;
         this.sysService = sysService;
         this.sqlService = sqlService;
         this.authService = authService;
@@ -280,6 +283,63 @@ public class PerfAnalysisController {
         }
         final String id = sqlId.trim();
         return run(db_id, token, from, to, null, null, (t, f, e, fl) -> sqlService.sqlDetail(t, id, f, e));
+    }
+
+    // ------------------------------------------------------------------ 구간 비교 (성능 분석 개편 Phase 4, 2026-10-11, 설계 Phase 4)
+    // 수집 저장소만 읽는다(신규 수집·운영 DB 조회 없음, SQL 텍스트 보충 단건 조회만 예외). A/B 각각 24시간 이하.
+
+    @GetMapping("/compare")
+    public ResponseEntity<Object> compare(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                          @RequestParam(name = "a_from", required = false) String aFrom, @RequestParam(name = "a_to", required = false) String aTo,
+                                          @RequestParam(name = "b_from", required = false) String bFrom, @RequestParam(name = "b_to", required = false) String bTo) {
+        if (!authService.canAccessDb(token, db_id)) {
+            return error(HttpStatus.FORBIDDEN, "해당 DB에 대한 접근 권한이 없습니다.");
+        }
+        LocalDateTime af;
+        LocalDateTime at;
+        LocalDateTime bf;
+        LocalDateTime bt;
+        try {
+            if (isBlank(aFrom) || isBlank(aTo) || isBlank(bFrom) || isBlank(bTo)) {
+                return error(HttpStatus.BAD_REQUEST, "a_from/a_to/b_from/b_to가 필요합니다(yyyy-MM-ddTHH:mm, DB 시각).");
+            }
+            af = LocalDateTime.parse(aFrom.trim());
+            at = LocalDateTime.parse(aTo.trim());
+            bf = LocalDateTime.parse(bFrom.trim());
+            bt = LocalDateTime.parse(bTo.trim());
+        } catch (DateTimeParseException e) {
+            return error(HttpStatus.BAD_REQUEST, "구간 형식은 yyyy-MM-ddTHH:mm[:ss]입니다(DB 시각).");
+        }
+        String bad = checkRange("A", af, at);
+        if (bad == null) bad = checkRange("B", bf, bt);
+        if (bad != null) {
+            return error(HttpStatus.BAD_REQUEST, bad);
+        }
+        TargetDbConfig target = configService.resolve(db_id);
+        if (target == null || !"oracle".equalsIgnoreCase(target.dbType())) {
+            return error(HttpStatus.NOT_FOUND, "등록되지 않은 Oracle DB입니다.");
+        }
+        try {
+            return ResponseEntity.ok(compareService.compare(target, af, at, bf, bt));
+        } catch (IllegalArgumentException e) {
+            return error(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (org.springframework.dao.DataAccessException e) {
+            log.warn("perf compare store query failed: {}", e.toString());
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "수집 저장소 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
+        }
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
+    }
+
+    /** 구간 하나의 검증 - 문제가 없으면 null, 있으면 화면에 보일 한국어 메시지. */
+    private static String checkRange(String name, LocalDateTime f, LocalDateTime t) {
+        if (!f.isBefore(t)) return name + " 구간의 시작 시각이 종료 시각보다 앞서야 합니다.";
+        if (java.time.Duration.between(f, t).toMinutes() > AshRange.MAX_RANGE_MINUTES) {
+            return name + " 구간은 최대 24시간까지 가능합니다. 구간을 줄여 주세요.";
+        }
+        return null;
     }
 
     private ResponseEntity<Object> run(String dbId, String token, String from, String to, String users, String machines, Query q) {

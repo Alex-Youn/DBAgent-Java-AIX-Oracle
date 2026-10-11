@@ -721,6 +721,201 @@ public class PerfSqlService implements InitializingBean {
         return m;
     }
 
+    // ------------------------------------------------------------------ 조회: 구간 비교의 SQL 변화 (성능 분석 Phase 4, 2026-10-11)
+
+    private static final int COMPARE_MIN_EXECS = 5;      // 실행 수가 이보다 적은 SQL은 ms/exec 비교를 하지 않는다(우연한 편차)
+    private static final int COMPARE_PER_TYPE = 8;       // 변화 유형별로 보이는 최대 행 수
+    private static final int COMPARE_TEXT_IDS = 50;      // 목록에 SQL 텍스트를 붙일 최대 SQL_ID 수
+
+    private static Map<String, Object> cmpRow(String type, String sqlId, String fms, Double a, Double b, Double ratio, String unit,
+                                              long aExecs, long bExecs) {
+        Map<String, Object> r = new LinkedHashMap<String, Object>();
+        r.put("type", type);
+        r.put("sqlId", sqlId);
+        r.put("fms", fms);
+        r.put("aValue", a);
+        r.put("bValue", b);
+        r.put("ratio", ratio);
+        r.put("unit", unit);
+        r.put("aExecs", aExecs);
+        r.put("bExecs", bExecs);
+        return r;
+    }
+
+    /** 유형별 상위 n개만 남기고 정렬 기준(큰 값 먼저)은 호출자가 넘긴 점수로 정한다. */
+    private static void cmpTop(List<Object[]> scored, List<Map<String, Object>> out, int n) {
+        Collections.sort(scored, new Comparator<Object[]>() {
+            @Override
+            public int compare(Object[] x, Object[] y) { return Double.compare((Double) y[0], (Double) x[0]); }
+        });
+        for (int i = 0; i < scored.size() && i < n; i++) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> r = (Map<String, Object>) scored.get(i)[1];
+            out.add(r);
+        }
+    }
+
+    /** fms → {SQL_ID 수, 대표 SQL_ID}: perf_sql_literal_hour의 구간 합계(sql_literal 화면과 같은 집계). */
+    private Map<String, Object[]> literalCounts(String dbId, LocalDateTime from, LocalDateTime to, long minTotal) {
+        long fk = PerfStoreService.minuteKey(from);
+        long tk = PerfStoreService.minuteKey(to);
+        final long fh = hourFloor(fk);
+        final long th = (tk % 60 == 0) ? tk : hourFloor(tk) + 60;
+        final Map<String, Object[]> out = new HashMap<String, Object[]>();
+        // minTotal: B 쪽은 기준 이상인 묶음만 필요하다. A 쪽은 B와 견줄 값이 필요해서 걸러내지 않는다(0을 넘긴다).
+        jdbc.query("SELECT fms, SUM(sql_id_cnt), MAX(sample_sql_id) FROM perf_sql_literal_hour " +
+                        "WHERE db_id = ? AND hour_key >= ? AND hour_key < ? GROUP BY fms HAVING SUM(sql_id_cnt) >= ?",
+                rs -> { out.put(rs.getString(1), new Object[]{rs.getLong(2), rs.getString(3)}); }, dbId, fh, th, minTotal);
+        return out;
+    }
+
+    /** 리터럴 집계가 덮는 시간(롤업이 시간 단위라 구간이 시간으로 넓어진다) - 구간 길이가 달라도 시간당 값으로 비교하려고 쓴다. */
+    private static double literalHours(LocalDateTime from, LocalDateTime to) {
+        long fk = PerfStoreService.minuteKey(from);
+        long tk = PerfStoreService.minuteKey(to);
+        long fh = hourFloor(fk);
+        long th = (tk % 60 == 0) ? tk : hourFloor(tk) + 60;
+        return Math.max(1, (th - fh) / 60.0);
+    }
+
+    /**
+     * 구간 비교의 SQL 변화 표: B 구간에서 달라진 SQL을 유형별 상위만 준다(SURGE 실행 수 급증, ELAPSED ms/exec 증가, NEW B 구간 신규,
+     * PLAN Plan 변경, LITERAL 리터럴 SQL_ID 증가). 읽는 곳은 SQL 분석 탭과 같다(1분 델타 또는 시간 롤업, 구간이 다르면 각자 고른다).
+     * 구간 길이가 달라도 비교되도록 실행 수는 분당 값으로 비교한다. 한쪽 구간에 SQL 데이터가 없으면 그 쪽이 필요한 유형은 내지 않는다.
+     */
+    public Map<String, Object> compareSql(TargetDbConfig target, LocalDateTime aFrom, LocalDateTime aTo, LocalDateTime bFrom, LocalDateTime bTo) {
+        String dbId = target.id();
+        Src sa = pickSource(dbId, aFrom, aTo);
+        Src sb = pickSource(dbId, bFrom, bTo);
+        Map<String, Agg> ma = new HashMap<String, Agg>();
+        for (Agg x : aggregate(dbId, sa)) ma.put(x.sqlId, x);
+        List<Agg> lb = aggregate(dbId, sb);
+        boolean hasA = !ma.isEmpty();
+        boolean hasB = !lb.isEmpty();
+        int surgePct = settings.getInt(SettingKey.DIAG_SQL_SURGE_PCT);
+        int surgeMin = settings.getInt(SettingKey.DIAG_SQL_SURGE_MIN_EXECS);
+
+        // 시간 롤업은 시간마다 상위 N개 SQL만 담고 있다 - 한쪽이라도 롤업이면 "A에 없다"는 "상위 N에 못 들었다"일 수 있어
+        // "B 구간 신규"를 내지 않는다(기본 지난주 비교는 A가 롤업이고 B가 델타라 신규가 대량으로 거짓 표시됐다, 2026-10-11 점검 F1).
+        boolean exact = sa.delta && sb.delta;
+        List<Object[]> surge = new ArrayList<Object[]>();
+        List<Object[]> elapsed = new ArrayList<Object[]>();
+        List<Object[]> fresh = new ArrayList<Object[]>();
+        long surgeCnt = 0, elapsedCnt = 0, freshCnt = 0;
+        if (hasA && hasB) {
+            for (Agg b : lb) {
+                Agg a = ma.get(b.sqlId);
+                double bMin = b.execs / (sb.seconds / 60.0);
+                if (a == null || a.execs == 0) {
+                    // A에 없던 SQL - B에서 실제로 돈 것(Elapsed가 있는 것)만 신규로 본다(정확한 소스일 때만)
+                    if (exact && b.execs > 0 && b.elaUs > 0) {
+                        freshCnt++;
+                        fresh.add(new Object[]{(double) b.elaUs, cmpRow("NEW", b.sqlId, b.fms, null, b.elaUs / 1e6, null, "초(Elapsed)", 0, b.execs)});
+                    }
+                    continue;
+                }
+                double aMin = a.execs / (sa.seconds / 60.0);
+                if (aMin > 0) {
+                    double chg = (bMin / aMin - 1.0) * 100.0;
+                    if (chg >= surgePct && b.execs >= surgeMin) {
+                        surgeCnt++;
+                        surge.add(new Object[]{chg, cmpRow("SURGE", b.sqlId, b.fms, round(aMin, 2), round(bMin, 2), round(bMin / aMin, 2), "회/분", a.execs, b.execs)});
+                    }
+                }
+                if (a.execs >= COMPARE_MIN_EXECS && b.execs >= COMPARE_MIN_EXECS && a.elaUs > 0) {
+                    double aMs = a.elaUs / 1000.0 / a.execs;
+                    double bMs = b.elaUs / 1000.0 / b.execs;
+                    if (aMs > 0 && bMs / aMs >= PLAN_WORSEN_RATIO) {
+                        elapsedCnt++;
+                        elapsed.add(new Object[]{bMs / aMs, cmpRow("ELAPSED", b.sqlId, b.fms, round(aMs, 3), round(bMs, 3), round(bMs / aMs, 2), "ms/exec", a.execs, b.execs)});
+                    }
+                }
+            }
+        }
+
+        // Plan 변경: B 구간에 감지된 건(1시간 주기 배치가 perf_sql_plan_change에 남긴 것)
+        final List<Object[]> plans = new ArrayList<Object[]>();
+        jdbc.query("SELECT sql_id, old_ms_per_exec, new_ms_per_exec, old_execs, new_execs FROM perf_sql_plan_change " +
+                        "WHERE db_id = ? AND changed_key >= ? AND changed_key < ?",
+                rs -> {
+                    double o = rs.getDouble(2);
+                    double nn = rs.getDouble(3);
+                    double ratio = o > 0 ? nn / o : 0;
+                    plans.add(new Object[]{ratio, cmpRow("PLAN", rs.getString(1), null, round(o, 3), round(nn, 3), o > 0 ? round(ratio, 2) : null, "ms/exec",
+                            rs.getLong(4), rs.getLong(5))});
+                }, dbId, PerfStoreService.minuteKey(bFrom), PerfStoreService.minuteKey(bTo));
+        long planCnt = plans.size();
+
+        // 리터럴: 같은 FORCE_MATCHING_SIGNATURE 아래 SQL_ID 수가 기준 이상이고 시간당 값이 A의 2배 이상으로 늘어난 묶음.
+        // 롤업은 끝난 시간에서 SQL_ID가 1개뿐인 묶음을 지우므로 A에 행이 없다는 것은 "리터럴이 없었다"(0)이다 - A에 SQL 수집이 있었으면
+        // 빈 A도 0으로 비교한다. 구간 길이가 달라도 맞도록 합계가 아니라 시간당 값으로 견준다(점검 F2·F3).
+        int litThreshold = settings.getInt(SettingKey.DIAG_SQL_LITERAL_ID_COUNT);
+        double hoursA = literalHours(aFrom, aTo);
+        double hoursB = literalHours(bFrom, bTo);
+        Map<String, Object[]> la = literalCounts(dbId, aFrom, aTo, 0);
+        Map<String, Object[]> lbc = literalCounts(dbId, bFrom, bTo, litThreshold);
+        List<Object[]> literal = new ArrayList<Object[]>();
+        long literalCnt = 0;
+        if (hasA && !lbc.isEmpty()) {
+            for (Map.Entry<String, Object[]> e : lbc.entrySet()) {
+                long cb = (Long) e.getValue()[0];
+                Object[] oa = la.get(e.getKey());
+                long ca = oa == null ? 0 : (Long) oa[0];
+                double ra = ca / hoursA;
+                double rb = cb / hoursB;
+                if (rb >= ra * 2.0) {
+                    literalCnt++;
+                    literal.add(new Object[]{rb / Math.max(1.0, ra),
+                            cmpRow("LITERAL", (String) e.getValue()[1], e.getKey(), round(ra, 1), round(rb, 1), ca > 0 ? round(rb / ra, 1) : null, "SQL_ID/시간", ca, cb)});
+                }
+            }
+        }
+
+        List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
+        cmpTop(surge, rows, COMPARE_PER_TYPE);
+        cmpTop(plans, rows, COMPARE_PER_TYPE);
+        cmpTop(elapsed, rows, COMPARE_PER_TYPE);
+        cmpTop(fresh, rows, COMPARE_PER_TYPE);
+        cmpTop(literal, rows, COMPARE_PER_TYPE);
+        List<String> ids = new ArrayList<String>();
+        for (Map<String, Object> r : rows) {
+            String id = (String) r.get("sqlId");
+            if (id != null && !ids.contains(id) && ids.size() < COMPARE_TEXT_IDS) ids.add(id);
+        }
+        Map<String, String> texts = textsFor(target, ids);
+        for (Map<String, Object> r : rows) r.put("text", preview(texts.get((String) r.get("sqlId"))));
+
+        Map<String, Object> counts = new LinkedHashMap<String, Object>();
+        counts.put("surge", surgeCnt);
+        counts.put("plan", planCnt);
+        counts.put("elapsed", elapsedCnt);
+        counts.put("fresh", freshCnt);
+        counts.put("literal", literalCnt);
+        Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("sourceA", sa.delta ? "delta" : "hour");
+        m.put("sourceB", sb.delta ? "delta" : "hour");
+        m.put("approx", !sa.delta || !sb.delta); // 시간 롤업은 시간 단위로 구간이 넓어진다
+        m.put("exact", exact);                    // false면 "B 구간 신규"는 판단하지 않는다(위 주석)
+        m.put("mixedSource", sa.delta != sb.delta);
+        m.put("hasA", hasA);
+        m.put("hasB", hasB);
+        m.put("rows", rows);
+        m.put("counts", counts);
+        m.put("topPlan", plans.isEmpty() ? null : topPlanSummary(plans));
+        return m;
+    }
+
+    private static Map<String, Object> topPlanSummary(List<Object[]> plans) {
+        Object[] best = plans.get(0);
+        for (Object[] p : plans) if ((Double) p[0] > (Double) best[0]) best = p;
+        @SuppressWarnings("unchecked")
+        Map<String, Object> r = (Map<String, Object>) best[1];
+        Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("sqlId", r.get("sqlId"));
+        m.put("ratio", r.get("ratio"));
+        return m;
+    }
+
     // ------------------------------------------------------------------ 조회: sql_literal
 
     public Map<String, Object> sqlLiteral(TargetDbConfig target, LocalDateTime from, LocalDateTime to, int minCount, boolean baseline) {

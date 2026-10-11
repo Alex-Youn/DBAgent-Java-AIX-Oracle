@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=84">
+    <link rel="stylesheet" href="style.css?v=85">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=14"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -1128,7 +1128,7 @@
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="lock">Lock 분석</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="load">시스템 부하</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="sql">SQL 분석</button>
-                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="cmp" hidden>구간 비교</button>
+                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="cmp">구간 비교</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="obj" hidden>오브젝트·I/O</button>
                     </div>
                     <!-- 공통 조건 바(성능 분석 개편 Phase 0b): 계정·접속 호스트·시작·종료·조회, 빠른 선택, 메타 줄. 모든 하위 탭이 같이 쓴다.
@@ -1301,6 +1301,57 @@
                             </div>
                         </div>
                     </div>
+                    <!-- 구간 비교 하위 탭(성능 분석 개편 Phase 4): B = 공통 조건 바 구간, A = 지난주/어제 같은 시간 또는 직접 지정. 동작은 perf-compare.js -->
+                    <div id="perf-sub-cmp" class="perf-sub-pane" data-perf-pane="cmp" hidden>
+                        <div class="panel">
+                            <div class="panel-body">
+                                <div class="perf-cmp-top">
+                                    <span class="perf-cmp-tag a">A</span>
+                                    <input type="datetime-local" id="perf-cmp-a-from" class="form-input perf-time">
+                                    <span class="perf-label">~</span>
+                                    <input type="datetime-local" id="perf-cmp-a-to" class="form-input perf-time">
+                                    <span class="perf-cmp-tag b">B</span>
+                                    <span id="perf-cmp-b-text" class="perf-cmp-btext">-</span>
+                                    <button type="button" class="perf-link-btn" data-cmp-mode="week">지난주 같은 시간</button>
+                                    <button type="button" class="perf-link-btn" data-cmp-mode="day">어제 같은 시간</button>
+                                    <button type="button" class="perf-link-btn" data-cmp-mode="custom">직접 지정</button>
+                                    <button type="button" id="perf-cmp-run" class="primary-btn">비교</button>
+                                </div>
+                                <div class="perf-hint">B 구간은 위 조건 바의 시작~종료입니다. 시각은 모두 DB 시각이고, 각 구간은 최대 24시간입니다. 계정·접속 호스트 필터는 구간 비교에 적용되지 않습니다.</div>
+                                <div id="perf-cmp-msg" class="perf-lk-notice" style="display: none;"></div>
+                                <div class="perf-cmp-cov" id="perf-cmp-cov"></div>
+                                <div id="perf-cmp-warn"></div>
+                                <div class="perf-ld-cards perf-cmp-sum" id="perf-cmp-sum"></div>
+                                <div class="perf-cmp-grid">
+                                    <div>
+                                        <h3 class="perf-h3">부하 프로파일 <span class="perf-hint">(구간 평균 · 시스템 부하 탭과 같은 값)</span></h3>
+                                        <div class="perf-lk-tablewrap">
+                                            <table class="perf-lk-table">
+                                                <thead><tr><th>지표</th><th class="num">A</th><th class="num">B</th><th class="num">변화</th><th class="perf-cmp-barcol"></th></tr></thead>
+                                                <tbody id="perf-cmp-metrics"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <h3 class="perf-h3">대기 이벤트 평균 대기시간 <span class="perf-hint">(ms · 대기 시간 상위 30개)</span></h3>
+                                        <div class="perf-lk-tablewrap">
+                                            <table class="perf-lk-table">
+                                                <thead><tr><th>Event</th><th class="num">A (ms)</th><th class="num">B (ms)</th><th class="num">변화</th></tr></thead>
+                                                <tbody id="perf-cmp-waits"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                                <h3 class="perf-h3">SQL 변화 <span class="perf-hint">B 구간에서 달라진 SQL (유형별 상위) · <span id="perf-cmp-sql-note"></span></span></h3>
+                                <div class="perf-lk-tablewrap">
+                                    <table class="perf-lk-table">
+                                        <thead><tr><th>SQL_ID</th><th>SQL</th><th>변화 유형</th><th class="num">A</th><th class="num">B</th><th class="num">변화</th></tr></thead>
+                                        <tbody id="perf-cmp-sql"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div><!-- /#perf-sub-cmp -->
                 </section>
 
             </div>
@@ -1373,5 +1424,6 @@
     <script src="perf-lock.js?v=6"></script>
     <script src="perf-load.js?v=4"></script>
     <script src="perf-sql.js?v=3"></script>
+    <script src="perf-compare.js?v=1"></script>
 </body>
 </html>
