@@ -2558,7 +2558,7 @@ let layoutHTML = "";
     // 그대로 6시간/24시간까지 늘리지 않는 이유는 채팅에서 오간 성능 비교 그대로 - 무거운 AWR GROUP BY
     // 스캔이 보는 사람 수만큼 매번 원본 Oracle에 나가는 걸 피하기 위함(이미 InstanceMetricSampler
     // Service가 v2 대시보드 폴링 부하 사고를 겪고 캐시 샘플링으로 옮긴 것과 같은 이유).
-    const ASH_LONG_RANGE_METRIC_NAMES = ['ash_cpu', 'ash_latch', 'ash_user_io', 'ash_tx_lock', 'ash_system_io', 'ash_tm_lock', 'ash_other', 'ash_cpu_cores'];
+    const ASH_LONG_RANGE_METRIC_NAMES = ['ash_cpu', 'ash_latch', 'ash_user_io', 'ash_tx_lock', 'ash_system_io', 'ash_tm_lock', 'ash_other', 'ash_cpu_cores', 'ash_cpu_cores_phys'];
     const ASH_LONG_RANGE_CATEGORY_KEYS = ['ash_cpu', 'ash_latch', 'ash_user_io', 'ash_tx_lock', 'ash_system_io', 'ash_tm_lock', 'ash_other'];
 
     function isAshLongRange() {
@@ -2584,8 +2584,27 @@ let layoutHTML = "";
         return d;
     }
 
+    // 토큰 없는 /api/config의 aas_cpu_physical만 읽는다(4초 제한, 실패하면 이전 값 유지) - nd-aas.js와 같은 방식.
+    let ashPhysicalBasisLast = false;
+    async function ashPhysicalBasisSetting() {
+        try {
+            const ctl = new AbortController();
+            const timer = setTimeout(() => ctl.abort(), 4000);
+            try {
+                const res = await fetch('/api/config', { signal: ctl.signal, cache: 'no-store' });
+                const cfg = await res.json();
+                if (cfg && typeof cfg.aas_cpu_physical === 'boolean') ashPhysicalBasisLast = cfg.aas_cpu_physical;
+            } finally {
+                clearTimeout(timer);
+            }
+        } catch (e) { /* 이전 값 유지 */ }
+        return ashPhysicalBasisLast;
+    }
+
     async function fetchAshActivityFromHistory(myDbId) {
         const rangeKey = ashHistoryRangeKey();
+        // 설정 dbagent.ui.aas-cpu-physical: 켜면 CPU 기준선을 저장된 물리 코어(ash_cpu_cores_phys)로 - 실시간 경로는 서버가 적용
+        const physicalWanted = await ashPhysicalBasisSetting();
         const res = await fetch(`/api/metric_history?db_id=${myDbId}&range=${rangeKey}&metrics=${ASH_LONG_RANGE_METRIC_NAMES.join(',')}&token=${encodeURIComponent(getToken())}`);
         const raw = await res.json();
         if (!res.ok || raw.error) throw new Error(raw.error || 'metric_history 조회 실패');
@@ -2608,16 +2627,18 @@ let layoutHTML = "";
         // UTC)에서 두 차트의 가로축이 9시간 어긋나 보인다(2026-09-25 CDP 확인).
         const clockOffset = typeof raw.dbClockOffsetMs === 'number' ? raw.dbClockOffsetMs : 0;
         let lastCpuCores = 0;
+        let lastCoresPhys = 0;
         const series = timestamps.map(ts => {
             const values = ASH_LONG_RANGE_CATEGORY_KEYS.map(key => seriesMaps[key].get(ts) || 0);
             if (seriesMaps['ash_cpu_cores'].has(ts)) lastCpuCores = seriesMaps['ash_cpu_cores'].get(ts);
+            if (seriesMaps['ash_cpu_cores_phys'].has(ts)) lastCoresPhys = seriesMaps['ash_cpu_cores_phys'].get(ts);
             return { time: new Date(ts + clockOffset).toISOString(), values };
         });
 
         return {
             range_minutes: ashActivityRangeMinutes,
             step_minutes: null, // 자체 수집은 고정 60초 원본 샘플이라 0-패딩 버킷 개념이 없음
-            cpu_cores: lastCpuCores,
+            cpu_cores: (physicalWanted && lastCoresPhys > 0 && (!lastCpuCores || lastCoresPhys <= lastCpuCores)) ? lastCoresPhys : lastCpuCores,
             categories: ['CPU', 'Latch', 'User I/O', 'TX Lock', 'Sys I/O', 'TM Lock', 'Other'],
             series
         };

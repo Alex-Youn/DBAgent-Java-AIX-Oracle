@@ -552,7 +552,7 @@ public class MonitorService {
             }
             // CPU 기준선은 60초 샘플러(ash_cpu_cores)와 같은 CpuCores 헬퍼로 읽는다 - NUM_CPUS(2026-09-28 운영
             // 실측으로 NUM_CPU_CORES에서 변경, CpuCores 주석 참고). 화면마다 CPU 수가 갈리지 않게 한 곳으로 모은다.
-            cpuCores = CpuCores.query(conn);
+            cpuCores = CpuCores.queryBasis(conn, settings.getBool(SettingKey.AAS_CPU_PHYSICAL)); // 설정 aas-cpu-physical: 켜면 물리 코어
         }
 
         // 0-패딩: 샘플이 전혀 없는 버킷/카테고리도 빠짐없이 0으로 채워 누적 영역 차트가 항상 길이 7의

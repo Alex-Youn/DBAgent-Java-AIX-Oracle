@@ -44,4 +44,27 @@ final class CpuCores {
             }
         }
     }
+
+    /**
+     * 설정 dbagent.ui.aas-cpu-physical에 따른 차트 기준선 - 켜져 있고 물리 코어가 논리 CPU 이하일 때만 물리 코어,
+     * 아니면 NUM_CPUS(Current Session 차트·성능 분석 세션 분석 차트 공용). 꺼져 있으면 기존 단일 조회 그대로라
+     * 대상 DB 부하가 늘지 않는다.
+     */
+    static int queryBasis(Connection conn, boolean physicalWanted) throws SQLException {
+        int logical = query(conn);
+        if (!physicalWanted) return logical;
+        // 물리 코어 조회가 실패해도(타임아웃 등) 차트 전체를 오류로 만들지 않고 논리 CPU로 보여 준다 - 샘플러와 같은 처리
+        int phys = 0;
+        try {
+            phys = queryPhysical(conn);
+        } catch (SQLException e) {
+            phys = 0;
+        }
+        return pickBasis(logical, phys, true);
+    }
+
+    /** 물리 코어 기준 선택 규칙 - 저장값 경로(성능 분석)와 같은 규칙을 쓰려고 분리. */
+    static int pickBasis(int logical, int phys, boolean physicalWanted) {
+        return (physicalWanted && phys > 0 && (logical <= 0 || phys <= logical)) ? phys : logical;
+    }
 }

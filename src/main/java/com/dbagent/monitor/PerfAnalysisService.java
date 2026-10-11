@@ -162,7 +162,14 @@ public class PerfAnalysisService {
 
     private int latestCpuCores(String dbId) {
         long nowMs = System.currentTimeMillis();
-        List<Map<String, Object>> rows = history.query(dbId, "ash_cpu_cores", nowMs - 3 * 3600_000L, nowMs);
+        int logical = latestMetric(dbId, "ash_cpu_cores", nowMs);
+        // 설정 aas-cpu-physical를 켜면 60초 샘플러가 저장해 둔 물리 코어(ash_cpu_cores_phys)로 - 새 조회 없음
+        boolean physical = settings.getBool(SettingKey.AAS_CPU_PHYSICAL);
+        return physical ? CpuCores.pickBasis(logical, latestMetric(dbId, "ash_cpu_cores_phys", nowMs), true) : logical;
+    }
+
+    private int latestMetric(String dbId, String metric, long nowMs) {
+        List<Map<String, Object>> rows = history.query(dbId, metric, nowMs - 3 * 3600_000L, nowMs);
         if (rows.isEmpty()) return 0;
         return (int) Math.round(((Number) rows.get(rows.size() - 1).get("value")).doubleValue());
     }
