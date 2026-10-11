@@ -63,7 +63,14 @@ public class MonitorStoreService {
                 "plan_hash_value BIGINT NOT NULL, executions_d BIGINT, elapsed_us_d BIGINT, cpu_us_d BIGINT, " +
                 "buffer_gets_d BIGINT, disk_reads_d BIGINT, rows_d BIGINT, sql_text VARCHAR(1000), " +
                 "PRIMARY KEY (db_id, collect_ts, sql_id, plan_hash_value))");
-        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_mon_sqlstat_delta_sql ON mon_sqlstat_delta (db_id, sql_id, collect_ts)");
+        // 보조 인덱스 (db_id, sql_id, collect_ts)는 AIX(H2)에서만 만들지 않는다 (2026-10-11 오케스트레이터 결정).
+        // 이유: H2 MVStore는 1분마다 쌓고 매일 지우는 이 테이블의 인덱스 때문에 파일이 크게 부풀었다.
+        // (로컬 실측: 보관 3일·7일 운영 시뮬레이션에서 인덱스 있음 8,284MB / 없음 885MB, 논리 크기 191MB.
+        //  삭제 없이 3일치만 쌓아도 2,591MB / 155MB.)
+        // 대가: sql_id 한 건 조회(sqlstatPlanSums·sqlstatSummary, SQL 상세 패널)가 3일 구간에서 약 3ms → 370~400ms로 느려진다.
+        // 나머지 읽기 쿼리는 기본키 (db_id, collect_ts, ...) 범위 스캔이라 차이가 없었다. 메인(SQLite)은 인덱스를 유지한다.
+        // 이미 인덱스가 만들어진 파일은 여기서 지운다 (파일 크기는 H2가 정상 종료할 때 MAX_COMPACT_TIME 안에서 줄어든다).
+        jdbc.execute("DROP INDEX IF EXISTS idx_mon_sqlstat_delta_sql");
         // 성능 분석 Phase 3(2026-10-09): parse_calls 델타와 FORCE_MATCHING_SIGNATURE(부호 없는 64비트라 long에 안 들어가 문자열로 저장).
         // 이미 만들어진 테이블에는 컬럼이 없다 - SQLite·H2 모두 ADD COLUMN을 지원한다.
         for (String col : new String[]{"parse_calls_d BIGINT", "force_matching_signature VARCHAR(24)"}) {
