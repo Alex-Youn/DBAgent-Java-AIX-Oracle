@@ -14,6 +14,14 @@ if (Test-Path $propsFile) {
         $port = [int]$Matches[1]
     }
 }
+# conf\dbagent.conf(부트스트랩 설정)가 있으면 그 포트가 application.properties보다 우선한다 - start.ps1과 같은 순서로 읽는다.
+$confFile = Join-Path $PSScriptRoot "conf\dbagent.conf"
+if (Test-Path $confFile) {
+    $confPortLine = Get-Content $confFile | Where-Object { $_ -match '^\s*server\.port\s*=\s*(\d+)\s*$' } | Select-Object -Last 1
+    if ($confPortLine -match '^\s*server\.port\s*=\s*(\d+)\s*$') {
+        $port = [int]$Matches[1]
+    }
+}
 $stopped = $false
 
 if (Test-Path $pidFile) {
