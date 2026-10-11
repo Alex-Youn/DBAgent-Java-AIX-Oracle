@@ -167,6 +167,16 @@
 #dbagent.perf.diag-wait-ratio-pct=200
 #dbagent.perf.diag-hard-parse-pct=100
 #dbagent.perf.diag-seq-read-ms=10
+# 성능 분석 "오브젝트·I/O" 수집(2026-10-11, 기본 꺼짐): 수집 주기마다 v$segstat(통계 5종 델타, 통계별 상위 50개만 저장)·v$filestat·v$tempstat·v$log_history(최근 24시간 시간별 스위치)·
+# v$tempseg_usage(SQL별 Temp 사용)를 읽는다. 모든 조회에 쿼리 제한 시간이 있고 실패한 항목은 건너뛴다(0으로 저장하지 않고 나머지는 저장). 주기당 조회 6건(+이름 확인 dba_objects 가끔 최대 4건).
+# 대용량 DB에서는 v$segstat 한 번 읽기가 가장 무겁고, 세그먼트 행이 40만 개를 넘으면 그 DB의 세그먼트 수집을 6시간 쉰다. 켜기 전에 DB 부하를 확인할 것.
+# 앱 재시작·수집 껐다 켬·대상 DB 인스턴스 재시작 뒤 첫 주기는 델타 기준값만 기억하고 저장하지 않는다. 세그먼트는 dataobj# 기준이라 클러스터 테이블은 구성 테이블 중 하나의 이름으로 보일 수 있다.
+# CDB 루트로 등록한 DB는 루트 컨테이너의 오브젝트·파일만 읽는다(PDB 접속 권장). 보관은 perf-retention-days를 따른다.
+#dbagent.perf.obj-collect-enabled=false
+# 오브젝트·I/O 수집 주기(분, 스케줄러 주기라 재시작 후 적용). 짧을수록 세부 변화를 보지만 대상 DB 조회와 저장 행이 늘어난다.
+#dbagent.perf.obj-collect-interval-min=10
+# Redo 로그 스위치 기준선(회/시간): 이 횟수를 넘으면 차트 막대를 다른 색으로 표시하고 로그 그룹 크기 조정 힌트를 보여 준다.
+#dbagent.perf.redo-switch-warn-per-hour=4
 # 시스템 부하 대기 이벤트 분 데이터 보관 일수(기본 15). 지난주 비교에는 최소 8일 필요. 지표는 perf-retention-days를 따른다.
 #dbagent.perf.sys-event-retention-days=15
 # 성능 분석 "SQL 분석"(2026-10-09): 기존 1분 v$sqlstats 델타 수집(SqlStatDeltaCollector)을 확장한다(새 원본 조회 없음).

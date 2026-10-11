@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB InsightFlow</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2">
-    <link rel="stylesheet" href="style.css?v=85">
+    <link rel="stylesheet" href="style.css?v=86">
     <script src="lib/lucide.js"></script>
     <script src="dbagent-common.js?v=14"></script>
     <script src="lib/mermaid.min.js"></script>
@@ -1129,7 +1129,7 @@
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="load">시스템 부하</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="sql">SQL 분석</button>
                         <button type="button" class="perf-subtab" role="tab" data-perf-sub="cmp">구간 비교</button>
-                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="obj" hidden>오브젝트·I/O</button>
+                        <button type="button" class="perf-subtab" role="tab" data-perf-sub="obj">오브젝트·I/O</button>
                     </div>
                     <!-- 공통 조건 바(성능 분석 개편 Phase 0b): 계정·접속 호스트·시작·종료·조회, 빠른 선택, 메타 줄. 모든 하위 탭이 같이 쓴다.
                          동작은 perf-shell.js(PerfShell), 세션 분석 화면은 perf-analysis.js. -->
@@ -1352,6 +1352,52 @@
                             </div>
                         </div>
                     </div><!-- /#perf-sub-cmp -->
+                    <!-- 오브젝트·I/O 하위 탭(성능 분석 개편 Phase 5): Hot 세그먼트·데이터파일 I/O·Temp Top SQL·Redo 스위치. 수집은 기본 꺼짐. 동작은 perf-obj.js -->
+                    <div id="perf-sub-obj" class="perf-sub-pane" data-perf-pane="obj" hidden>
+                        <div class="panel">
+                            <div class="panel-body">
+                                <div id="perf-obj-notice" class="perf-lk-notice" style="display: none;"></div>
+                                <h3 class="perf-h3">Hot 세그먼트 <span class="perf-hint">(V$SEGSTAT 델타 · 세그먼트 기준 · 통계별 상위 50개만 저장 · 다른 통계 칸의 '-'는 그 통계 상위 50에 못 든 것일 수 있음 · CDB 루트로 등록한 DB는 루트 오브젝트만)</span>
+                                    <span class="perf-obj-sortbox"><label for="perf-obj-sort" class="perf-label">정렬</label>
+                                        <select id="perf-obj-sort" class="form-input perf-select">
+                                            <option value="lr">Logical reads</option>
+                                            <option value="pr">Physical reads</option>
+                                            <option value="rlw">Row lock waits</option>
+                                            <option value="itl">ITL waits</option>
+                                            <option value="bbw">Buffer busy waits</option>
+                                        </select></span></h3>
+                                <div class="perf-lk-tablewrap">
+                                    <table class="perf-lk-table">
+                                        <thead><tr id="perf-obj-seg-head"><th>오브젝트</th><th>유형</th><th class="num" data-stat="lr">Logical reads</th><th class="num" data-stat="pr">Physical reads</th><th class="num" data-stat="rlw">Row lock waits</th><th class="num" data-stat="itl">ITL waits</th><th class="num" data-stat="bbw">Buffer busy waits</th></tr></thead>
+                                        <tbody id="perf-obj-seg"></tbody>
+                                    </table>
+                                </div>
+                                <div class="perf-cmp-grid">
+                                    <div>
+                                        <h3 class="perf-h3">데이터파일 I/O <span class="perf-hint" id="perf-obj-files-note"></span></h3>
+                                        <div class="perf-lk-tablewrap">
+                                            <table class="perf-lk-table">
+                                                <thead><tr><th>Tablespace</th><th>데이터파일</th><th class="num">Reads</th><th class="num">평균 읽기(ms)</th><th class="num">Writes</th><th class="num">평균 쓰기(ms)</th></tr></thead>
+                                                <tbody id="perf-obj-files"></tbody>
+                                            </table>
+                                        </div>
+                                        <h3 class="perf-h3">Temp 사용 Top SQL <span class="perf-hint">(주기 수집 시점의 사용량 · 1MB 이상)</span></h3>
+                                        <div class="perf-lk-tablewrap">
+                                            <table class="perf-lk-table">
+                                                <thead><tr><th>SQL_ID</th><th>모듈</th><th class="num">최대 Temp(MB)</th><th>시각</th></tr></thead>
+                                                <tbody id="perf-obj-temp"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <h3 class="perf-h3">Redo 로그 스위치 <span class="perf-hint">(시간당 횟수 · CDB는 공유 redo라 PDB별 값이 아닙니다)</span></h3>
+                                        <div class="perf-chart-box perf-obj-redo"><canvas id="perf-obj-redo-chart"></canvas></div>
+                                        <div id="perf-obj-redo-hint" class="perf-hint"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div><!-- /#perf-sub-obj -->
                 </section>
 
             </div>
@@ -1425,5 +1471,6 @@
     <script src="perf-load.js?v=4"></script>
     <script src="perf-sql.js?v=3"></script>
     <script src="perf-compare.js?v=1"></script>
+    <script src="perf-obj.js?v=1"></script>
 </body>
 </html>

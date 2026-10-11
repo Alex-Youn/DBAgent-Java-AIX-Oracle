@@ -41,11 +41,13 @@ public class PerfAnalysisController {
     private final PerfSysService sysService;
     private final PerfSqlService sqlService;
     private final PerfCompareService compareService;
+    private final PerfObjService objService;
 
     public PerfAnalysisController(AuthService authService, DatabaseConfigService configService, PerfAnalysisService perfService,
                                   PerfLockService lockService, PerfSysService sysService, PerfSqlService sqlService,
-                                  PerfCompareService compareService) {
+                                  PerfCompareService compareService, PerfObjService objService) {
         this.compareService = compareService;
+        this.objService = objService;
         this.sysService = sysService;
         this.sqlService = sqlService;
         this.authService = authService;
@@ -283,6 +285,35 @@ public class PerfAnalysisController {
         }
         final String id = sqlId.trim();
         return run(db_id, token, from, to, null, null, (t, f, e, fl) -> sqlService.sqlDetail(t, id, f, e));
+    }
+
+    // ------------------------------------------------------------------ 오브젝트·I/O (성능 분석 개편 Phase 5, 2026-10-11, 설계 5-2)
+    // 수집 저장소만 읽는다(수집은 기본 꺼짐 dbagent.perf.obj-collect-enabled). 응답 JSON 키는 camelCase. 구간은 24시간 이하.
+
+    /** Hot 세그먼트 - sort = lr(Logical reads) | pr(Physical reads) | rlw(Row lock waits) | itl(ITL waits) | bbw(Buffer busy waits). */
+    @GetMapping("/obj_segments")
+    public ResponseEntity<Object> objSegments(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                              @RequestParam(required = false) String from, @RequestParam(required = false) String to,
+                                              @RequestParam(required = false, defaultValue = "lr") String sort) {
+        return run(db_id, token, from, to, null, null, (t, f, e, fl) -> objService.segments(t.id(), f, e, sort));
+    }
+
+    @GetMapping("/obj_files")
+    public ResponseEntity<Object> objFiles(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                           @RequestParam(required = false) String from, @RequestParam(required = false) String to) {
+        return run(db_id, token, from, to, null, null, (t, f, e, fl) -> objService.files(t.id(), f, e));
+    }
+
+    @GetMapping("/obj_redo_switch")
+    public ResponseEntity<Object> objRedoSwitch(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                                @RequestParam(required = false) String from, @RequestParam(required = false) String to) {
+        return run(db_id, token, from, to, null, null, (t, f, e, fl) -> objService.redo(t.id(), f, e));
+    }
+
+    @GetMapping("/obj_temp_top")
+    public ResponseEntity<Object> objTempTop(@RequestParam(required = false) String db_id, @RequestParam(required = false) String token,
+                                             @RequestParam(required = false) String from, @RequestParam(required = false) String to) {
+        return run(db_id, token, from, to, null, null, (t, f, e, fl) -> objService.tempTop(t.id(), f, e));
     }
 
     // ------------------------------------------------------------------ 구간 비교 (성능 분석 개편 Phase 4, 2026-10-11, 설계 Phase 4)

@@ -122,6 +122,21 @@ public enum SettingKey {
     DIAG_SEQ_READ_MS(d("dbagent.perf.diag-seq-read-ms", INT, "10", LOCK, "시스템 부하: 단일 블록 읽기 지연 기준",
             "db file sequential read 평균 대기가 이 시간(ms) 이상이면 스토리지 응답 지연 의심 힌트를 표시합니다.").unit("ms").range(1, 1000)),
 
+    // 성능 분석 개편 Phase 5(2026-10-11, 설계 5장): 오브젝트·I/O - 세그먼트·파일 I/O·Redo 스위치·Temp 사용 수집. 새 원본 조회라 기본 꺼짐
+    OBJ_COLLECT_ENABLED(d("dbagent.perf.obj-collect-enabled", BOOL, "false", LOCK, "오브젝트·I/O 수집",
+            "성능 분석의 오브젝트·I/O 탭에 쓰는 세그먼트 통계·데이터파일 I/O·Redo 스위치·Temp 사용 SQL을 주기적으로 수집합니다.")
+            .detail("수집 주기(기본 10분)마다 대상 DB에서 v$segstat(통계 5종, 값이 0보다 큰 행 전체), v$filestat·v$tempstat(파일 수만큼), "
+                    + "v$log_history(최근 24시간 시간별 건수), v$tempseg_usage(SQL별 Temp 사용)를 읽고, 누적값은 직전 값과의 차이(델타)로 바꿔 통계별 상위 50개만 저장합니다. "
+                    + "모든 조회에 쿼리 제한 시간이 있고, 실패한 항목은 건너뜁니다(0으로 저장하지 않고 나머지 항목은 저장합니다). 대용량 DB에서는 v$segstat 한 번 읽기가 가장 무겁고, 세그먼트 행이 40만 개를 넘으면 그 DB의 세그먼트 수집을 6시간 쉽니다. "
+                    + "앱을 재시작하거나 수집을 껐다 켠 뒤, 대상 DB 인스턴스가 재시작된 뒤의 첫 주기는 기준값만 기억하고 저장하지 않습니다(그 다음 주기부터 쌓입니다). "
+                    + "세그먼트는 dataobj#(세그먼트) 기준으로 세기 때문에 클러스터에 묶인 테이블은 구성 테이블 중 하나의 이름으로 보일 수 있습니다. CDB 루트로 등록한 DB는 루트 컨테이너의 오브젝트·파일만 읽습니다(PDB 접속을 권장합니다).")
+            .warning("대상 DB에 수집 주기마다 조회 6건(처음 보는 오브젝트의 이름을 확인하는 dba_objects 조회가 가끔 최대 4건 더)이 추가됩니다. 켜기 전에 부하 영향을 확인하세요.")),
+    OBJ_COLLECT_INTERVAL_MIN(d("dbagent.perf.obj-collect-interval-min", INT, "10", LOCK, "오브젝트·I/O 수집 주기",
+            "오브젝트·I/O 수집을 실행하는 간격입니다.").unit("분").range(1, 120)
+            .detail("스케줄러 주기라 저장 후 앱을 다시 시작해야 적용됩니다. 짧을수록 세부 변화를 보지만 대상 DB 조회와 저장 행이 늘어납니다.")),
+    REDO_SWITCH_WARN_PER_HOUR(d("dbagent.perf.redo-switch-warn-per-hour", INT, "4", LOCK, "Redo 로그 스위치 기준선",
+            "시간당 Redo 로그 스위치가 이 횟수를 넘으면 차트 막대를 다른 색으로 표시하고 로그 그룹 크기 조정 힌트를 보여 줍니다.").unit("회/시간").range(1, 1000)),
+
     // 성능 분석 개편 Phase 3(2026-10-09, 설계 3장): SQL 분석 - 기존 1분 v$sqlstats 델타 수집을 확장한다(새 원본 조회 없음)
     SQLSTAT_NEW_CURSOR_MAX_ROWS(d("dbagent.monitor.sqlstat-new-cursor-max-rows", INT, "100", LOCK, "SQL 분석: 새 커서 저장 상한",
             "1분 수집에서 처음 보는 SQL(주로 리터럴 SQL)의 누적값을 사이클당 이 개수까지만 SQL 단위로 저장합니다. 0이면 새 커서를 저장하지 않습니다(리터럴 보기도 비게 됩니다).").unit("개").range(0, 5000)
@@ -334,7 +349,7 @@ public enum SettingKey {
             SESSION_EXTRA_FAIL_LOG_MINUTES, FLEET_STATUS_TIMEOUT_SECONDS, ACTIVE_ALERTS_TIMEOUT_SECONDS,
             // P5 Lock 백그라운드 수집 켜기/끄기·상한, 접속/응답 대기와 풀 크기(저장하면 풀을 다시 만든다)
             LOCK_KEEPALIVE_MINUTES, LOCK_KEEPALIVE_MAX_DBS, LOCK_COLLECT_ENABLED, BLOCKER_DETAIL_ENABLED, BLOCKER_TM_MODE_ENABLED, LOCK_GAP_SEC,
-            SYS_COLLECT_ENABLED, DIAG_CARD_PCT, SQLSTAT_NEW_CURSOR_MAX_ROWS, SQLSTAT_NEW_CURSOR_MAX_EXECS,
+            OBJ_COLLECT_ENABLED, REDO_SWITCH_WARN_PER_HOUR, SYS_COLLECT_ENABLED, DIAG_CARD_PCT, SQLSTAT_NEW_CURSOR_MAX_ROWS, SQLSTAT_NEW_CURSOR_MAX_EXECS,
             SQLSTAT_NEW_CURSOR_MAX_ELAPSED_SEC, SQLSTAT_DELTA_RETENTION_DAYS, DIAG_SQL_SURGE_PCT, DIAG_SQL_SURGE_MIN_EXECS, DIAG_SQL_NPLUS1_EXEC_SEC, DIAG_SQL_REUSE_EXEC_SEC, DIAG_SQL_REUSE_PARSE_PCT,
             DIAG_SQL_LITERAL_ID_COUNT, SQL_ROLLUP_RETENTION_DAYS, SQL_ROLLUP_TOP_N, DIAG_WAIT_RATIO_PCT, DIAG_HARD_PARSE_PCT, DIAG_SEQ_READ_MS,
             ORACLE_CONNECT_TIMEOUT_MS, ORACLE_READ_TIMEOUT_MS, ORACLE_POOL_MIN_IDLE, ORACLE_POOL_MAX_SIZE,

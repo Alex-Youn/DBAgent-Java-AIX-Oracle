@@ -2250,4 +2250,13 @@ body.app-shell { overflow-y: hidden; }
 .perf-cmp-bar2 { height: 6px; border-radius: 2px; background: var(--primary); }
 .perf-cmp-bar2.up { background: var(--danger); }
 .perf-cmp-bar2.down { background: var(--success); }
+/* 오브젝트·I/O(성능 분석 Phase 5, 2026-10-11) */
+.perf-obj-sortbox { float: right; display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
+.perf-obj-sorted { color: var(--primary) !important; }
+.perf-lk-table td.perf-obj-hot { position: relative; }
+.perf-obj-hot span { position: relative; z-index: 1; }
+.perf-obj-hot .perf-obj-bar { position: absolute; left: 0; top: 2px; bottom: 2px; background: var(--primary); opacity: 0.22; border-radius: 2px; }
+.perf-obj-hot.top span { font-weight: 700; color: var(--primary); }
+.perf-obj-slow { color: var(--danger); font-weight: 700; }
+.perf-obj-redo { height: 230px; }
 @media (max-width: 1100px) { .perf-cmp-sum { grid-template-columns: repeat(2, minmax(0, 1fr)); } .perf-cmp-grid { grid-template-columns: minmax(0, 1fr); } }
