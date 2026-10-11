@@ -1,7 +1,7 @@
 // 새 대시보드 ① KPI · ② 평균 활성 세션(대기 클래스별) · ④ 진단 배너 - 설계문서 `대시보드 UI 개선 설계.md` 5장 ①②④,
 // 전체 작업순서 F5(2026-09-26). nd-dashboard.js(공통 엔진) 다음에 로드한다.
 //
-// - ①②④는 /api/metric_history의 8분류(ash_wc_*) + ash_cpu_cores 하나로 그린다(추가 조회 없음, 60초 주기).
+// - ①②④는 /api/metric_history의 8분류(ash_wc_*) + ash_cpu_cores(+ash_cpu_cores_phys)로 그린다(차트 데이터 추가 조회 없음, 60초 주기. CPU 기준선 설정만 /api/config로 따로 읽는다).
 //   AAS_TOTAL = 그 분의 8분류 합계 → ① KPI 숫자와 ② 누적 높이가 항상 같다.
 // - 시각은 DB 시각: sampledAt(앱 시각) + dbClockOffsetMs. 샘플은 끝난 1분을 대표하므로 (t − 30초)가 속한 분에 둔다.
 // - 값이 없는 분은 0으로 잇지 않고 끊어 그린다. 맨 앞 공백은 "수집 이전".
@@ -19,7 +19,8 @@
         { k: 'network', n: 'Network' }, { k: 'other', n: 'Other' }
     ];
     const NC = CLS.length;
-    // ash_cpu_cores_phys(NUM_CPU_CORES)는 물리 코어 보조선 전용 - 판정(CPU 초과·부하율·진단)은 ash_cpu_cores(NUM_CPUS)만 쓴다(2026-09-30)
+    // 기본: ash_cpu_cores(NUM_CPUS)가 판정(CPU 초과·부하율·진단) 기준선이고 ash_cpu_cores_phys(NUM_CPU_CORES)는 물리 코어 보조선 전용이다(2026-09-30).
+    // 설정 dbagent.ui.aas-cpu-physical를 켜면 역할이 바뀐다 - 물리 코어가 기준선, 논리 CPU가 보조선(2026-10-11)
     const METRICS = CLS.map(c => 'ash_wc_' + c.k).concat(['ash_cpu_cores', 'ash_cpu_cores_phys']);
     const RANGE_MIN = { '15m': 15, '1h': 60, '3h': 180, '24h': 1440 };
     const TICK_EVERY = { '15m': 5, '1h': 10, '3h': 30, '24h': 120 };
@@ -43,13 +44,17 @@
     const st = {
         rangeKey: '1h',
         rows: [],          // [{t: DB 시각 분 시작 ms, v: [8] | null}]
-        cores: null,
-        coresPhys: null,   // 물리 코어(보조선 전용)
+        cores: null,       // CPU 기준선(판정 기준) - 기본은 논리 CPU(NUM_CPUS), 설정 aas-cpu-physical를 켜면 물리 코어(NUM_CPU_CORES)
+        coresAux: null,    // 보조선 값(기본은 물리 코어, 설정을 켜면 논리 CPU)
+        mainLabel: 'CPU',  // 기준선 이름(판정 문구·라벨에 쓴다)
+        auxLabel: '물리코어',
+        basisPhysical: false,
         lastSample: null,  // DB 시각 ms
         nowDb: null,
         hidden: new Set(),
         sel: null,         // [a, b] rows 인덱스
         userSel: false,
+        selT: null,        // 사용자가 고른 구간의 [시작 분 시각, 끝 분 시각](ms) - 행 번호는 1분마다 한 칸씩 밀리므로 시각으로 기억한다
         hover: null,
         showTable: false,
         loaded: false
@@ -111,7 +116,7 @@
 
         renderLegend();
         bindPlot(plot);
-        $('nd-aas-clear').addEventListener('click', () => { st.userSel = false; autoSelect(); render(); });
+        $('nd-aas-clear').addEventListener('click', () => { st.userSel = false; st.selT = null; autoSelect(); render(); });
         $('nd-aas-table-btn').addEventListener('click', () => {
             st.showTable = !st.showTable;
             $('nd-aas-table-btn').textContent = st.showTable ? '차트로 보기' : '표로 보기';
@@ -146,6 +151,24 @@
 
     // ================================================================== 데이터
 
+    // AAS CPU 기준선 설정(dbagent.ui.aas-cpu-physical)은 /api/config로 읽는다. 토큰 없이 부른다(UI 설정은 로그인 전에도 항상 포함되고 응답이 작다 -
+    // 관리자 토큰이면 DB 목록 전체가 따라온다). 차트가 갱신될 때마다(약 1분) 읽으므로 저장 후 다음 갱신에 새로고침 없이 반영된다(캐시 없음 -
+    // 주기가 60초라 30초 캐시는 맞지 않았다). 응답이 멈춰도 slow 주기 전체(다른 위젯 포함)가 서지 않게 4초 타임아웃을 두고, 실패하면 직전 값을 유지한다
+    // (기본 false = 논리 CPU).
+    let basisVal = false;
+    async function physicalBasisSetting() {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 4000);
+        try {
+            const r = await fetch('/api/config', { signal: ac.signal });
+            if (r.ok) {
+                const c = await r.json();
+                basisVal = c.aas_cpu_physical === true;
+            }
+        } catch (e) { /* 직전 값 유지 */ } finally { clearTimeout(timer); }
+        return basisVal;
+    }
+
     async function load(ctx) {
         ensureDom();
         const rangeKey = ctx.range;
@@ -174,16 +197,38 @@
         const cores = coreSeries.length ? coreSeries[coreSeries.length - 1].value : null;
         const physSeries = d.ash_cpu_cores_phys || [];
         const coresPhys = physSeries.length ? physSeries[physSeries.length - 1].value : null;
+        // 기준선을 물리 코어로 볼지(설정 dbagent.ui.aas-cpu-physical). 물리 코어 수를 읽지 못한 DB는 켜도 논리 CPU 기준이다.
+        const physicalWanted = await physicalBasisSetting();
+        if (ctx.isStale()) return;
+        const swap = physicalWanted && coresPhys && coresPhys > 0 && (!cores || coresPhys <= cores); // 물리 > 논리인 이상한 값(가상화 등)이면 전환하지 않는다
 
-        if (rangeKey !== st.rangeKey) { st.userSel = false; st.sel = null; }
+        if (rangeKey !== st.rangeKey) { st.userSel = false; st.selT = null; st.sel = null; }
         st.rangeKey = rangeKey;
         st.rows = rows;
-        st.cores = cores;
-        st.coresPhys = coresPhys;
+        st.cores = swap ? coresPhys : cores;
+        st.coresAux = swap ? cores : coresPhys;
+        st.mainLabel = swap ? '물리코어' : 'CPU';
+        st.auxLabel = swap ? 'CPU(논리)' : '물리코어';
+        st.basisPhysical = !!swap;
         st.lastSample = lastSample;
         st.nowDb = nowDb;
         st.loaded = true;
+        // 사용자가 고른 구간은 시각으로 기억해 두었다가 새 행에 다시 맞춘다. 행은 1분마다 한 칸씩 밀리는데 번호만 두면 선택 구간이 시간상 앞으로
+        // 흘러가 버렸다(2026-10-11 QA: 12:22~12:26 선택이 몇 분 뒤 12:27~12:31로 표시). 창 밖으로 완전히 밀려나면 자동 선택으로 돌아간다.
+        let reEmit = false;
+        if (st.userSel && st.selT && rows.length) {
+            const first = rows[0].t;
+            const a = Math.round((st.selT[0] - first) / 60000);
+            const b = Math.round((st.selT[1] - first) / 60000);
+            if (b < 0 || a > rows.length - 1) { st.userSel = false; st.selT = null; st.sel = null; }
+            else {
+                const na = Math.max(0, a), nb = Math.min(rows.length - 1, b);
+                reEmit = !st.sel || st.sel[0] !== na || st.sel[1] !== nb; // 창 가장자리에 걸려 잘렸거나 처음 맞출 때만 다른 위젯에 알린다
+                st.sel = [na, nb];
+            }
+        }
         if (!st.userSel || !st.sel) autoSelect();
+        else if (reEmit) emitSelection();
         render();
     }
     ND.register('slow', 'aas', load);
@@ -191,10 +236,15 @@
     ND.onReset(() => {
         st.rows = [];
         st.cores = null;
-        st.coresPhys = null;
+        st.coresAux = null;
+        st.mainLabel = 'CPU';
+        st.auxLabel = '물리코어';
+        st.basisPhysical = false;
+        kpiOverLabel();
         st.lastSample = null;
         st.sel = null;
         st.userSel = false;
+        st.selT = null;
         st.hover = null;
         st.loaded = false;
         drag = null;
@@ -230,12 +280,18 @@
         emitSelection();
     }
 
+    // 사용자가 고른 구간 지정 - 행 번호와 함께 시각도 기억한다(로드 때 새 행에 다시 맞추려고)
+    function setUserSel(a, b) {
+        st.sel = [a, b];
+        st.userSel = true;
+        st.selT = [st.rows[a].t, st.rows[b].t];
+    }
+
     function selectAround(i) {
         const n = st.rows.length;
         let a = Math.max(0, i - 2), b = Math.min(n - 1, a + 4);
         a = Math.max(0, b - 4);
-        st.sel = [a, b];
-        st.userSel = true;
+        setUserSel(a, b);
         emitSelection();
         render();
     }
@@ -291,10 +347,22 @@
         return `<span title="${esc(tip)}">수집 ${esc(durText(collected))} / ${esc(label.replace('최근 ', ''))}</span>`;
     }
 
+    // 차트 오른쪽 여백(72px)에 들어가도록 라벨을 짧게 쓴다 - 문장·툴팁에는 st.mainLabel/auxName()의 전체 이름을 쓴다
+    const mainShort = () => (st.basisPhysical ? '코어' : 'CPU');
+    const auxShort = () => (st.basisPhysical ? '논리' : '물리코어');
+    const auxName = () => (st.basisPhysical ? '논리 CPU(NUM_CPUS)' : '물리 코어(NUM_CPU_CORES)');
+    // KPI 제목 "CPU 초과"가 기준(설정)을 따라가게 한다
+    function kpiOverLabel() {
+        const e = document.querySelector('[data-kpi="over"] .nd-kpi-label');
+        if (e) e.textContent = st.mainLabel + ' 초과';
+    }
+
     function renderKpis() {
         const vals = st.rows.filter(r => r.v).map(r => ({ t: r.t, tot: total(r.v) }));
         const cores = st.cores;
         const set = (id, html) => { const e = $(id); if (e) e.innerHTML = html; };
+        kpiOverLabel();
+        const loadLabel = st.basisPhysical ? '물리코어 부하율' : '부하율';
         if (!vals.length) {
             ['nd-kpi-current', 'nd-kpi-avg', 'nd-kpi-max', 'nd-kpi-over'].forEach(id => set(id, '—'));
             set('nd-kpi-current-sub', '수집 이전');
@@ -310,11 +378,11 @@
         let mx = vals[0];
         vals.forEach(v => { if (v.tot > mx.tot) mx = v; });
         set('nd-kpi-current', f1(now.tot));
-        set('nd-kpi-current-sub', `${hm(now.t)}${cores ? ' · 부하율 ' + (now.tot / cores).toFixed(2) : ''}`);
+        set('nd-kpi-current-sub', `${hm(now.t)}${cores ? ' · ' + loadLabel + ' ' + (now.tot / cores).toFixed(2) : ''}`);
         set('nd-kpi-avg', f1(avg));
         set('nd-kpi-avg-sub', coverageHtml(vals.length, RANGE_MIN[st.rangeKey] || 60, RANGE_LABEL[st.rangeKey]));
         set('nd-kpi-max', f1(mx.tot));
-        set('nd-kpi-max-sub', `${hm(mx.t)}${cores ? ' · CPU의 ' + Math.round(mx.tot / cores * 100) + '%' : ''}`);
+        set('nd-kpi-max-sub', `${hm(mx.t)}${cores ? ' · ' + st.mainLabel + '의 ' + Math.round(mx.tot / cores * 100) + '%' : ''}`);
         if (!cores) {
             set('nd-kpi-over', '—');
             set('nd-kpi-over-sub', 'CPU 수 확인 전');
@@ -322,7 +390,7 @@
         }
         const over = vals.filter(v => v.tot > cores).length;
         set('nd-kpi-over', `${over}<small>분</small>`);
-        const lvl = over === 0 ? { c: 'good', s: '●', t: 'CPU 이내 유지' } : over < 10 ? { c: 'serious', s: '◆', t: `CPU ${cores}개를 넘은 시간` } : { c: 'crit', s: '■', t: `CPU ${cores}개를 넘은 시간` };
+        const lvl = over === 0 ? { c: 'good', s: '●', t: `${st.mainLabel} 이내 유지` } : over < 10 ? { c: 'serious', s: '◆', t: `${st.mainLabel} ${cores}개를 넘은 시간` } : { c: 'crit', s: '■', t: `${st.mainLabel} ${cores}개를 넘은 시간` };
         set('nd-kpi-over-sub', `<span class="nd-lvl nd-lvl-${lvl.c}">${lvl.s} ${esc(lvl.t)}</span>`);
     }
 
@@ -391,25 +459,27 @@
                 for (let k = 0; k < acc.length; k++) acc[k] = hi[k];
             }
         });
-        // 물리 코어 보조선(2026-09-30 오케스트레이터 결정) - SMT 서버에서 CPU 층이 이 선을 넘으면 코어를 스레드로 나눠 쓰기 시작한다는
-        // 참고선. 판정에는 쓰지 않는다. 논리 CPU보다 작을 때만(SMT 없는 서버는 두 값이 같아 그리지 않음). 라벨이 CPU 라벨과 겹치면 아래로 비킨다.
-        const phys = st.coresPhys;
-        if (phys && phys > 0 && (!cores || phys < cores) && phys <= top) {
-            const py = y(phys);
+        // 보조선(2026-09-30 오케스트레이터 결정, 2026-10-11 기준 전환 추가) - 기본은 물리 코어: SMT 서버에서 CPU 층이 이 선을 넘으면 코어를 스레드로
+        // 나눠 쓰기 시작한다는 참고선이다. 설정 aas-cpu-physical를 켜면 기준선이 물리 코어가 되고 논리 CPU가 이 보조선이 된다. 판정에는 쓰지 않는다.
+        // 기준선과 값이 같으면(SMT 없는 서버) 그리지 않는다. 라벨이 기준선 라벨과 겹치면 아래로 비킨다.
+        const aux = st.coresAux;
+        // 기본(물리 코어 보조선)은 논리 CPU보다 작을 때만, 설정을 켠 경우(논리 CPU 보조선)는 물리 코어보다 클 때만 - 같거나 반대면(SMT 없음·이상한 값) 그리지 않는다
+        if (aux && aux > 0 && aux <= top && (!cores || (st.basisPhysical ? aux > cores : aux < cores))) {
+            const py = y(aux);
             const cyNum = cores ? y(cores) : -99;
             const ly = Math.abs(py - cyNum) < 14 ? Math.max(py, cyNum) + 14 : py;
-            const tip = `<title>물리 코어(NUM_CPU_CORES) ${phys} - 참고선. CPU 초과 등 판정은 CPU(논리) 기준</title>`;
+            const tip = `<title>${auxName()} ${aux} - 참고선. 초과 판정은 ${st.mainLabel} 기준</title>`;
             s += `<line class="nd-corel-phys" x1="${ml}" x2="${ml + pw}" y1="${py.toFixed(1)}" y2="${py.toFixed(1)}"/>`;
             s += mr > 36
-                ? `<text class="nd-corelbl-phys" x="${ml + pw + 6}" y="${(ly + 4).toFixed(1)}">물리코어 ${phys}${tip}</text>`
-                : `<text class="nd-corelbl-phys" x="${ml + pw - 4}" y="${(ly - 5).toFixed(1)}" text-anchor="end">물리코어 ${phys}${tip}</text>`;
+                ? `<text class="nd-corelbl-phys" x="${ml + pw + 6}" y="${(ly + 4).toFixed(1)}">${auxShort()} ${aux}${tip}</text>`
+                : `<text class="nd-corelbl-phys" x="${ml + pw - 4}" y="${(ly - 5).toFixed(1)}" text-anchor="end">${auxShort()} ${aux}${tip}</text>`;
         }
         if (cores) {
             const cy = y(cores).toFixed(1);
             s += `<line class="nd-corel" x1="${ml}" x2="${ml + pw}" y1="${cy}" y2="${cy}"/>`;
             s += mr > 36
-                ? `<text class="nd-corelbl" x="${ml + pw + 6}" y="${+cy + 4}">CPU ${cores}</text>` // 오른쪽 여백(72px)에 한 줄 - 두 줄로 나누면 끊겨 보였다(2026-09-28)
-                : `<text class="nd-corelbl" x="${ml + pw - 4}" y="${+cy - 5}" text-anchor="end">CPU ${cores}</text>`;
+                ? `<text class="nd-corelbl" x="${ml + pw + 6}" y="${+cy + 4}">${mainShort()} ${cores}</text>` // 오른쪽 여백(72px)에 한 줄 - 두 줄로 나누면 끊겨 보였다(2026-09-28)
+                : `<text class="nd-corelbl" x="${ml + pw - 4}" y="${+cy - 5}" text-anchor="end">${mainShort()} ${cores}</text>`;
         }
         if (st.sel) {
             const xa = x(st.sel[0]), xb = x(st.sel[1]);
@@ -438,7 +508,7 @@
             }
             h += '</div>';
             const tv = visTotal(r.v);
-            h += `<div class="nd-tip-tot"><span>합계</span><b>${f1(tv)}${st.cores ? ' · CPU의 ' + Math.round(tv / st.cores * 100) + '%' : ''}</b></div>`;
+            h += `<div class="nd-tip-tot"><span>합계</span><b>${f1(tv)}${st.cores ? ' · ' + st.mainLabel + '의 ' + Math.round(tv / st.cores * 100) + '%' : ''}</b></div>`;
         }
         tip.innerHTML = h;
         tip.hidden = false;
@@ -498,7 +568,7 @@
             const pct = Math.round(sums[top] / sums.reduce((p, q) => p + q, 0) * 100);
             msg = `<span class="nd-sw" style="background:${color(top)}"></span><b>${esc(CLS[top].n)} ${pct}%</b>가 가장 큽니다. ${esc(ACTION[CLS[top].k])}`;
             if (st.cores && avg > st.cores) {
-                msg += ` <b class="nd-crit-t">구간 평균이 CPU ${st.cores}개를 넘어 세션이 대기열에 쌓이고 있습니다.</b>`;
+                msg += ` <b class="nd-crit-t">구간 평균이 ${st.mainLabel} ${st.cores}개를 넘어 세션이 대기열에 쌓이고 있습니다.</b>`;
             }
         }
         box.innerHTML = `<div class="nd-banner-title">${esc(title)}</div><div class="nd-banner-msg">${msg}</div>`;
@@ -531,8 +601,7 @@
             st.hover = i;
             if (drag && Math.abs(i - drag.a) >= 1) {
                 drag.moved = true;
-                st.sel = [Math.min(drag.a, i), Math.max(drag.a, i)];
-                st.userSel = true;
+                setUserSel(Math.min(drag.a, i), Math.max(drag.a, i));
             }
             renderChart();
             showTip(i, e.clientX, e.clientY);
@@ -541,7 +610,7 @@
             if (!drag) return;
             const i = idxAt(e);
             if (!drag.moved || Math.abs(i - drag.a) < 2) selectAround(drag.a);
-            else { st.sel = [Math.min(drag.a, i), Math.max(drag.a, i)]; st.userSel = true; emitSelection(); render(); }
+            else { setUserSel(Math.min(drag.a, i), Math.max(drag.a, i)); emitSelection(); render(); }
             drag = null;
         });
         plot.addEventListener('pointerleave', () => {

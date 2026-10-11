@@ -243,6 +243,9 @@
 # Current Session 메뉴 "리프레쉬 주기(초)" 입력칸의 기본값(세션 목록 갱신 주기, 1~60). 화면에서 바꿀 수 있고,
 # 위쪽 두 그래프는 이 값과 무관하게 따로 갱신된다. 값이 없거나 잘못되면 3초.
 #dbagent.ui.session-refresh-seconds=3
+# AAS 차트(신규 대시보드)의 CPU 기준선·판정(CPU 초과 시간·부하율·진단 문구)을 논리 CPU(NUM_CPUS, 기본) 대신 물리 코어(NUM_CPU_CORES)로 볼지(2026-10-11).
+# 켜면 물리 코어가 기준선, 논리 CPU가 보조선이 된다. 물리 코어 값을 못 읽은 DB는 켜도 논리 CPU 기준. CPU 사용률(%)의 분모와 다른 화면은 바뀌지 않는다. 화면은 저장 후 최대 약 1분 안에 반영된다.
+#dbagent.ui.aas-cpu-physical=false
 # Fleet Overview 갱신 주기(ms). 탭이 실제로 보일 때만 동작한다(Page Visibility API).
 #dbagent.fleet-overview.polling-interval-ms=3000
 

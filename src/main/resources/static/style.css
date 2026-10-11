@@ -1765,7 +1765,7 @@ body.app-shell { overflow-y: hidden; }
 .nd-area { stroke: none; opacity: 0.92; }
 .nd-corel { stroke: var(--nd-ink-2); stroke-width: 1.2; stroke-dasharray: 5 4; }
 .nd-corelbl { fill: var(--nd-ink-2); font-size: 12px; font-weight: 600; }
-/* 물리 코어 보조선(2026-09-30) - 판정용 CPU 선보다 연하고 촘촘한 점선, 라벨도 한 단계 약하게 */
+/* 보조선(2026-09-30, 기본은 물리 코어 - 설정 aas-cpu-physical를 켜면 논리 CPU) - 판정용 기준선보다 연하고 촘촘한 점선, 라벨도 한 단계 약하게 */
 .nd-corel-phys { stroke: var(--nd-muted); stroke-width: 1; stroke-dasharray: 2 4; }
 .nd-corelbl-phys { fill: var(--nd-muted); font-size: 11px; cursor: default; }
 .nd-selr { fill: rgba(57, 135, 229, 0.16); stroke: var(--primary); stroke-width: 1; stroke-dasharray: 4 3; }

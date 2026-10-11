@@ -73,6 +73,8 @@ public class ConfigController {
         result.put("polling_interval_ms", settings.getInt(SettingKey.UI_POLLING_INTERVAL_MS));
         result.put("fleet_overview_polling_interval_ms", settings.getInt(SettingKey.FLEET_OVERVIEW_POLLING_INTERVAL_MS));
         result.put("session_refresh_seconds", settings.getInt(SettingKey.UI_SESSION_REFRESH_SECONDS));
+        // AAS 차트 CPU 기준선을 물리 코어로 볼지(dbagent.ui.aas-cpu-physical, 기본 꺼짐 = 논리 CPU) - 화면이 AAS 차트를 갱신할 때(약 1분)마다 읽는다
+        result.put("aas_cpu_physical", settings.getBool(SettingKey.AAS_CPU_PHYSICAL));
         result.put("sql_runner_max_rows", settings.getInt(SettingKey.SQL_RUNNER_MAX_ROWS));
         result.put("sql_runner_max_rows_limit", settings.getInt(SettingKey.SQL_RUNNER_MAX_ROWS_LIMIT));
         // SQL 실행 메뉴 읽기 전용 모드 여부(dbagent.sql-runner.read-only) - 화면 안내 문구 표시용.

@@ -35,6 +35,13 @@ public enum SettingKey {
     FLEET_OVERVIEW_POLLING_INTERVAL_MS(d("dbagent.fleet-overview.polling-interval-ms", INT, "3000", UI, "전체 현황 갱신 주기",
             "전체 DB 현황 화면의 갱신 간격입니다.").unit("ms").range(1000, 60000)
             .detail("탭이 보일 때만 동작합니다. 백그라운드 탭은 조회하지 않습니다. 화면을 로드할 때 이 값을 한 번 읽으므로, 저장 후 열려 있는 화면은 새로고침해야 새 값을 씁니다.")),
+    // AAS 차트의 CPU 기준선(판정 기준)을 논리 CPU(NUM_CPUS)와 물리 코어(NUM_CPU_CORES) 중 무엇으로 볼지(2026-10-11 오케스트레이터 요청).
+    // 기본은 논리 CPU - 2026-09-28 운영 실측(AIX SMT 72코어 서버에서 코어 기준이면 AAS가 늘 기준선을 넘음)으로 정한 값이다. CPU 사용률(%)의 분모는 바꾸지 않는다.
+    AAS_CPU_PHYSICAL(d("dbagent.ui.aas-cpu-physical", BOOL, "false", UI, "AAS 차트 CPU 기준선을 물리 코어로",
+            "켜면 신규 대시보드 AAS(평균 활성 세션) 차트의 CPU 기준선과 그 판정(CPU 초과 시간·부하율·진단 문구)을 논리 CPU 수 대신 물리 코어 수로 합니다.")
+            .detail("끄면(기본) 논리 CPU(NUM_CPUS)가 기준선이고 물리 코어(NUM_CPU_CORES)는 점선 보조선으로만 보입니다. 켜면 기준이 바뀌어 물리 코어가 기준선, 논리 CPU가 보조선이 됩니다. "
+                    + "SMT가 있는 서버(AIX 등)에서는 물리 코어 기준이면 AAS가 기준선을 넘는 시간이 훨씬 많아집니다. CPU 사용률(%)의 분모와 다른 화면은 바뀌지 않습니다. "
+                    + "물리 코어 수를 읽지 못한 DB는 켜도 논리 CPU 기준으로 보입니다. 화면은 AAS 차트를 갱신할 때(약 1분마다) 이 값을 다시 읽으므로 저장 후 최대 약 1분 안에 새로고침 없이 반영됩니다.")),
     UI_SESSION_REFRESH_SECONDS(d("dbagent.ui.session-refresh-seconds", INT, "3", UI, "세션 목록 갱신 주기",
             "Current Session 세션 목록(4개 탭)의 기본 갱신 주기입니다.").unit("초").range(1, 60)
             .detail("화면의 '리프레쉬 주기' 입력칸 기본값입니다. 위쪽 두 그래프는 이 값과 무관하게 따로 갱신됩니다. 화면을 로드할 때 한 번 읽으므로 저장 후 열려 있는 화면은 새로고침해야 반영됩니다.")),
@@ -331,7 +338,7 @@ public enum SettingKey {
             TM_HOLDER_KILL_BLOCKING_ONLY, TM_HOLDER_KILL_INACTIVE_ONLY, LOCK_TX_ROW_LOCK_ONLY,
             LONG_RUNNING_QUERY_SECONDS, LOCK_CACHE_MILLIS,
             // P3-2 화면 주기·인증
-            UI_POLLING_INTERVAL_MS, FLEET_OVERVIEW_POLLING_INTERVAL_MS, UI_SESSION_REFRESH_SECONDS, AUTH_SESSION_TTL_DAYS,
+            UI_POLLING_INTERVAL_MS, FLEET_OVERVIEW_POLLING_INTERVAL_MS, UI_SESSION_REFRESH_SECONDS, AAS_CPU_PHYSICAL, AUTH_SESSION_TTL_DAYS,
             // P3-2 SQL 실행 (읽기 전용 포함)
             SQL_RUNNER_MAX_ROWS, SQL_RUNNER_MAX_ROWS_LIMIT, SQL_RUNNER_TIMEOUT_SECONDS, SQL_RUNNER_READ_ONLY,
             // P3-2 AI · 튜닝 (주소·응답 대기 시간)
