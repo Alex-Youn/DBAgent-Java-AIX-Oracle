@@ -5250,6 +5250,23 @@ setInterval(() => {
 
     const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+    // 스트리밍 중 el을 담고 있는 실제 스크롤 컨테이너를 찾아 바닥까지 내린다. 이 탭(#tab-tunner-perf)도
+    // AI Current SQL 분석과 같은 좌측 트리 메뉴 레이아웃이라 고정 높이 + overflow-y:auto라, 청크가
+    // 쌓여 내용이 늘어나도 자동으로 스크롤이 안 따라가면 사용자가 매번 직접 끌어내려야 한다.
+    function scrollToBottomOf(el) {
+        let node = el.parentElement;
+        while (node && node !== document.body) {
+            const overflowY = getComputedStyle(node).overflowY;
+            if (overflowY === 'auto' || overflowY === 'scroll') {
+                node.scrollTop = node.scrollHeight;
+                return;
+            }
+            node = node.parentElement;
+        }
+        const fallback = document.scrollingElement || document.documentElement;
+        fallback.scrollTop = fallback.scrollHeight;
+    }
+
     // System Prompt 가 요구하는 답변 포맷(### 헤더, ```sql 코드블록, **굵게**, - 글머리)만 가볍게
     // HTML로 바꾼다 - 정식 마크다운 파서가 아니라 이 화면에서 실제로 나오는 패턴에 맞춘 간이 변환.
     function formatAdvisorAnswer(text) {
@@ -5344,33 +5361,83 @@ setInterval(() => {
                 </div>`;
     }
 
-    const run = () => {
+    // 스트리밍 중에는 완성된 마크다운 서식을 매 토큰마다 다시 파싱하지 않는다 - 코드펜스(```)처럼
+    // 아직 안 닫힌 마크업이 매 청크마다 다르게 깨져 보이는 걸 피하려고, 진행 중엔 이스케이프만 한
+    // 원문을 그대로 누적해서 보여주고(줄바꿈만 <br/>로), 스트림이 끝난("done") 뒤에야
+    // formatAdvisorAnswer로 한 번에 다시 그린다. 이 두 단계 렌더링 덕분에 "한 글자씩 생성되는" 효과와
+    // 최종 결과의 서식(헤더/코드블록/굵게) 둘 다 챙길 수 있다.
+    function run() {
         const text = input.value.trim();
         if (!text || runBtn.disabled) return;
 
         runBtn.disabled = true;
-        resultEl.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary);"><i data-lucide="loader-2" class="spinning"></i> 사내 튜닝 사례를 검색하고 분석 중입니다...</div>';
+        resultEl.innerHTML = '<div style="display: flex; align-items: center; gap: 8px; color: var(--text-secondary); margin-bottom: 12px;"><i data-lucide="loader-2" class="spinning"></i> 사내 튜닝 사례를 검색하고 분석 중입니다...</div><div id="sqltuneadvisor-stream" style="white-space: pre-wrap; line-height: 1.6;"></div>';
         if (typeof lucide !== 'undefined') lucide.createIcons({root: resultEl});
+        const streamEl = document.getElementById('sqltuneadvisor-stream');
 
-        fetch('/api/sqltuneadvisor/query', {
+        let answerText = '';
+        let references = null;
+        let sawError = false;
+
+        const finish = () => {
+            runBtn.disabled = false;
+            if (sawError) return;
+            resultEl.innerHTML = `<div style="line-height: 1.6;">${formatAdvisorAnswer(answerText)}${formatReferences(references || [])}</div>`;
+            scrollToBottomOf(resultEl);
+        };
+
+        const handleLine = (line) => {
+            if (!line.trim()) return;
+            let obj;
+            try { obj = JSON.parse(line); } catch (e) { return; }
+            if (obj.error) {
+                sawError = true;
+                runBtn.disabled = false;
+                resultEl.innerHTML = `<div style="color: #d03b3b;">${escapeHtml(obj.error)}</div>`;
+                return;
+            }
+            if (typeof obj.chunk === 'string' && obj.chunk) {
+                answerText += obj.chunk;
+                streamEl.textContent = answerText;
+                scrollToBottomOf(streamEl);
+            }
+            if (obj.references !== undefined) {
+                references = obj.references;
+            }
+        };
+
+        fetch('/api/sqltuneadvisor/query/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query: text })
         })
-        .then(res => res.json())
-        .then(data => {
-            runBtn.disabled = false;
-            if (data.success === false) {
-                resultEl.innerHTML = `<div style="color: #d03b3b;">${escapeHtml(data.message || '분석 중 오류가 발생했습니다.')}</div>`;
-                return;
-            }
-            resultEl.innerHTML = `<div style="line-height: 1.6;">${formatAdvisorAnswer(data.answer)}${formatReferences(data.references)}</div>`;
+        .then(res => {
+            if (!res.ok || !res.body) throw new Error('스트리밍 응답을 받지 못했습니다.');
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+
+            const pump = () => reader.read().then(({ done, value }) => {
+                if (done) {
+                    if (buffer.trim()) handleLine(buffer);
+                    finish();
+                    return;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                let idx;
+                while ((idx = buffer.indexOf('\n')) >= 0) {
+                    handleLine(buffer.slice(0, idx));
+                    buffer = buffer.slice(idx + 1);
+                }
+                return pump();
+            });
+            return pump();
         })
         .catch(() => {
             runBtn.disabled = false;
             resultEl.innerHTML = '<div style="color: #d03b3b;">서버 통신 오류가 발생했습니다. (SQL Tune Advisor 서버가 켜져 있는지 확인하세요)</div>';
         });
-    };
+    }
 
     runBtn.addEventListener('click', run);
     input.addEventListener('keydown', (e) => {

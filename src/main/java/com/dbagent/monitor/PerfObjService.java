@@ -41,9 +41,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 성능 분석 "오브젝트·I/O" (Phase 5, 2026-10-11, 설계문서 `성능분석 메뉴 설계.md` 5장). 새 원본 조회라 기본 꺼짐(dbagent.perf.obj-collect-enabled).
  *
  * <p>수집(주기 기본 10분, 전용 단일 스레드 - 공용 @Scheduled 스레드 2개를 DB 수 × 수 초 동안 잡지 않는다):
- * v$segstat(통계 5종 누적값 → 직전 값과의 델타, 통계별 상위 50개만 저장), v$filestat·v$tempstat(파일별 델타), v$log_history(최근 24시간 시간별
+ * v$segstat(통계 5종 누적값 → 직전 값과의 델타, 통계별 상위 50개만 저장), 데이터파일 I/O(v$filemetric의 최근 10분 구간 값, 못 쓰는 DB만
+ * v$filestat 누적값 → 델타)·v$tempstat(파일별 델타), v$log_history(최근 24시간 시간별
  * 스위치 수, 자기 스레드만), v$tempseg_usage(SQL별 Temp 사용). 모든 조회에 쿼리 제한 시간이 있고, 실패하면 그 항목은 건너뛴다(0으로 저장하지 않는다).
  * 앱을 재시작한 뒤 첫 주기는 델타 기준값만 기억하고 세그먼트·파일은 저장하지 않는다(음수 델타 = 인스턴스 재시작·오브젝트 재생성은 그 행만 버린다).
+ * 단, v$filemetric으로 읽는 데이터파일 I/O는 이미 구간 값이라 첫 주기부터 저장한다.
  * 델타 기준값은 수만~수십만 건이 될 수 있어 박싱 맵 대신 기본형 배열 해시(LongLongMap)에 둔다(AIX 힙).
  *
  * <p>저장(perf.db/perf.mv.db): perf_obj_seg(통계별 상위 50), perf_obj_name(오브젝트 이름·유형 캐시), perf_obj_file(+ perf_obj_file_name),
@@ -82,6 +84,12 @@ public class PerfObjService implements InitializingBean {
     private static final int REDO_WINDOW_HOURS = 24;
     /** 한 주기에 저장하는 파일 수 상한(읽기+쓰기가 많은 순) - 파일이 수천 개인 DB에서 저장량을 묶는다. */
     private static final int FILE_STORE_N = 100;
+    /** v$filemetric을 쓸 수 없는 DB(PDB 접속은 0행, 권한 없음, 갱신 안 됨)는 이 시간 동안 다시 묻지 않고 v$filestat으로 수집한다. */
+    private static final long FILE_METRIC_OFF_MS = 6L * 3600 * 1000;
+    /** v$filemetric의 구간 종료 시각이 DB 현재 시각보다 이만큼(분) 넘게 오래됐으면 갱신되지 않는 것으로 본다(정상은 10분 구간). */
+    private static final long FILE_METRIC_STALE_MIN = 30;
+    /** 데이터파일 이름을 한 번 읽은 뒤, 모르는 파일 번호가 나와도 이 시간 안에는 다시 읽지 않는다. */
+    private static final long FILE_NAME_RELOAD_MS = 3600L * 1000;
 
     /** 수집 전용 스레드. */
     private static final java.util.concurrent.ExecutorService JOB_EXECUTOR = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
@@ -107,6 +115,11 @@ public class PerfObjService implements InitializingBean {
     /** DB별 v$ 뷰에 con_id 컬럼이 있는지(12c+). 없으면(11g, ORA-00904) 그 조건을 뺀다. */
     private final ConcurrentHashMap<String, Boolean> segConId = new ConcurrentHashMap<String, Boolean>();
     private final ConcurrentHashMap<String, Boolean> fileConId = new ConcurrentHashMap<String, Boolean>();
+    /** DB별 v$filemetric을 다시 물어도 되는 시각(ms). 그 전까지는 v$filestat 누적값으로 수집한다. */
+    private final ConcurrentHashMap<String, Long> fileMetricOffUntil = new ConcurrentHashMap<String, Long>();
+    /** 데이터파일 이름 캐시: DB → (file# → {테이블스페이스, 파일명})와, 모르는 번호가 나왔을 때 다시 읽어도 되는 시각(ms). */
+    private final ConcurrentHashMap<String, Map<Long, String[]>> dataFileNames = new ConcurrentHashMap<String, Map<Long, String[]>>();
+    private final ConcurrentHashMap<String, Long> dataFileNamesRetryAt = new ConcurrentHashMap<String, Long>();
     private final ConcurrentHashMap<String, Long> blockSize = new ConcurrentHashMap<String, Long>();
     /** 이름 캐시: DB → (object_id → {owner.name[:partition], type}). 못 찾은 id는 일정 시간 다시 묻지 않는다. */
     private final ConcurrentHashMap<String, Map<Long, String[]>> names = new ConcurrentHashMap<String, Map<Long, String[]>>();
@@ -157,8 +170,9 @@ public class PerfObjService implements InitializingBean {
                 "PRIMARY KEY (db_id, minute_key, sql_id)" + tail);
     }
 
-    public boolean enabled() {
-        return settings.getBool(SettingKey.OBJ_COLLECT_ENABLED);
+    /** DB별 설정(없으면 전역값). 데이터파일이 수천 개인 DB처럼 부담이 큰 DB만 끄거나, 일부 DB만 켤 수 있다(2026-10-12). */
+    public boolean enabled(String dbId) {
+        return settings.getBool(SettingKey.OBJ_COLLECT_ENABLED, dbId);
     }
 
     // ------------------------------------------------------------------ 기본형 해시 (델타 기준값)
@@ -237,7 +251,11 @@ public class PerfObjService implements InitializingBean {
         long thread;
         List<long[]> segRows;
         Map<Long, String[]> segNames = Collections.emptyMap();
-        List<Object[]> fileRows;
+        /** 데이터파일 행과 그 행을 저장할 분. v$filemetric이면 구간 종료 시각(같은 구간을 두 번 읽어도 같은 자리에 덮어쓴다), v$filestat 델타면 수집 분. */
+        List<Object[]> dataFileRows;
+        long dataFileKey;
+        /** Temp 파일 델타 행(수집 분에 저장). */
+        List<Object[]> tempFileRows;
         Map<String, String[]> fileNames = new HashMap<String, String[]>();
         List<Object[]> redoRows;
         List<Object[]> tempRows;
@@ -250,11 +268,7 @@ public class PerfObjService implements InitializingBean {
     /** 주기는 시작할 때 한 번 읽는다(스케줄러 주기라 재시작이 필요한 설정). 켜기/끄기는 매 주기 확인한다. */
     @Scheduled(fixedDelayString = "#{T(java.lang.Math).max(1, ${dbagent.perf.obj-collect-interval-min:10}) * 60000}", initialDelay = 120000)
     void tick() {
-        if (!enabled()) {
-            // 꺼져 있는 동안 기준값을 들고 있지 않는다(메모리) - 다시 켜면 첫 주기는 기준값만 기억한다(꺼진 기간 전체가 한 번에 델타로 저장되지 않게)
-            prev.clear();
-            return;
-        }
+        // 켜기/끄기는 DB별 설정이라 여기서 전체를 건너뛰지 않고 collectAll에서 DB마다 확인한다(모두 꺼져 있으면 대상 DB 조회는 없다)
         if (!running.compareAndSet(false, true)) return; // 이전 주기가 아직 돌고 있으면 겹쳐 돌리지 않는다
         JOB_EXECUTOR.execute(new Runnable() {
             @Override
@@ -279,6 +293,11 @@ public class PerfObjService implements InitializingBean {
         Set<String> alive = new HashSet<String>();
         for (TargetDbConfig t : targets) {
             if (!"oracle".equalsIgnoreCase(t.dbType())) continue;
+            if (!enabled(t.id())) {
+                // 꺼져 있는 동안 기준값을 들고 있지 않는다(메모리) - 다시 켜면 첫 주기는 기준값만 기억한다(꺼진 기간 전체가 한 번에 델타로 저장되지 않게)
+                prev.remove(t.id());
+                continue;
+            }
             alive.add(t.id());
             try {
                 collectOne(t);
@@ -291,6 +310,9 @@ public class PerfObjService implements InitializingBean {
         prev.keySet().retainAll(alive);
         names.keySet().retainAll(alive);
         missingUntil.keySet().retainAll(alive);
+        dataFileNames.keySet().retainAll(alive);
+        dataFileNamesRetryAt.keySet().retainAll(alive);
+        fileMetricOffUntil.keySet().retainAll(alive);
     }
 
     private static void fail(ConcurrentHashMap<String, String[]> st, String dbId, String what, SQLException e) {
@@ -373,9 +395,20 @@ public class PerfObjService implements InitializingBean {
         // 2) 데이터파일·Temp 파일 I/O
         try {
             Map<String, long[]> cur = new HashMap<String, long[]>();
-            readFiles(conn, dbId, cur, f.fileNames);
+            // Temp 파일은 수가 적어 v$tempstat 누적값을 그대로 읽는다(이름 조인 포함)
+            readTempFiles(conn, dbId, cur, f.fileNames);
+            // 데이터파일은 v$filemetric(DB가 10분마다 계산해 둔 구간 값)을 먼저 쓰고, 못 쓰는 DB만 v$filestat 누적값을 읽는다
+            List<Object[]> metric = readFileMetric(conn, dbId, dbNow, f);
+            if (metric == null) readDataFileStats(conn, cur);
             now.files = cur;
-            if (before != null) f.fileRows = fileDeltas(cur, before.files);
+            if (before != null) f.tempFileRows = fileDeltas(cur, before.files, "T");
+            if (metric != null) {
+                f.dataFileRows = metric;
+            } else if (before != null) {
+                f.dataFileRows = fileDeltas(cur, before.files, "D");
+                f.dataFileKey = f.key;
+            }
+            if (f.dataFileRows != null && !f.dataFileRows.isEmpty()) addDataFileNames(conn, dbId, f.dataFileRows, f.fileNames);
         } catch (SQLException e) {
             if (f.ok) f.reason = "파일 I/O ORA-" + String.format("%05d", e.getErrorCode());
             f.ok = false;
@@ -492,49 +525,164 @@ public class PerfObjService implements InitializingBean {
         return out;
     }
 
-    /** 데이터파일·Temp 파일 누적값 읽기. cur: "D:번호"/"T:번호" → {reads, writes, readtim, writetim}, names: 같은 키 → {tablespace, 파일명}. */
-    private void readFiles(Connection conn, String dbId, Map<String, long[]> cur, Map<String, String[]> fileNames) throws SQLException {
+    /**
+     * Temp 파일 누적값 읽기. cur: "T:번호" → {reads, writes, readtim, writetim}, names: 같은 키 → {tablespace, 파일명}.
+     * fetch에서 가장 먼저 부른다(con_id 없는 DB에서 다시 읽을 때 cur·fileNames를 비우므로).
+     */
+    private void readTempFiles(Connection conn, String dbId, Map<String, long[]> cur, Map<String, String[]> fileNames) throws SQLException {
         Boolean cap = fileConId.get(dbId);
         try {
-            readFilesSql(conn, Boolean.FALSE.equals(cap), cur, fileNames);
+            readTempFilesSql(conn, Boolean.FALSE.equals(cap), cur, fileNames);
         } catch (SQLException e) {
             if (e.getErrorCode() == 904 && !Boolean.FALSE.equals(cap)) {
                 fileConId.put(dbId, Boolean.FALSE);
                 cur.clear();
                 fileNames.clear();
-                readFilesSql(conn, true, cur, fileNames);
+                readTempFilesSql(conn, true, cur, fileNames);
             } else {
                 throw e;
             }
         }
     }
 
-    private void readFilesSql(Connection conn, boolean noConId, Map<String, long[]> cur, Map<String, String[]> fileNames) throws SQLException {
+    private void readTempFilesSql(Connection conn, boolean noConId, Map<String, long[]> cur, Map<String, String[]> fileNames) throws SQLException {
         // 루트 접속(12c+ CDB)은 ts#가 컨테이너마다 겹치므로 con_id까지 맞춰 이름을 붙인다. 11g는 con_id가 없어 뺀다.
         String dj = noConId ? "" : " AND t.con_id = d.con_id AND d.con_id = f.con_id";
-        String[][] q = {
-                {"D", "SELECT f.file#, d.name, t.name, f.phyrds, f.phywrts, f.readtim, f.writetim FROM v$filestat f " +
-                        "JOIN v$datafile d ON d.file# = f.file# JOIN v$tablespace t ON t.ts# = d.ts#" + dj},
-                {"T", "SELECT f.file#, d.name, t.name, f.phyrds, f.phywrts, f.readtim, f.writetim FROM v$tempstat f " +
-                        "JOIN v$tempfile d ON d.file# = f.file# JOIN v$tablespace t ON t.ts# = d.ts#" + dj}};
-        for (String[] one : q) {
-            try (PreparedStatement ps = conn.prepareStatement(one[1])) {
-                ps.setQueryTimeout(QUERY_TIMEOUT_SEC);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        String k = one[0] + ":" + rs.getLong(1);
-                        cur.put(k, new long[]{rs.getLong(4), rs.getLong(5), rs.getLong(6), rs.getLong(7)});
-                        fileNames.put(k, new String[]{rs.getString(3), rs.getString(2)});
-                    }
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT f.file#, d.name, t.name, f.phyrds, f.phywrts, f.readtim, f.writetim FROM v$tempstat f " +
+                        "JOIN v$tempfile d ON d.file# = f.file# JOIN v$tablespace t ON t.ts# = d.ts#" + dj)) {
+            ps.setQueryTimeout(QUERY_TIMEOUT_SEC);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String k = "T:" + rs.getLong(1);
+                    cur.put(k, new long[]{rs.getLong(4), rs.getLong(5), rs.getLong(6), rs.getLong(7)});
+                    fileNames.put(k, new String[]{rs.getString(3), rs.getString(2)});
                 }
             }
         }
     }
 
-    /** 파일별 델타 행: {kind, file_no, reads, writes, readtim, writetim}. 읽기·쓰기가 모두 0이거나 음수가 있는 파일은 뺀다. */
-    private List<Object[]> fileDeltas(Map<String, long[]> cur, Map<String, long[]> old) {
+    /**
+     * 데이터파일 I/O를 v$filemetric에서 읽는다: DB가 10분마다 계산해 둔 "최근 구간" 값이라 누적값의 차이를 구할 필요가 없고 가볍다.
+     * (2026-10-12 폐쇄망 실측, 데이터파일 3,721개인 11gR2: v$filestat 3.66초·이름 조인까지 6.24초, v$filemetric 0.04초)
+     * 행 = {"D", file#, reads, writes, readtim, writetim}. 시간은 v$filestat과 같은 1/100초 합계로 맞춘다(평균(1/100초/회) × 횟수).
+     * 저장할 분(f.dataFileKey)은 구간 종료 시각이다 - 수집 주기와 구간이 어긋나 같은 구간을 두 번 읽어도 같은 자리에 덮어쓴다.
+     * 수집 주기를 10분보다 길게 잡으면 그 사이 구간은 건너뛴다(합계는 표본이 되고, 평균 읽기/쓰기 ms는 그대로 유효하다).
+     *
+     * @return 쓸 수 없는 DB면 null(호출자가 v$filestat으로 대신 읽는다): PDB 접속은 0행(로컬 21c 실측), 권한 없음·오류, 구간이 오래돼 갱신되지 않는 경우.
+     */
+    private List<Object[]> readFileMetric(Connection conn, String dbId, LocalDateTime dbNow, Fetched f) {
+        long nowMs = System.currentTimeMillis();
+        Long off = fileMetricOffUntil.get(dbId);
+        if (off != null && off > nowMs) return null;
+        List<Object[]> out = new ArrayList<Object[]>();
+        Timestamp end = null;
+        int rowCount = 0;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT file_id, physical_reads, physical_writes, average_read_time, average_write_time, end_time FROM v$filemetric")) {
+            ps.setQueryTimeout(QUERY_TIMEOUT_SEC);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rowCount++;
+                    Timestamp e = rs.getTimestamp(6);
+                    if (e != null && (end == null || e.after(end))) end = e;
+                    long r = rs.getLong(2);
+                    long w = rs.getLong(3);
+                    if (r < 0 || w < 0 || (r == 0 && w == 0)) continue;
+                    out.add(new Object[]{"D", rs.getLong(1), r, w, Math.round(rs.getDouble(4) * r), Math.round(rs.getDouble(5) * w)});
+                }
+            }
+        } catch (SQLException e) {
+            // 타임아웃 같은 일시 오류일 수 있어 짧게만 쉰다(0행·오래됨처럼 6시간을 쉬면 그동안 무거운 v$filestat이 매 주기 나간다 - 2026-10-12 코드 점검)
+            fileMetricOffUntil.put(dbId, nowMs + NAME_FAIL_MS);
+            log.debug("perf obj filemetric unavailable for db_id={} (using v$filestat): {}", dbId, e.toString());
+            return null;
+        }
+        if (rowCount == 0 || end == null
+                || java.time.Duration.between(end.toLocalDateTime(), dbNow).toMinutes() > FILE_METRIC_STALE_MIN) {
+            fileMetricOffUntil.put(dbId, nowMs + FILE_METRIC_OFF_MS);
+            log.debug("perf obj filemetric empty or stale for db_id={} (rows={}, end={}) - using v$filestat", dbId, rowCount, end);
+            return null;
+        }
+        f.dataFileKey = PerfStoreService.minuteKey(end.toLocalDateTime());
+        return topFiles(out);
+    }
+
+    /** v$filemetric을 못 쓰는 DB의 데이터파일 누적값. 이름은 조인하지 않는다(addDataFileNames가 저장할 파일만 따로 붙인다). cur: "D:번호" → 값. */
+    private void readDataFileStats(Connection conn, Map<String, long[]> cur) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT file#, phyrds, phywrts, readtim, writetim FROM v$filestat")) {
+            ps.setQueryTimeout(QUERY_TIMEOUT_SEC);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    cur.put("D:" + rs.getLong(1), new long[]{rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5)});
+                }
+            }
+        }
+    }
+
+    /**
+     * 저장할 데이터파일 행에 이름(테이블스페이스·파일명)을 붙인다. 이름은 거의 바뀌지 않으므로 DB마다 한 번 읽어 기억하고,
+     * 모르는 파일 번호(새로 추가된 파일)가 나왔을 때만 다시 읽는다 - 매 주기 v$datafile을 조인하지 않는다.
+     * 이름을 못 읽어도 I/O 값은 저장한다(화면에는 파일 번호로 보인다).
+     */
+    private void addDataFileNames(Connection conn, String dbId, List<Object[]> rows, Map<String, String[]> fileNames) {
+        Map<Long, String[]> cache = dataFileNames.get(dbId);
+        boolean unknown = cache == null;
+        if (!unknown) {
+            for (Object[] r : rows) {
+                if (!cache.containsKey((Long) r[1])) { unknown = true; break; }
+            }
+        }
+        long nowMs = System.currentTimeMillis();
+        Long retryAt = dataFileNamesRetryAt.get(dbId);
+        if (unknown && (retryAt == null || retryAt <= nowMs)) {
+            try {
+                cache = loadDataFileNames(conn, dbId);
+                dataFileNames.put(dbId, cache);
+                dataFileNamesRetryAt.put(dbId, nowMs + FILE_NAME_RELOAD_MS);
+            } catch (SQLException e) {
+                dataFileNamesRetryAt.put(dbId, nowMs + NAME_FAIL_MS);
+                log.debug("perf obj datafile names skipped for db_id={}: {}", dbId, e.toString());
+            }
+        }
+        if (cache == null) return;
+        for (Object[] r : rows) {
+            String[] n = cache.get((Long) r[1]);
+            if (n != null) fileNames.put("D:" + r[1], n);
+        }
+    }
+
+    private Map<Long, String[]> loadDataFileNames(Connection conn, String dbId) throws SQLException {
+        Boolean cap = fileConId.get(dbId);
+        try {
+            return loadDataFileNamesSql(conn, Boolean.FALSE.equals(cap));
+        } catch (SQLException e) {
+            if (e.getErrorCode() == 904 && !Boolean.FALSE.equals(cap)) {
+                fileConId.put(dbId, Boolean.FALSE);
+                return loadDataFileNamesSql(conn, true);
+            }
+            throw e;
+        }
+    }
+
+    private Map<Long, String[]> loadDataFileNamesSql(Connection conn, boolean noConId) throws SQLException {
+        // 루트 접속(12c+ CDB)은 ts#가 컨테이너마다 겹치므로 con_id까지 맞춘다. 11g는 con_id가 없어 뺀다.
+        Map<Long, String[]> out = new HashMap<Long, String[]>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT d.file#, d.name, t.name FROM v$datafile d JOIN v$tablespace t ON t.ts# = d.ts#" + (noConId ? "" : " AND t.con_id = d.con_id"))) {
+            ps.setQueryTimeout(QUERY_TIMEOUT_SEC);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) out.put(rs.getLong(1), new String[]{rs.getString(3), rs.getString(2)});
+            }
+        }
+        return out;
+    }
+
+    /** 파일별 델타 행(kind = "D" 또는 "T"만): {kind, file_no, reads, writes, readtim, writetim}. 읽기·쓰기가 모두 0이거나 음수가 있는 파일은 뺀다. */
+    private List<Object[]> fileDeltas(Map<String, long[]> cur, Map<String, long[]> old, String kind) {
         List<Object[]> out = new ArrayList<Object[]>();
         for (Map.Entry<String, long[]> e : cur.entrySet()) {
+            if (!e.getKey().startsWith(kind)) continue;
             long[] o = old.get(e.getKey());
             if (o == null) continue; // 새로 생긴 파일은 기준값만 기억한다
             long[] c = e.getValue();
@@ -545,6 +693,11 @@ public class PerfObjService implements InitializingBean {
             if (r < 0 || w < 0 || rt < 0 || wt < 0 || (r == 0 && w == 0)) continue;
             out.add(new Object[]{e.getKey().substring(0, 1), Long.parseLong(e.getKey().substring(2)), r, w, rt, wt});
         }
+        return topFiles(out);
+    }
+
+    /** 저장할 파일 수 상한. */
+    private static List<Object[]> topFiles(List<Object[]> out) {
         if (out.size() > FILE_STORE_N) {
             // 파일이 수천 개인 DB에서 저장량을 묶는다(읽기+쓰기가 많은 순)
             Collections.sort(out, new Comparator<Object[]>() {
@@ -677,7 +830,7 @@ public class PerfObjService implements InitializingBean {
 
     /** 한 트랜잭션으로 저장한다. 이름·파일명 캐시는 **커밋에 성공한 뒤에만** 갱신한다(롤백됐는데 "썼음"으로 남으면 다시 쓰지 않아 이름이 비는 문제). */
     private void store(final String dbId, final Fetched f) {
-        if (f.segRows == null && f.fileRows == null && f.redoRows == null && f.tempRows == null) return;
+        if (f.segRows == null && f.dataFileRows == null && f.tempFileRows == null && f.redoRows == null && f.tempRows == null) return;
         final long key = f.key;
         final List<String> newNames = new ArrayList<String>();
         final Map<String, String> newFiles = new HashMap<String, String>();
@@ -696,13 +849,18 @@ public class PerfObjService implements InitializingBean {
                     newNames.add(nk);
                 }
             }
-            if (f.fileRows != null) {
-                jdbc.update("DELETE FROM perf_obj_file WHERE db_id = ? AND minute_key = ?", dbId, key);
-                List<Object[]> b = new ArrayList<Object[]>();
-                for (Object[] r : f.fileRows) b.add(new Object[]{dbId, key, r[0], r[1], r[2], r[3], r[4], r[5]});
-                if (!b.isEmpty()) jdbc.batchUpdate("INSERT INTO perf_obj_file (db_id, minute_key, kind, file_no, reads_d, writes_d, readtim_d, writetim_d) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", b);
+            // 데이터파일(D)과 Temp 파일(T)은 저장하는 분이 다를 수 있어(v$filemetric은 구간 종료 시각) 종류별로 지우고 쓴다
+            List<Object[]> fb = new ArrayList<Object[]>();
+            if (f.dataFileRows != null) {
+                jdbc.update("DELETE FROM perf_obj_file WHERE db_id = ? AND minute_key = ? AND kind = 'D'", dbId, f.dataFileKey);
+                for (Object[] r : f.dataFileRows) fb.add(new Object[]{dbId, f.dataFileKey, r[0], r[1], r[2], r[3], r[4], r[5]});
             }
-            if (f.fileRows != null || !f.fileNames.isEmpty()) {
+            if (f.tempFileRows != null) {
+                jdbc.update("DELETE FROM perf_obj_file WHERE db_id = ? AND minute_key = ? AND kind = 'T'", dbId, key);
+                for (Object[] r : f.tempFileRows) fb.add(new Object[]{dbId, key, r[0], r[1], r[2], r[3], r[4], r[5]});
+            }
+            if (!fb.isEmpty()) jdbc.batchUpdate("INSERT INTO perf_obj_file (db_id, minute_key, kind, file_no, reads_d, writes_d, readtim_d, writetim_d) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", fb);
+            if (!f.fileNames.isEmpty()) {
                 // 파일 이름은 바뀐 것만 쓴다(파일이 수천 개여도 주기마다 문장 수천 개를 쓰지 않는다)
                 for (Map.Entry<String, String[]> e : f.fileNames.entrySet()) {
                     String kind = e.getKey().substring(0, 1);
@@ -766,7 +924,7 @@ public class PerfObjService implements InitializingBean {
         Map<String, Object> m = new LinkedHashMap<String, Object>();
         m.put("state", st == null ? "unknown" : st[0]);
         m.put("reason", st == null ? "" : st[1]);
-        m.put("enabled", enabled());
+        m.put("enabled", enabled(dbId));
         Long first = heartbeats.firstHeartbeat(dbId, "obj");
         m.put("collectedFrom", first == null ? null : LocalDateTime.ofEpochSecond(first * 60L, 0, ZoneOffset.UTC).toString());
         return m;
