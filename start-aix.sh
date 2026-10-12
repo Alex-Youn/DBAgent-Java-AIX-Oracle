@@ -29,6 +29,15 @@ if [ -f "$PROPS_FILE" ]; then
         PORT=$(echo "$LINE" | sed -e 's/^[[:space:]]*server\.port[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/')
     fi
 fi
+# conf/dbagent.conf(부트스트랩 설정, 2026-10-04)가 있으면 그 포트가 application.properties보다 우선한다 -
+# Spring도 conf 값을 우선 적용하므로 안내 포트가 실제 기동 포트와 맞도록 같은 순서로 읽는다.
+CONF_FILE="$SCRIPT_DIR/conf/dbagent.conf"
+if [ -f "$CONF_FILE" ]; then
+    CONF_LINE=$(grep '^[[:space:]]*server\.port[[:space:]]*=[[:space:]]*[0-9][0-9]*[[:space:]]*$' "$CONF_FILE" | tail -1)
+    if [ -n "$CONF_LINE" ]; then
+        PORT=$(echo "$CONF_LINE" | sed -e 's/^[[:space:]]*server\.port[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/')
+    fi
+fi
 
 # Bundled JDK (this folder) always wins, same reasoning as start.ps1's Get-JavaExe: this server
 # already has several other Javas in play (Oracle client's bundled JDK, NetBackup's JRE, etc.) and
@@ -56,13 +65,30 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 fi
 
+# pid 파일이 없거나 틀려도 같은 jar로 뜬 프로세스가 있으면 두 번째를 띄우지 않는다 (2026-10-12 폐쇄망 실측: 종료 중이던
+# 프로세스 위에 새로 기동해 내부 DB 파일 잠금 오류가 났다). 전체 경로로 찾아 다른 폴더의 같은 이름 jar는 건드리지 않는다.
+RUNNING_PID=$(ps -ef | grep -F "$JAR" | grep -v grep | awk '{print $2}' | head -1)
+if [ -n "$RUNNING_PID" ]; then
+    echo "DBAgent-Java is already running or still shutting down (PID $RUNNING_PID). Not starting a second one."
+    echo "Check with: ps -p $RUNNING_PID"
+    exit 1
+fi
+
 if [ ! -f "$JAR" ]; then
     echo "ERROR: $JAR not found. Build it on the dev machine (build.ps1) and copy it here first."
     exit 1
 fi
 
+# IBM JVM JIT 충돌 회피 (2026-10-12 폐쇄망 실측: Java 8 SR6 FP5에서 기동 직후 60초 샘플러 첫 사이클에
+# JIT 컴파일된 org/h2/value/ValueString.get -> Value.cache 안에서 Signal 11(gpf)로 JVM이 죽음, javacore 확인).
+#  - h2.objectCache=false : 충돌이 난 H2 값 캐시(여러 스레드가 잠금 없이 같이 쓰는 배열)를 끈다.
+#  - Xjit:exclude         : 그 두 메서드를 JIT 컴파일에서 뺀다(인터프리터로 실행).
+# exclude 값은 | 와 { } 가 들어 있어 반드시 따옴표로 감싼 채 넘긴다.
+H2_CACHE_OPT="-Dh2.objectCache=false"
+JIT_EXCLUDE_OPT="-Xjit:exclude={org/h2/value/Value.cache*|org/h2/value/ValueString.get*}"
+
 echo "Starting DBAgent-Java (port $PORT) using $JAVA_EXE ..."
-nohup "$JAVA_EXE" "-Djava.io.tmpdir=$TMP_DIR" -jar "$JAR" >"$OUT_LOG" 2>"$ERR_LOG" &
+nohup "$JAVA_EXE" "$H2_CACHE_OPT" "$JIT_EXCLUDE_OPT" "-Djava.io.tmpdir=$TMP_DIR" -jar "$JAR" >"$OUT_LOG" 2>"$ERR_LOG" &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"
 echo "Started with PID $NEW_PID. Waiting for port $PORT to open..."
@@ -81,5 +107,13 @@ done
 if [ $READY -eq 1 ]; then
     echo "DBAgent-Java is up: http://localhost:$PORT"
 else
-    echo "Timed out waiting for port $PORT. Check $ERR_LOG for startup errors."
+    # 30초 안에 포트가 안 열려도 실패가 아닐 수 있다 (2026-10-12 폐쇄망 실측: 새 jar 첫 기동 때 내부 DB
+    # 테이블 변경이 수 분 걸렸고, 그 사이 재기동해서 변경이 끊기고 파일 잠금 오류가 났다).
+    if kill -0 "$NEW_PID" 2>/dev/null; then
+        echo "Port $PORT is not open yet, but the process (PID $NEW_PID) is still running."
+        echo "It may be upgrading the internal DB (first start after a new jar can take several minutes)."
+        echo "Do NOT run stop/start again. Watch: tail -f $OUT_LOG  (wait for 'Tomcat started on port(s): $PORT')"
+    else
+        echo "Process $NEW_PID exited during startup. Check $OUT_LOG and $ERR_LOG (and javacore*.txt if any)."
+    fi
 fi

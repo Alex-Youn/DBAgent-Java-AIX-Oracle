@@ -8,10 +8,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -73,10 +76,7 @@ public class MonitorStoreService {
         jdbc.execute("DROP INDEX IF EXISTS idx_mon_sqlstat_delta_sql");
         // 성능 분석 Phase 3(2026-10-09): parse_calls 델타와 FORCE_MATCHING_SIGNATURE(부호 없는 64비트라 long에 안 들어가 문자열로 저장).
         // 이미 만들어진 테이블에는 컬럼이 없다 - SQLite·H2 모두 ADD COLUMN을 지원한다.
-        for (String col : new String[]{"parse_calls_d BIGINT", "force_matching_signature VARCHAR(24)"}) {
-            // H2는 IF NOT EXISTS를 지원한다 - 컬럼 유무를 조회로 확인하면 예외 스택이 metrics.trace.db에 남는다(QA D12)
-            jdbc.execute("ALTER TABLE mon_sqlstat_delta ADD COLUMN IF NOT EXISTS " + col);
-        }
+        addMissingSqlstatColumns();
 
         jdbc.execute("CREATE TABLE IF NOT EXISTS mon_lock_sample (" +
                 "db_id VARCHAR(64) NOT NULL, collect_ts BIGINT NOT NULL, tx_wait_max INTEGER, tm_wait_max INTEGER, " +
@@ -111,6 +111,72 @@ public class MonitorStoreService {
                 "db_id VARCHAR(64) NOT NULL, snap_date BIGINT NOT NULL, owner VARCHAR(128) NOT NULL, " +
                 "segment_name VARCHAR(128) NOT NULL, size_bytes BIGINT NOT NULL, " +
                 "PRIMARY KEY (db_id, snap_date, owner, segment_name))");
+    }
+
+    /**
+     * mon_sqlstat_delta에 없는 컬럼만 골라 ALTER 한 번으로 추가한다. 다 있으면 ALTER를 실행하지 않는다.
+     *
+     * <p>H2 1.4.200은 컬럼을 추가할 때 테이블 전체를 새 테이블로 복사한다 (2026-10-12 폐쇄망 실측: 855만 행·2.9GB 파일에서
+     * 컬럼 2개를 하나씩 추가해 첫 기동이 5분 넘게 걸렸다. 그동안 로그가 조용해서 멈춘 줄 알고 재기동했고, 두 번째 프로세스는
+     * 파일 잠금으로 실패, 첫 프로세스는 두 번째 컬럼 복사 중에 끊겨 복사본 테이블이 찌꺼기로 남았다).</p>
+     * <ul>
+     *   <li>컬럼을 하나씩 추가하면 복사가 컬럼 수만큼 돈다 - 한 문장으로 묶어 복사를 1회로 줄인다.</li>
+     *   <li>컬럼 유무는 INFORMATION_SCHEMA로 확인한다 - SELECT로 확인하면 예외 스택이 metrics.trace.db에 남는다(QA D12).</li>
+     *   <li>시작·끝을 로그에 남긴다. AIX 터미널에서 한글 로그가 깨져 보이므로 이 두 줄은 영어로 쓴다.</li>
+     * </ul>
+     * 이 작업을 기동 뒤 백그라운드로 미루지 않는 이유: 수집·조회 SQL이 새 컬럼을 바로 쓰므로 컬럼이 생기기 전에는 어차피 동작하지 않는다.
+     */
+    private void addMissingSqlstatColumns() {
+        String[][] wanted = {
+                {"PARSE_CALLS_D", "parse_calls_d BIGINT"},
+                {"FORCE_MATCHING_SIGNATURE", "force_matching_signature VARCHAR(24)"}};
+        List<String> existing = jdbc.queryForList("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS " +
+                "WHERE TABLE_SCHEMA = 'PUBLIC' AND TABLE_NAME = 'MON_SQLSTAT_DELTA'", String.class);
+        // 대소문자를 가리지 않고 비교한다 - 접속 URL 옵션에 따라 H2가 이름을 소문자로 돌려주면 "없음"으로 보고 중복 추가를 시도하게 된다
+        List<String> missing = new ArrayList<>();
+        for (String[] w : wanted) {
+            boolean found = false;
+            for (String name : existing) {
+                if (w[0].equalsIgnoreCase(name)) found = true;
+            }
+            if (!found) missing.add(w[1]);
+        }
+        if (missing.isEmpty()) return;
+        // 방금 만든 빈 테이블(새 설치)은 복사할 행이 없어 바로 끝난다 - 기다리라는 경고를 내지 않는다
+        if (jdbc.queryForList("SELECT 1 FROM mon_sqlstat_delta LIMIT 1").isEmpty()) {
+            jdbc.execute("ALTER TABLE mon_sqlstat_delta ADD (" + String.join(", ", missing) + ")");
+            return;
+        }
+        long started = System.currentTimeMillis();
+        log.warn("mon_sqlstat_delta: adding column(s) {} - H2 rebuilds the whole table, this can take SEVERAL MINUTES on a large " +
+                "metrics file. Do NOT stop or restart the app; wait for the 'column(s) added' line.", missing);
+        jdbc.execute("ALTER TABLE mon_sqlstat_delta ADD (" + String.join(", ", missing) + ")");
+        log.warn("mon_sqlstat_delta: column(s) added in {} s", (System.currentTimeMillis() - started) / 1000);
+    }
+
+    /**
+     * 컬럼 추가가 중간에 끊기면 H2가 만들던 복사본 테이블(MON_SQLSTAT_DELTA_COPY_세션_번호)이 그대로 남아 파일 공간만 차지한다
+     * (2026-10-12 폐쇄망 실측: 855만 행 복사본 1개). 기동이 끝난 뒤 전용 스레드에서 지운다 - 기동을 늦추지 않고, 이 시점에는
+     * 위 컬럼 추가가 끝났으므로 지금 쓰이는 복사본일 수 없다. 이름이 정확히 그 형식인 것만 지운다.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    void dropLeftoverCopyTables() {
+        Thread t = new Thread(() -> {
+            try {
+                List<String> names = jdbc.queryForList("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES " +
+                        "WHERE TABLE_SCHEMA = 'PUBLIC' AND TABLE_NAME LIKE 'MON%COPY%'", String.class);
+                for (String name : names) {
+                    if (!name.matches("MON_SQLSTAT_DELTA_COPY_[0-9]+_[0-9]+")) continue;
+                    long started = System.currentTimeMillis();
+                    jdbc.execute("DROP TABLE IF EXISTS " + name);
+                    log.warn("dropped leftover table {} from an interrupted column change in {} ms", name, System.currentTimeMillis() - started);
+                }
+            } catch (Exception e) {
+                log.warn("leftover copy table cleanup failed (will retry on next start): {}", e.getMessage());
+            }
+        }, "metrics-copy-cleanup");
+        t.setDaemon(true);
+        t.start();
     }
 
     // ------------------------------------------------------------------ 저장소별 문법 (H2 1.4.200)
