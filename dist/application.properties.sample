@@ -82,6 +82,13 @@
 #dbagent.metrics.datasource.url=jdbc:h2:file:./db_config/metrics
 #dbagent.metrics.datasource.hikari.maximum-pool-size=10
 #dbagent.metrics.datasource.hikari.connection-init-sql=SET LOCK_TIMEOUT 5000
+#dbagent.metrics.datasource.driver-class-name=org.h2.Driver
+#dbagent.metrics.datasource.username=sa
+#dbagent.metrics.datasource.password=
+# 성능 분석 저장소(perf)의 위치와 풀 크기. url을 지정하지 않으면 metrics와 같은 폴더에 파일 이름만 perf로 바꿔 만든다.
+# 드라이버·계정·접속 초기화 SQL은 metrics 설정을 그대로 따른다.
+#dbagent.perf.datasource.url=
+#dbagent.perf.datasource.hikari.maximum-pool-size=4
 
 # ── DB 목록 저장소(db_instances, 구 databases.json) ──────────────────────
 # 등록된 DB 목록(관리 화면 db-mgmt.html)을 담는 전용 H2(dbconfig.mv.db), 마찬가지로 db_config/ 하위.
@@ -97,6 +104,9 @@
 # 던지는 대신 이 시간만큼 기다렸다가 재시도한다. 풀을 키운 만큼 커밋 순간과 겹칠 확률도 같이
 # 올라가므로 안전마진으로 둔다.
 #dbagent.dbconfig.datasource.hikari.connection-init-sql=SET LOCK_TIMEOUT 5000
+#dbagent.dbconfig.datasource.driver-class-name=org.h2.Driver
+#dbagent.dbconfig.datasource.username=sa
+#dbagent.dbconfig.datasource.password=
 
 # ── Oracle 대상 설정 ─────────────────────────────────────────────────────
 # 새 Oracle 커넥션을 수립하는 최대 시간(ms). 망 지연이 크면 올린다(작으면 정상 DB를 down 으로 오판).
@@ -131,10 +141,19 @@
 #dbagent.monitor.ash-awr-fallback=true
 # AWR이 섞인 구간 조회의 타임아웃(초) - ASH만 쓰는 조회는 ash-activity-query-timeout-seconds
 #dbagent.monitor.ash-awr-query-timeout-seconds=60
+# ASH만 쓰는 구간 조회(ASH 활동 차트 등)의 타임아웃(초).
+#dbagent.monitor.ash-activity-query-timeout-seconds=10
 
 # 대시보드 개편 수집 테이블(mon_*) 보관 기간(일) - 1분/10분/일 테이블, KILL 감사 로그 (2026-09-25)
 #dbagent.monitor.store-retention-days=30
 #dbagent.monitor.kill-audit-retention-days=365
+# 추이 차트용 지표(instance_metric_history) 보관 기간(일).
+#dbagent.monitor.metric-retention-days=15
+# 성능 분석 수집 이력(ASH 분 집계, SQL 텍스트 등 perf 저장소) 보관 기간(일).
+#dbagent.monitor.perf-retention-days=15
+# 추이 지표·SQL 통계(v$sqlstats 델타) 샘플러의 수집 주기(초). 샘플러, "최근 N초" 계산, SQL 통계 델타 수집이 서로 맞물려 있어
+# 환경설정 화면에는 나오지 않는다. 스케줄러 주기라 바꾸면 재시작해야 적용된다. 짧게 하면 대상 DB 조회가 그만큼 늘어난다.
+#dbagent.monitor.metric-sample-interval-seconds=60
 
 # 새 대시보드 (2026-09-26) - 모두 선택, 없으면 아래 기본값
 # ③ Lock: 장애 판정 Holder 수, KILL 대상 좁히기(기본은 USER Holder 전체), TX를 row lock만 셀지
@@ -143,6 +162,15 @@
 #dbagent.monitor.tm-holder-kill-inactive-only=false
 #dbagent.monitor.lock-tx-row-lock-only=false
 #dbagent.monitor.lock-cache-millis=2000
+# ③ Lock 표시 색 기준(환경설정 화면에서 DB별로도 지정 가능). 주의 값은 위험 값보다 작아야 한다.
+# Holder 수가 이 개수 이상이면 주의 색(장애 판정 개수 tm-holder-incident-count보다 작아야 한다, 0=주의 단계 없음).
+#dbagent.monitor.tm-holder-warn-count=3
+# 행 Lock(TX) 대기 세션 수: 주의 / 위험
+#dbagent.monitor.lock-tx-wait-warn=5
+#dbagent.monitor.lock-tx-wait-crit=10
+# 테이블 Lock(TM) 대기 세션 수: 주의 / 위험
+#dbagent.monitor.lock-tm-wait-warn=3
+#dbagent.monitor.lock-tm-wait-crit=6
 # ③ Lock 실시간 차트 A안(2026-09-28): 마지막으로 본 뒤 N분 동안은 화면이 없어도 3초마다 계속 수집(0=끔, B안만).
 # 켜면 그 시간 동안 원본 DB에 3초마다 Lock 조회가 나간다 - 운영 DB에서 조회 1회 부하를 실측한 뒤 정할 것.
 #dbagent.monitor.lock-keepalive-minutes=0
@@ -188,6 +216,11 @@
 #dbagent.monitor.sqlstat-new-cursor-max-execs=1000
 # 처음 보인 커서의 누적 Elapsed(초) 상한 - 오래 쉬다 돌아온 배치의 누적값이 한 분에 다시 더해지는 것을 막는다.
 #dbagent.monitor.sqlstat-new-cursor-max-elapsed-sec=120
+# 수집 시 SQL 텍스트 미리 저장(2026-10-13, 기본 0=꺼짐): 1분 수집 때 텍스트가 아직 없는 SQL을 Elapsed 큰 순으로 사이클당 이 개수까지
+# 대상 DB에서 SQL_ID 단건 조회로 읽어 저장한다. 꺼 두면 화면을 열 때만 읽어, 그 전에 공유 풀에서 밀려난 SQL은 SQL_ID만 보인다.
+# 이미 저장한 SQL은 다시 묻지 않고 한 사이클에 최대 1초까지만 쓴다. 범위 0~50, 권장 시작값 20.
+# SYS가 파싱한 내부 SQL은 일반 SQL을 저장하고 남는 자리에만 저장한다(계정은 v$sql에서 읽음). 대상 DB 조회는 사이클당 이 값의 5배까지.
+#dbagent.monitor.sqlstat-text-capture-max-per-cycle=0
 # 1분 델타(mon_sqlstat_delta) 보관 일수 - store-retention-days와 이 값 중 작은 쪽까지만 보관(기본 7). 6시간 초과 구간은 시간 롤업을 쓴다.
 #dbagent.perf.sqlstat-delta-retention-days=7
 # 시간 롤업(perf_sql_hour): 시간마다 Elapsed 상위 N + 실행 수 상위 N(합집합) SQL, 보존 일수. 6시간 초과 조회·지난주 대비에 쓴다.
@@ -230,6 +263,8 @@
 # Fleet Overview 의 인스턴스별 상태 점검 상한(초). connect-timeout 이 못 잡는 경우(DNS 지연 등)까지
 # 포함해, 느린 인스턴스 하나가 화면 전체를 붙잡지 못하게 한다.
 #dbagent.fleet-status.timeout-seconds=5
+# 활성 알림(상단 알림 배지) 집계 조회 타임아웃(초). 넘으면 이번 조회만 건너뛰고 다음 폴링에서 다시 시도한다.
+#dbagent.monitor.active-alerts-timeout-seconds=5
 
 # ── RDB(MySQL / MariaDB / PostgreSQL / MS SQL Server / CUBRID) 커넥션 풀 ──
 # Oracle 풀과 완전히 분리된 별도 설정이라 위 dbagent.oracle.* 의 영향을 받지 않는다.

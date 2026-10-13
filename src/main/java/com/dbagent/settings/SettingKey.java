@@ -158,6 +158,9 @@ public enum SettingKey {
     SQLSTAT_NEW_CURSOR_MAX_ELAPSED_SEC(d("dbagent.monitor.sqlstat-new-cursor-max-elapsed-sec", INT, "120", LOCK, "SQL 분석: 새 커서 인정 최대 Elapsed",
             "처음 보인 커서의 누적 Elapsed가 이 값(초) 이하일 때만 새 SQL로 보고 누적값을 델타로 인정합니다.").unit("초").range(1, 86400)
             .detail("오래 쉬다가 돌아온 배치 SQL의 누적 Elapsed 전체가 한 분의 델타로 다시 더해지는 것을 막습니다. 새 커서 인정 최대 실행 수와 함께 적용됩니다.")),
+    SQLSTAT_TEXT_CAPTURE_MAX_PER_CYCLE(d("dbagent.monitor.sqlstat-text-capture-max-per-cycle", INT, "0", LOCK, "SQL 분석: 수집 시 SQL 텍스트 저장 상한",
+            "1분 SQL 통계 수집 때 텍스트가 아직 없는 SQL을 Elapsed 큰 순으로 사이클당 이 개수까지 읽어 저장합니다. 0이면 저장하지 않습니다(화면을 열 때만 읽음).").unit("개").range(0, 50)
+            .detail("SQL 텍스트는 화면을 열 때 대상 DB에서 읽기 때문에, 그 전에 공유 풀에서 밀려난 SQL은 SQL 분석 목록과 차트 범례에 SQL_ID만 보입니다. 이 값을 켜면 수집 시점에 미리 저장해 두어 나중에도 텍스트를 볼 수 있습니다. SYS가 파싱한 Oracle 내부 SQL은 일반 SQL을 저장하고 남는 자리에만 저장합니다. 대상 DB에는 SQL_ID 단건 조회가 사이클당 이 개수의 5배까지 늘어나며(이미 저장한 SQL은 다시 묻지 않고, 한 사이클에 최대 1초까지만 씁니다), SQL_ID당 한 행(앞 1000자)이 성능 분석 저장소에 쌓입니다. 리터럴 SQL이 많은 DB에서는 저장 행이 빠르게 늘 수 있어 상한을 50으로 제한합니다.")),
     DIAG_SQL_SURGE_PCT(d("dbagent.perf.diag-sql-surge-pct", INT, "100", LOCK, "SQL 분석: 급증 기준",
             "지난주 같은 시간대보다 실행 수가 이 비율(%) 이상 늘면 급증 배지를 표시합니다(구간 실행 수가 급증 최소 실행 수 이상일 때).").unit("%").range(10, 10000)),
     DIAG_SQL_SURGE_MIN_EXECS(d("dbagent.perf.diag-sql-surge-min-execs", INT, "10000", LOCK, "SQL 분석: 급증 최소 실행 수",
@@ -361,7 +364,7 @@ public enum SettingKey {
             // P5 Lock 백그라운드 수집 켜기/끄기·상한, 접속/응답 대기와 풀 크기(저장하면 풀을 다시 만든다)
             LOCK_KEEPALIVE_MINUTES, LOCK_KEEPALIVE_MAX_DBS, LOCK_COLLECT_ENABLED, BLOCKER_DETAIL_ENABLED, BLOCKER_TM_MODE_ENABLED, LOCK_GAP_SEC,
             OBJ_COLLECT_ENABLED, REDO_SWITCH_WARN_PER_HOUR, SYS_COLLECT_ENABLED, DIAG_CARD_PCT, SQLSTAT_NEW_CURSOR_MAX_ROWS, SQLSTAT_NEW_CURSOR_MAX_EXECS,
-            SQLSTAT_NEW_CURSOR_MAX_ELAPSED_SEC, SQLSTAT_DELTA_RETENTION_DAYS, DIAG_SQL_SURGE_PCT, DIAG_SQL_SURGE_MIN_EXECS, DIAG_SQL_NPLUS1_EXEC_SEC, DIAG_SQL_REUSE_EXEC_SEC, DIAG_SQL_REUSE_PARSE_PCT,
+            SQLSTAT_NEW_CURSOR_MAX_ELAPSED_SEC, SQLSTAT_TEXT_CAPTURE_MAX_PER_CYCLE, SQLSTAT_DELTA_RETENTION_DAYS, DIAG_SQL_SURGE_PCT, DIAG_SQL_SURGE_MIN_EXECS, DIAG_SQL_NPLUS1_EXEC_SEC, DIAG_SQL_REUSE_EXEC_SEC, DIAG_SQL_REUSE_PARSE_PCT,
             DIAG_SQL_LITERAL_ID_COUNT, SQL_ROLLUP_RETENTION_DAYS, SQL_ROLLUP_TOP_N, DIAG_WAIT_RATIO_PCT, DIAG_HARD_PARSE_PCT, DIAG_SEQ_READ_MS,
             ORACLE_CONNECT_TIMEOUT_MS, ORACLE_READ_TIMEOUT_MS, ORACLE_POOL_MIN_IDLE, ORACLE_POOL_MAX_SIZE,
             RDB_CONNECT_TIMEOUT_MS, RDB_READ_TIMEOUT_MS, RDB_POOL_MIN_IDLE, RDB_POOL_MAX_SIZE));

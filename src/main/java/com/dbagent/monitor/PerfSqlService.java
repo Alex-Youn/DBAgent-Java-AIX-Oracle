@@ -665,6 +665,9 @@ public class PerfSqlService implements InitializingBean {
 
     // ------------------------------------------------------------------ 조회: sql_trend
 
+    /** 앞뒤 수집 시각이 이 간격 안이면 이어진 수집으로 본다(사이에 건너뛴 한 분을 "수집됨"으로 채우는 기준) - sqlTrend 참고. */
+    private static final long COLLECT_BRIDGE_MS = 120_000L;
+
     /** Top SQL 추이: 델타면 분 단위, 롤업이면 시간 단위. metric = elapsed(초/분) | exec(회/초) | ms(ms/exec). */
     public Map<String, Object> sqlTrend(String dbId, LocalDateTime from, LocalDateTime to, List<String> sqlIds, String metric) {
         Src s = pickSource(dbId, from, to);
@@ -678,7 +681,33 @@ public class PerfSqlService implements InitializingBean {
         List<String> ids = sqlIds.size() > 20 ? sqlIds.subList(0, 20) : sqlIds;
         Map<String, double[][]> acc = new LinkedHashMap<String, double[][]>(); // sql_id → [0]=execs [1]=elapsed_us per bucket
         for (String id : ids) acc.put(id, new double[][]{new double[n], new double[n]});
+        // 수집은 됐지만 그 SQL의 델타가 없는 분은 0으로 채운다(2026-10-13 오케스트레이터 지적: 차트가 중간중간 비어 이유를 알 수 없음).
+        // 수집기는 실행이 없던 분을 저장하지 않으므로, 같은 분에 다른 SQL의 행이 하나라도 있으면 "수집은 있었다"로 본다 -
+        // 수집이 빠진 분은 0이 아니라 값 없음으로 남는다. 시간 롤업은 시간마다 상위 SQL만 남아 빈 시간이 0을 뜻하지 않으므로 채우지 않는다.
+        boolean[] collected = null;
         if (s.delta) {
+            collected = new boolean[n];
+            // 수집 간격은 정확히 60초가 아니라 60초 + 수집에 걸린 시간이라 수집 시각이 조금씩 뒤로 밀리고, 가끔 한 분을 건너뛴다
+            // (2026-10-13 코드 점검, 로컬 저장소 실측: 평균 60.7초 간격, 589사이클 중 7번 - 6시간 차트에 4번쯤). 그 분은 수집이 빠진 것이
+            // 아니라 실행분이 바로 다음 분의 델타에 들어간 것이므로, 앞뒤 수집이 2분 안쪽으로 이어져 있으면 수집된 분으로 본다(0으로 채움).
+            // 구간 경계에 걸친 분도 가리도록 앞뒤로 2분 넓게 읽는다 - 구간 밖 시각은 아래 인덱스 범위 검사에서 빠진다.
+            List<Long> collectTimes = new ArrayList<Long>(store.sqlstatCollectTimes(dbId, s.fromApp - COLLECT_BRIDGE_MS, s.toApp + COLLECT_BRIDGE_MS));
+            Collections.sort(collectTimes);
+            long prevTs = Long.MIN_VALUE;
+            long prevKey = 0;
+            for (Long ts : collectTimes) {
+                long key = minuteKeyOf(ts, off);
+                if (ts >= s.fromApp && ts < s.toApp) {
+                    int i = (int) (key - start);
+                    if (i >= 0 && i < n) collected[i] = true;
+                }
+                if (prevTs != Long.MIN_VALUE && key - prevKey == 2 && ts - prevTs < COLLECT_BRIDGE_MS) {
+                    int g = (int) (key - 1 - start);
+                    if (g >= 0 && g < n) collected[g] = true;
+                }
+                prevTs = ts;
+                prevKey = key;
+            }
             for (Object[] r : store.sqlstatSeries(dbId, ids, s.fromApp, s.toApp)) {
                 int i = (int) (minuteKeyOf((Long) r[0], off) - start);
                 double[][] a = acc.get((String) r[1]);
@@ -706,9 +735,11 @@ public class PerfSqlService implements InitializingBean {
                 double ex = e.getValue()[0][i];
                 double el = e.getValue()[1][i];
                 Double v;
-                if ("exec".equals(metric)) v = ex == 0 && el == 0 ? null : round(ex / (step * 60.0), 3);
-                else if ("ms".equals(metric)) v = ex > 0 ? round(el / 1000.0 / ex, 3) : null;
-                else v = el == 0 && ex == 0 ? null : round(el / 1e6 / step, 3);
+                // ms/exec는 실행이 없으면 값이 없다(0ms가 아니다) - 0으로 채우는 것은 초/분·회/초뿐
+                if ("ms".equals(metric)) v = ex > 0 ? round(el / 1000.0 / ex, 3) : null;
+                else if (ex == 0 && el == 0) v = collected != null && collected[i] ? Double.valueOf(0) : null;
+                else if ("exec".equals(metric)) v = round(ex / (step * 60.0), 3);
+                else v = round(el / 1e6 / step, 3);
                 vals.add(v);
             }
             series.put(e.getKey(), vals);
@@ -716,6 +747,7 @@ public class PerfSqlService implements InitializingBean {
         Map<String, Object> m = collectInfo(dbId, s);
         m.put("metric", "exec".equals(metric) ? "exec" : "ms".equals(metric) ? "ms" : "elapsed");
         m.put("stepMinutes", step);
+        m.put("zeroFill", collected != null && !"ms".equals(metric));
         m.put("times", times);
         m.put("series", series);
         return m;

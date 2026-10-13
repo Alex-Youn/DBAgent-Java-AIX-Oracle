@@ -2225,6 +2225,8 @@ body.app-shell { overflow-y: hidden; }
 .perf-sq-literal { background: var(--primary); }
 .perf-sq-cur { background: var(--success); }
 .perf-sq-cnt { color: var(--text-secondary); font-size: 0.72rem; }
+/* 목록 상위 5개 행의 색 점 - 위 추이 차트의 같은 순위 선과 같은 색(색은 perf-sql.js가 CSS 변수에서 읽어 넣는다) */
+.perf-sq-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .perf-sq-link { color: var(--primary); text-decoration: none; font-family: var(--nd-font-mono, monospace); }
 .perf-sq-text { max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--nd-font-mono, monospace); font-size: 0.78rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; margin: 0; }
 .perf-sq-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }

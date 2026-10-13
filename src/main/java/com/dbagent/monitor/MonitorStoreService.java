@@ -220,6 +220,15 @@ public class MonitorStoreService {
                         rs.getLong(7), rs.getString(8), rs.getInt(9), rs.getLong(10)}, dbId, fromMs, toMs);
     }
 
+    /**
+     * 구간에서 SQL 델타가 한 행이라도 저장된 수집 시각(앱 시각 ms). 추이 차트가 "수집은 됐는데 그 SQL만 실행되지 않은 분"(0)과
+     * "수집 자체가 없던 분"(값 없음)을 가르는 데 쓴다. 한 사이클의 행은 collect_ts가 모두 같아 6시간 구간에서 최대 360개다.
+     */
+    public List<Long> sqlstatCollectTimes(String dbId, long fromMs, long toMs) {
+        return jdbc.queryForList("SELECT DISTINCT collect_ts FROM mon_sqlstat_delta WHERE db_id = ? AND collect_ts >= ? AND collect_ts < ?",
+                Long.class, dbId, fromMs, toMs);
+    }
+
     /** 구간의 (collect_ts, sql_id)별 실행 수·Elapsed: {collect_ts, sql_id, executions, elapsed_us}. sqlIds는 호출자가 200개 이하로 준다. */
     public List<Object[]> sqlstatSeries(String dbId, java.util.Collection<String> sqlIds, long fromMs, long toMs) {
         if (sqlIds.isEmpty()) return new java.util.ArrayList<>();

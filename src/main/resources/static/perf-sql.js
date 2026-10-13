@@ -89,12 +89,16 @@
             $('perf-sql-rows').innerHTML = `<tr><td colspan="10" class="perf-lk-empty">이 구간에 수집된 SQL 통계가 없습니다${d.source === 'hour' ? '(롤업이 아직 없을 수 있습니다)' : ''}</td></tr>`;
             return;
         }
-        $('perf-sql-rows').innerHTML = st.rows.map(r => {
+        // 상위 5개 행에는 위 추이 차트의 선과 같은 색 점을 붙인다 - 범례를 읽지 않아도 선과 행이 짝지어진다
+        const cs = colors();
+        $('perf-sql-rows').innerHTML = st.rows.map((r, i) => {
             const sel = r.sqlId === st.selId ? ' sel' : '';
+            // FMS 보기의 행은 시그니처 합계인데 차트 선은 대표 SQL_ID 한 건이라, 점을 붙이면 둘이 같은 값처럼 보인다(2026-10-13 코드 점검) - 붙이지 않는다
+            const dot = i < TREND_TOP && st.group !== 'fms' ? `<span class="perf-sq-dot" style="background:${esc(cs[i % cs.length])}" title="위 추이 차트의 ${i + 1}위 선"></span>` : '';
             const tail = cost
                 ? `<td class="num">${fmt(r.elapsedSec)}</td><td class="num">${r.pct === null ? '-' : r.pct + '%'}</td><td class="num">${fmt(r.cpuSec)}</td><td class="num">${fmt(r.execs)}</td><td class="num">${fmt(r.msPerExec)}</td><td class="num">${fmt(r.getsPerExec)}</td>`
                 : `<td class="num">${fmt(r.execs)}</td><td class="num">${fmt(r.execPerSec)}</td><td class="num">${r.execPct === null ? '-' : r.execPct + '%'}</td><td class="num">${fmt(r.msPerExec)}</td><td class="num">${fmt(r.rowsPerExec)}</td><td class="num">${fmt(r.parsePerExec)}</td><td>${weekCell(r, d.hasBase)}</td>`;
-            return `<tr class="perf-lk-row${sel}" data-id="${esc(r.sqlId)}"><td>${idCell(r)}</td><td>${textCell(r)}</td>${tail}<td>${badgeHtml(r.badges)}</td></tr>`;
+            return `<tr class="perf-lk-row${sel}" data-id="${esc(r.sqlId)}"><td>${dot}${idCell(r)}</td><td>${textCell(r)}</td>${tail}<td>${badgeHtml(r.badges)}</td></tr>`;
         }).join('');
     }
 
@@ -135,8 +139,18 @@
 
     // ------------------------------------------------------------------ 추이 차트
 
+    const TREND_TOP = 5; // 비용 Top·실행 빈도 차트에 그리는 SQL 수(색 5개와 같다)
+
     function colors() {
         return ['--primary', '--warning', '--success', '--danger', '--text-secondary'].map(v => S.cssVar(v));
+    }
+
+    // 범례 라벨: SQL_ID만 쓰면 뜻 없는 13자리 글자라 깨진 글자처럼 보이고 어떤 SQL인지 알 수 없다(2026-10-13 오케스트레이터 지적) -
+    // 목록 순위와 SQL 앞부분을 붙인다. 순위는 비용 Top·실행 빈도 보기에서만(Plan 변경 보기는 선택한 SQL 하나).
+    function seriesLabel(id, i, ranked) {
+        const r = st.rows.find(x => x.sqlId === id);
+        const t = r && r.text ? r.text.replace(/\s+/g, ' ').trim() : '';
+        return (ranked ? (i + 1) + '위 · ' : '') + id + (t ? ' · ' + (t.length > 26 ? t.slice(0, 26) + '…' : t) : '');
     }
 
     async function loadChart(base, my, ids, metric, title) {
@@ -149,13 +163,20 @@
             if (my !== st.gen || cg !== st.chartGen) return;
             const labels = d.times.map(t => parseLocal(t).getTime());
             const cs = colors();
+            const fms = st.group === 'fms' && metric !== 'ms'; // FMS 보기: 선은 시그니처의 대표 SQL 한 건이라 목록 순위를 붙이지 않는다
+            const ranked = metric !== 'ms' && !fms;
             const datasets = ids.map((id, i) => ({
-                label: id, data: d.series[id] || [], borderColor: cs[i % cs.length], backgroundColor: cs[i % cs.length],
+                label: seriesLabel(id, i, ranked), data: d.series[id] || [], borderColor: cs[i % cs.length], backgroundColor: cs[i % cs.length],
                 borderWidth: 2, spanGaps: false,
                 // 앞뒤가 비어 있는 외톨이 점(한 분에만 실행된 SQL)은 선이 안 그려지므로 점으로 보인다
                 pointRadius: (c) => { const v = c.dataset.data, i = c.dataIndex; return (i === 0 || v[i - 1] == null) && (i === v.length - 1 || v[i + 1] == null) ? 3 : 0; }, tension: 0, stepped: metric === 'ms' ? 'before' : false
             }));
             $('perf-sql-chart-title').textContent = title + (d.stepMinutes === 60 ? ' (시간 단위)' : '');
+            // 선이 끊긴 이유를 화면에서 알 수 있게 한다 - 1분 델타는 실행이 없던 분을 서버가 0으로 채워 주므로 끊긴 곳은 수집이 없던 시간이다
+            $('perf-sql-chart-hint').textContent = d.zeroFill ? '선이 끊긴 구간은 수집되지 않은 시간입니다(실행이 없던 분은 0)'
+                : d.stepMinutes === 60 ? '시간 롤업은 시간마다 상위 SQL만 남습니다 - 빈 구간이 실행 없음을 뜻하지는 않습니다'
+                : '실행이 없던 분은 비어 있습니다';
+            if (fms) $('perf-sql-chart-hint').textContent += ' · FMS 보기의 선은 시그니처 합계가 아니라 대표 SQL 한 건입니다';
             // 시간 롤업(stepMinutes 60)은 점이 25개 이하라도 6시간을 넘는 구간이다 - 분 단위 눈금(HH:mm만)으로 그리면 날짜가 안 보인다
             const unit = (labels.length > 180 || d.stepMinutes === 60) ? 'hour' : 'minute';
             if (st.chart) {
@@ -179,7 +200,7 @@
                 }
             });
         } catch (e) {
-            if (my === st.gen && cg === st.chartGen) { destroyChart(); $('perf-sql-chart-title').textContent = '추이 조회 실패: ' + e.message; }
+            if (my === st.gen && cg === st.chartGen) { destroyChart(); $('perf-sql-chart-title').textContent = '추이 조회 실패: ' + e.message; $('perf-sql-chart-hint').textContent = ''; }
         }
     }
 
@@ -223,7 +244,7 @@
         bindRows();
         // 상단 차트: 비용 Top = Top 5 Elapsed(초/분), 실행 빈도 = Top 5 Exec/s, Plan 변경 = 선택한 SQL의 ms/exec(계단), 리터럴 = 숨김
         if (st.view === 'cost' || st.view === 'freq') {
-            const ids = st.rows.slice(0, 5).map(r => r.sqlId);
+            const ids = st.rows.slice(0, TREND_TOP).map(r => r.sqlId);
             loadChart(base, my, ids, st.view === 'cost' ? 'elapsed' : 'exec', st.view === 'cost' ? 'Top 5 Elapsed 추이 (초/분)' : 'Top 5 실행 빈도 추이 (회/초)');
         } else if (st.view === 'plan') {
             // 아래에서 select()할 SQL이 있으면 select()가 그 SQL의 추이를 읽는다 - 여기서도 읽으면 같은 sql_trend가 두 번 나간다

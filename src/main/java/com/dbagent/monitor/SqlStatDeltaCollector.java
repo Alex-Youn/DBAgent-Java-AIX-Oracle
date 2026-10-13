@@ -13,9 +13,12 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -44,6 +47,7 @@ import java.util.concurrent.Executors;
  *   <li>SQL 원문은 저장하지 않는다 - 읽는 곳이 없는데 1분마다 SQL마다 최대 1000자를 반복 저장해 AIX metrics.mv.db가
  *       4일 만에 15GB(이 테이블만 11GB, 행당 약 535바이트)까지 커졌다(2026-10-02 폐쇄망 실측, 오케스트레이터 결정).
  *       드로어의 SQL 원문은 v$sqlstats.sql_fulltext에서 바로 읽는다(DashboardQueryService.sqlDetail).</li>
+ *   <li>SQL 텍스트 미리 저장(2026-10-13, 기본 꺼짐): 위와 달리 SQL_ID당 한 행(perf_sql_text, 앞 1000자)만 둔다 - captureTexts 참고.</li>
  * </ul>
  */
 @Service
@@ -69,6 +73,14 @@ public class SqlStatDeltaCollector {
     private static final long FORGET_AFTER_MS = 6L * 3600 * 1000;
     /** DB당 기준값 수 상한(리터럴 폭주 방지) - 넘으면 전부 비우고 기준을 다시 잡는다. */
     private static final int PREV_MAX_ENTRIES = 300000;
+    /** 텍스트 저장에 한 사이클이 쓰는 전체 시간 상한 - 단건 조회가 느린 DB에서도 수집 주기를 밀지 않게. */
+    private static final long TEXT_CAPTURE_DEADLINE_NS = 1000L * 1000 * 1000;
+    /** 저장한 텍스트를 다시 읽는 간격(분). perf_sql_text는 저장 시각 기준으로 보관 기간 뒤 지워지므로 계속 도는 SQL은 갱신해 둔다(샘플러와 같은 7일). */
+    private static final long TEXT_REFRESH_MINUTES = 7L * 1440;
+    /** 대상 DB에서 텍스트를 못 찾은 SQL을 다시 묻지 않는 시간(분) - 화면 조회(PerfSqlService.textsFor)의 10분과 같다. */
+    private static final long TEXT_MISS_MINUTES = 10;
+    /** 한 사이클에 대상 DB에 묻는 SQL 수 = 저장 상한 × 이 값. SYS 내부 SQL을 읽고도 뒤로 미루는 만큼 더 본다(전체 시간 상한 1초는 그대로). */
+    private static final int TEXT_LOOKUP_FACTOR = 5;
 
     private final DatabaseConfigService configService;
     private final OracleConnectionPoolManager poolManager;
@@ -86,6 +98,13 @@ public class SqlStatDeltaCollector {
      * 타임아웃이 나면 일부만 기준값에 들어간 채 다음 사이클이 나머지 커서 전부를 "새 커서"로 보고 누적값을 한 분에 몰아 저장했다.
      */
     private final java.util.Set<String> baselineDone = ConcurrentHashMap.newKeySet();
+    /** db_id → (sql_id → 텍스트를 저장한 분 키). 기동 후 DB마다 처음 한 번 저장소에서 읽는다. */
+    private final Map<String, Map<String, Long>> textKnown = new ConcurrentHashMap<>();
+    /** v$sql을 읽을 수 없는 DB(권한·컬럼 없음) - 파싱 계정 구분 없이 v$sqlstats만으로 텍스트를 읽는다. */
+    private final java.util.Set<String> noVsql = ConcurrentHashMap.newKeySet();
+
+    @Autowired
+    private PerfStoreService perfStore;
 
     public SqlStatDeltaCollector(DatabaseConfigService configService, OracleConnectionPoolManager poolManager,
                                  MonitorStoreService storeService, PerfSqlService perfSql) {
@@ -225,6 +244,134 @@ public class SqlStatDeltaCollector {
                 log.warn("perf_sql_literal save failed for db_id={}: {}", target.id(), e.toString());
             }
         }
+        captureTexts(target, rows);
         return rows.size();
+    }
+
+    /**
+     * 이번 사이클에 통계가 잡힌 SQL 중 텍스트가 아직 없는 것을 Elapsed 큰 순으로 상한까지 읽어 perf_sql_text에 저장한다
+     * (2026-10-13 오케스트레이터 결정). 텍스트는 화면을 열 때 대상 DB에서 읽는데, 그 전에 공유 풀에서 밀려난 SQL은 SQL 분석 목록·범례에
+     * SQL_ID만 남는다(로컬 XE 실측: 09:05에 한 번 실행된 SQL이 몇 분 뒤 v$sqlstats에서 사라짐). ASH에 잡힌 SQL은 샘플러가 이미 저장하므로
+     * 여기서는 ASH에 안 잡히는 짧은 SQL을 보충한다.
+     *
+     * <p>운영 DB 부하: sql_id = ? 단건 조회라 v$sqlstats 고정 인덱스(X$KKSSQLSTAT)를 탄다(로컬 XE 실측: 200건 10ms 미만). 한 번 저장한
+     * SQL은 다시 묻지 않고, 사이클당 건수(설정)와 전체 시간(1초)에 상한을 둔다. 기본값 0 = 꺼짐.
+     *
+     * <p>SYS 내부 SQL 뒤로 미루기(2026-10-13 QA): Oracle 재귀 SQL이 몇 분마다 100개 넘게 몰려 상한을 다 쓰면, Elapsed가 작은 업무 SQL은
+     * 순위에서 밀린 채 2~4분 만에 공유 풀에서 사라져 텍스트를 끝내 못 얻었다(로컬 XE 실측: 테스트 SQL 3개 중 2개). v$sqlstats에는 파싱 계정이
+     * 없어, 텍스트를 읽을 때 v$sql(sql_id 고정 인덱스 X$KGLCURSOR_CHILD, 로컬 XE 실측: 1000건 30ms)에서 parsing_schema_id를 함께 읽고
+     * SYS(0)가 파싱한 SQL은 일반 SQL을 저장하고 남는 자리에만 저장한다. v$sql에 없으면 v$sqlstats에서 텍스트만 읽는다.
+     */
+    private void captureTexts(TargetDbConfig target, List<Object[]> rows) {
+        final int max = settings.getInt(SettingKey.SQLSTAT_TEXT_CAPTURE_MAX_PER_CYCLE);
+        if (max <= 0 || rows.isEmpty()) return;
+        final String dbId = target.id();
+        Map<String, Long> known = textKnown.get(dbId);
+        if (known == null) {
+            known = new ConcurrentHashMap<String, Long>();
+            try {
+                known.putAll(perfStore.knownSqlIds(dbId));
+            } catch (Exception e) {
+                log.debug("known sql text load failed for db_id={}: {}", dbId, e.toString());
+            }
+            textKnown.put(dbId, known);
+        }
+        // 화면 조회(PerfSqlService.textsFor)가 저장할 때와 같은 분 키 - 보관 기간 정리가 이 값으로 지운다
+        final long nowKey = PerfStoreService.minuteKey(LocalDateTime.now(ZoneOffset.UTC));
+        List<Object[]> sorted = new ArrayList<Object[]>(rows);
+        Collections.sort(sorted, new java.util.Comparator<Object[]>() {
+            @Override
+            public int compare(Object[] a, Object[] b) { return Long.compare((Long) b[5], (Long) a[5]); }
+        });
+        // 조회 후보: 저장 상한의 TEXT_LOOKUP_FACTOR배까지. SYS 내부 SQL은 읽고도 뒤로 미루므로 저장 상한보다 넉넉히 본다.
+        List<String> want = new ArrayList<String>();
+        java.util.Set<String> seenIds = new java.util.HashSet<String>();
+        for (Object[] r : sorted) {
+            String id = (String) r[2];
+            if (!seenIds.add(id)) continue; // 같은 SQL_ID가 Plan만 달라 여러 행일 수 있다
+            Long saved = known.get(id);
+            if (saved != null && nowKey - saved < TEXT_REFRESH_MINUTES) continue;
+            want.add(id);
+            if (want.size() >= max * TEXT_LOOKUP_FACTOR) break;
+        }
+        if (want.isEmpty()) return;
+        final long deadline = System.nanoTime() + TEXT_CAPTURE_DEADLINE_NS;
+        boolean useVsql = !noVsql.contains(dbId);
+        int savedCount = 0;
+        List<String[]> sysDeferred = new ArrayList<String[]>(); // SYS가 파싱한 SQL {sql_id, text} - 일반 SQL을 먼저 저장한 뒤 남는 자리에만
+        try (Connection conn = poolManager.getConnection(target);
+             PreparedStatement psSql = conn.prepareStatement("SELECT parsing_schema_id, SUBSTR(sql_text, 1, 1000) FROM v$sql WHERE sql_id = ? AND ROWNUM = 1");
+             PreparedStatement psStats = conn.prepareStatement("SELECT SUBSTR(sql_text, 1, 1000) FROM v$sqlstats WHERE sql_id = ? AND ROWNUM = 1")) {
+            int timeout = settings.getInt(SettingKey.LOCK_QUERY_TIMEOUT_SECONDS);
+            psSql.setQueryTimeout(timeout);
+            psStats.setQueryTimeout(timeout);
+            for (String id : want) {
+                if (savedCount >= max) break;
+                if (System.nanoTime() > deadline) break; // 남은 것은 다음에 다시 보일 때 읽는다
+                String text = null;
+                boolean sys = false;
+                if (useVsql) {
+                    try {
+                        psSql.setString(1, id);
+                        try (ResultSet rs = psSql.executeQuery()) {
+                            if (rs.next()) {
+                                sys = rs.getLong(1) == 0L; // parsing_schema_id 0 = SYS
+                                text = rs.getString(2);
+                            }
+                        }
+                    } catch (SQLException e) {
+                        // v$sql을 볼 권한이 없거나(ORA-00942) 컬럼이 없는(ORA-00904) DB는 계정 구분 없이 v$sqlstats만 쓴다
+                        if (e.getErrorCode() != 942 && e.getErrorCode() != 904) throw e;
+                        noVsql.add(dbId);
+                        useVsql = false;
+                        log.warn("v$sql not readable for db_id={} ({}) - sql text capture continues without the SYS filter", dbId, e.getMessage());
+                    }
+                }
+                if (text == null) {
+                    // 커서는 라이브러리 캐시에서 밀려났어도 v$sqlstats에는 통계와 텍스트가 더 오래 남는다(로컬 XE 실측: 최근 SQL 1000건 중 v$sql 835건)
+                    psStats.setString(1, id);
+                    try (ResultSet rs = psStats.executeQuery()) {
+                        if (rs.next()) text = rs.getString(1);
+                    }
+                }
+                if (text == null) {
+                    // 못 찾은 것은 10분만 쉬고 다시 묻는다(2026-10-13 코드 점검·QA): 방금 통계를 읽은 커서가 없다면 그사이 밀려난 것이지만,
+                    // 다시 올라온 SQL까지 7일 동안 빼면 텍스트를 끝내 못 얻는다. 저장한 시각 대신 "10분 뒤에 갱신 주기가 끝나는 시각"을 넣는다.
+                    known.put(id, nowKey - TEXT_REFRESH_MINUTES + TEXT_MISS_MINUTES);
+                    continue;
+                }
+                if (sys) {
+                    sysDeferred.add(new String[]{id, text});
+                    continue;
+                }
+                if (saveText(dbId, id, text, nowKey, known)) savedCount++;
+            }
+        } catch (SQLException e) {
+            log.debug("sql text capture skipped for db_id={}: {}", dbId, e.toString());
+        }
+        // SYS 내부 SQL: 남는 자리에만 저장하고, 못 넣은 것은 10분 쉬었다가 다시 본다(매 사이클 같은 SQL을 다시 읽지 않게)
+        for (String[] t : sysDeferred) {
+            if (savedCount < max) {
+                if (saveText(dbId, t[0], t[1], nowKey, known)) savedCount++;
+            } else {
+                known.put(t[0], nowKey - TEXT_REFRESH_MINUTES + TEXT_MISS_MINUTES);
+            }
+        }
+        // 리터럴 폭주로 기억한 SQL_ID가 너무 많아지면 내용만 비운다. (2026-10-13 코드 점검) 맵 자체를 지워 저장소에서 다시 읽게 하면,
+        // 저장소(perf_sql_text)에 이미 상한보다 많은 행이 있을 때 매 사이클 전부 읽고 다시 지우기를 반복한다. 비운 뒤에는 이미 저장한
+        // SQL도 다시 묻게 되지만 사이클당 상한(설정)까지만이다.
+        if (known.size() > PREV_MAX_ENTRIES) known.clear();
+    }
+
+    /** 텍스트 한 건 저장. 성공한 것만 기억한다(2026-10-13 코드 점검) - 저장이 실패했는데(저장소 잠금 등) 기억하면 텍스트가 없는 채로 7일 동안 다시 읽지 않는다. */
+    private boolean saveText(String dbId, String sqlId, String text, long nowKey, Map<String, Long> known) {
+        try {
+            perfStore.saveSqlText(dbId, sqlId, text, nowKey);
+            known.put(sqlId, nowKey);
+            return true;
+        } catch (Exception e) {
+            log.debug("sql text save failed for db_id={}: {}", dbId, e.toString());
+            return false;
+        }
     }
 }
