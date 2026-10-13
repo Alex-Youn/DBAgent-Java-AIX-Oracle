@@ -1,5 +1,6 @@
 package com.dbagent.monitor;
 
+import com.dbagent.store.StoreHandle;
 import com.dbagent.settings.SettingKey;
 import com.dbagent.settings.SettingsService;
 import org.slf4j.Logger;
@@ -85,13 +86,13 @@ public class PerfSysService implements InitializingBean {
     /** DB별 마지막 수집 상태 {ok|unsupported|error, 사유, 시각 ms}. */
     private final ConcurrentHashMap<String, String[]> collectState = new ConcurrentHashMap<String, String[]>();
 
-    public PerfSysService(@Qualifier("perfJdbcTemplate") JdbcTemplate jdbc, PerfLockService heartbeats) {
+    public PerfSysService(@Qualifier("perfJdbcTemplate") JdbcTemplate jdbc, @Qualifier("perfStore") StoreHandle storeHandle, PerfLockService heartbeats) {
         this.jdbc = jdbc;
         this.heartbeats = heartbeats;
         this.tx = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
-        String url = jdbc.getDataSource() instanceof com.zaxxer.hikari.HikariDataSource
-                ? ((com.zaxxer.hikari.HikariDataSource) jdbc.getDataSource()).getJdbcUrl() : null;
-        this.h2 = url != null && url.startsWith("jdbc:h2:");
+        // 엔진 판정은 접속 URL 앞머리가 아니라 저장소 핸들의 방언으로 한다(2026-10-13, 내부 저장소 Oracle 선택 지원 1단계).
+        // SQL 문장은 아직 그대로다 - else 쪽(SQLite 문법)은 3b단계에서 방언 호출로 바꾼다.
+        this.h2 = storeHandle.dialect().isH2();
     }
 
     @Override

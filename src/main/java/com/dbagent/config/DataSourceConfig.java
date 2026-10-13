@@ -1,5 +1,10 @@
 package com.dbagent.config;
 
+import com.dbagent.store.ConditionalOnStoreType;
+import com.dbagent.store.StoreHandle;
+import com.dbagent.store.StoreId;
+import com.dbagent.store.StoreType;
+import com.dbagent.store.StoreTypes;
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
@@ -7,6 +12,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
@@ -24,6 +30,10 @@ import javax.sql.DataSource;
  * 기반 기본 DataSource/JdbcTemplate 생성을 통째로 건너뛴다 - 그래서 users DB용 기본 빈도 여기서
  * 같이 명시적으로 만들어 @Primary로 지정한다(Boot가 내부적으로 쓰는 것과 동일한
  * DataSourceProperties + spring.datasource.hikari.* 바인딩 방식이라 동작은 기존과 동일).
+ *
+ * <p>내부 저장소 Oracle 선택 지원 1단계(2026-10-13): 아래 DataSource 빈 4개는 그 저장소의 엔진이 H2일 때만 만든다
+ * ({@code dbagent.store.type}을 적지 않으면 H2 - 빈 정의는 그대로다). Oracle이면 같은 이름의 빈을
+ * {@link OracleStoreDataSourceConfig}가 {@code dbagent.store.oracle.*}로 만든다. JdbcTemplate 빈은 두 경우에 같이 쓴다.</p>
  */
 @Configuration
 public class DataSourceConfig {
@@ -37,6 +47,7 @@ public class DataSourceConfig {
 
     @Primary
     @Bean(name = "dataSource")
+    @ConditionalOnStoreType(id = StoreId.USERS, type = StoreType.H2)
     @ConfigurationProperties("spring.datasource.hikari")
     public HikariDataSource dataSource(@Qualifier("usersDataSourceProperties") DataSourceProperties properties) {
         return properties.initializeDataSourceBuilder().type(HikariDataSource.class).build();
@@ -55,6 +66,7 @@ public class DataSourceConfig {
     }
 
     @Bean(name = "metricsDataSource")
+    @ConditionalOnStoreType(id = StoreId.METRICS, type = StoreType.H2)
     @ConfigurationProperties("dbagent.metrics.datasource.hikari")
     public HikariDataSource metricsDataSource(@Qualifier("metricsDataSourceProperties") DataSourceProperties properties) {
         return properties.initializeDataSourceBuilder().type(HikariDataSource.class).build();
@@ -75,6 +87,7 @@ public class DataSourceConfig {
     }
 
     @Bean(name = "dbConfigDataSource")
+    @ConditionalOnStoreType(id = StoreId.DBCONFIG, type = StoreType.H2)
     @ConfigurationProperties("dbagent.dbconfig.datasource.hikari")
     public HikariDataSource dbConfigDataSource(@Qualifier("dbConfigDataSourceProperties") DataSourceProperties properties) {
         return properties.initializeDataSourceBuilder().type(HikariDataSource.class).build();
@@ -93,6 +106,7 @@ public class DataSourceConfig {
      * 드라이버·계정·접속 초기화 SQL도 metrics 설정을 그대로 따른다(SQLite WAL / H2 LOCK_TIMEOUT).
      */
     @Bean(name = "perfDataSource")
+    @ConditionalOnStoreType(id = StoreId.PERF, type = StoreType.H2)
     public HikariDataSource perfDataSource(org.springframework.core.env.Environment env) {
         String metricsUrl = env.getProperty("dbagent.metrics.datasource.url", "jdbc:sqlite:metrics.db?busy_timeout=5000");
         HikariDataSource ds = new HikariDataSource();
@@ -113,6 +127,29 @@ public class DataSourceConfig {
     @Bean(name = "perfJdbcTemplate")
     public JdbcTemplate perfJdbcTemplate(@Qualifier("perfDataSource") DataSource dataSource) {
         return new JdbcTemplate(dataSource);
+    }
+
+    // ------------------------------------------------------------------ 저장소 핸들 (2026-10-13, 1단계)
+    // 저장소마다 "어느 엔진인지 + 접속 + 문법"을 한 묶음으로 주입받게 한다. 서비스가 접속 URL을 보고 엔진을 추측하지 않는다.
+
+    @Bean(name = "usersStore")
+    public StoreHandle usersStore(@Qualifier("jdbcTemplate") JdbcTemplate jdbc, Environment env) {
+        return new StoreHandle(StoreId.USERS, StoreTypes.resolve(env, StoreId.USERS), jdbc);
+    }
+
+    @Bean(name = "dbConfigStore")
+    public StoreHandle dbConfigStore(@Qualifier("dbConfigJdbcTemplate") JdbcTemplate jdbc, Environment env) {
+        return new StoreHandle(StoreId.DBCONFIG, StoreTypes.resolve(env, StoreId.DBCONFIG), jdbc);
+    }
+
+    @Bean(name = "metricsStore")
+    public StoreHandle metricsStore(@Qualifier("metricsJdbcTemplate") JdbcTemplate jdbc, Environment env) {
+        return new StoreHandle(StoreId.METRICS, StoreTypes.resolve(env, StoreId.METRICS), jdbc);
+    }
+
+    @Bean(name = "perfStore")
+    public StoreHandle perfStore(@Qualifier("perfJdbcTemplate") JdbcTemplate jdbc, Environment env) {
+        return new StoreHandle(StoreId.PERF, StoreTypes.resolve(env, StoreId.PERF), jdbc);
     }
 
     /** ...metrics.db?x → ...perf.db?x (SQLite), ...db_config/metrics;x → ...db_config/perf;x (H2). */

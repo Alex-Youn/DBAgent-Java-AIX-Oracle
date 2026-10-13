@@ -420,7 +420,7 @@ public class MonitorStoreService {
 
     // ------------------------------------------------------------------ 보관 주기
 
-    /** 1분·10분·일 테이블은 retentionDays(기본 30일), 감사 로그는 1년 - instance_metric_history 정리(03:45) 뒤에 돈다. */
+    /** 1분·10분·일 테이블은 retentionDays(기본 15일 - 2026-10-13에 30일에서 줄임), 감사 로그는 1년 - instance_metric_history 정리(03:45) 뒤에 돈다. */
     @Scheduled(cron = "0 50 3 * * *")
     void cleanupOldRows() {
         long now = System.currentTimeMillis();
@@ -431,7 +431,8 @@ public class MonitorStoreService {
         purge("mon_lock_sample", "collect_ts", cutoff);
         purge("mon_check_result", "check_ts", cutoff);
         purge("mon_segment_size", "snap_date", cutoff);
-        // 숨김도 보관 기간이 지나면 지운다 - 같은 상태로 한 달 넘게 남은 알림은 한 번 다시 보여 주는 편이 안전하다
+        // 숨김도 보관 기간이 지나면 지운다 - 같은 상태로 보관 기간 넘게 남은 알림은 한 번 다시 보여 주는 편이 안전하다
+        // (기본 보관 기간을 30일에서 15일로 줄이면서(2026-10-13) 숨긴 알림이 다시 보이는 시점도 15일로 당겨졌다)
         purge("mon_check_ack", "ack_ts", cutoff);
         purge("mon_kill_audit", "kill_ts", now - TimeUnit.DAYS.toMillis(settings.getInt(SettingKey.KILL_AUDIT_RETENTION_DAYS)));
     }

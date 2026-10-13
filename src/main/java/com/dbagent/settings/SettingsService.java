@@ -633,7 +633,7 @@ public class SettingsService {
 
     /**
      * SettingKey 에 없는 키(포트·DB 경로 같은 부트스트랩 값)의 현재 값과 출처를 환경에서 찾는다. 없으면 null.
-     * 비밀번호 키는 호출하지 말 것.
+     * 비밀번호 키로 부를 때는 받은 값을 응답·로그에 내보내지 말 것(환경설정 화면의 부트스트랩 표시는 설정 여부만 보이려고 부르고 값은 가린다).
      */
     public EnvValue environmentValue(String key) {
         if (!(environment instanceof ConfigurableEnvironment)) {

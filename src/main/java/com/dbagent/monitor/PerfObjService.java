@@ -1,5 +1,6 @@
 package com.dbagent.monitor;
 
+import com.dbagent.store.StoreHandle;
 import com.dbagent.oracle.DatabaseConfigService;
 import com.dbagent.oracle.OracleConnectionPoolManager;
 import com.dbagent.oracle.TargetDbConfig;
@@ -133,16 +134,16 @@ public class PerfObjService implements InitializingBean {
     private final ConcurrentHashMap<String, Long> nameOffUntil = new ConcurrentHashMap<String, Long>();
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    public PerfObjService(@Qualifier("perfJdbcTemplate") JdbcTemplate jdbc, PerfLockService heartbeats,
+    public PerfObjService(@Qualifier("perfJdbcTemplate") JdbcTemplate jdbc, @Qualifier("perfStore") StoreHandle storeHandle, PerfLockService heartbeats,
                           DatabaseConfigService configService, OracleConnectionPoolManager poolManager) {
         this.jdbc = jdbc;
         this.heartbeats = heartbeats;
         this.configService = configService;
         this.poolManager = poolManager;
         this.tx = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
-        String url = jdbc.getDataSource() instanceof com.zaxxer.hikari.HikariDataSource
-                ? ((com.zaxxer.hikari.HikariDataSource) jdbc.getDataSource()).getJdbcUrl() : null;
-        this.h2 = url != null && url.startsWith("jdbc:h2:");
+        // 엔진 판정은 접속 URL 앞머리가 아니라 저장소 핸들의 방언으로 한다(2026-10-13, 내부 저장소 Oracle 선택 지원 1단계).
+        // SQL 문장은 아직 그대로다 - else 쪽(SQLite 문법)은 3b단계에서 방언 호출로 바꾼다.
+        this.h2 = storeHandle.dialect().isH2();
     }
 
     @Override

@@ -145,7 +145,8 @@
 #dbagent.monitor.ash-activity-query-timeout-seconds=10
 
 # 대시보드 개편 수집 테이블(mon_*) 보관 기간(일) - 1분/10분/일 테이블, KILL 감사 로그 (2026-09-25)
-#dbagent.monitor.store-retention-days=30
+# 기본값 15 (2026-10-13에 30에서 줄임 - 기본값을 쓰던 설치는 다음 새벽 정리 때 15~30일 구간이 지워진다)
+#dbagent.monitor.store-retention-days=15
 #dbagent.monitor.kill-audit-retention-days=365
 # 추이 차트용 지표(instance_metric_history) 보관 기간(일).
 #dbagent.monitor.metric-retention-days=15

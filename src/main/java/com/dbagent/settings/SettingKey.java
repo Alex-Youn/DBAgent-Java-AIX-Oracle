@@ -268,7 +268,9 @@ public enum SettingKey {
     SQLSTAT_DELTA_RETENTION_DAYS(d("dbagent.perf.sqlstat-delta-retention-days", INT, "7", RETENTION, "SQL 1분 델타 보존 기간",
             "SQL 분석의 1분 단위 SQL 통계(mon_sqlstat_delta)를 보관하는 일수입니다. 점검·Lock 이력 보존 기간보다 길게 두어도 이 값까지만 보관합니다.").unit("일").range(1, 3650)
             .detail("6시간을 넘는 구간과 지난주 대비는 시간 롤업을 쓰므로 1분 델타를 오래 둘 필요가 없습니다. 새 커서 행이 늘어 이 테이블이 커지므로 기본 7일로 제한합니다.")),
-    STORE_RETENTION_DAYS(d("dbagent.monitor.store-retention-days", INT, "30", RETENTION, "점검·Lock 이력 보존 기간",
+    // 2026-10-12 오케스트레이터 결정(Q13): 기본 30일 → 15일(다른 보존 기간과 같게, Oracle 저장소 용량 산정 기준). H2 모드에도 적용된다 -
+    // 기본값을 쓰던 설치는 다음 새벽 정리 때 15~30일 구간이 지워진다. 더 길게 두려면 환경설정 화면에서 바꾼다.
+    STORE_RETENTION_DAYS(d("dbagent.monitor.store-retention-days", INT, "15", RETENTION, "점검·Lock 이력 보존 기간",
             "점검 알림·Lock 샘플 이력을 보관하는 일수입니다.").unit("일").range(1, 3650)),
     KILL_AUDIT_RETENTION_DAYS(d("dbagent.monitor.kill-audit-retention-days", INT, "365", RETENTION, "KILL 감사 기록 보존 기간",
             "세션 KILL 감사 기록을 보관하는 일수입니다.").unit("일").range(1, 3650)),

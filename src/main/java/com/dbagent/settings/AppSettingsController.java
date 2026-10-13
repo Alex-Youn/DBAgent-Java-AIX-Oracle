@@ -44,8 +44,16 @@ public class AppSettingsController {
             {"dbagent.metrics.datasource.url", "추이 시계열 DB 파일 위치"},
             {"dbagent.perf.datasource.url", "성능 분석 DB 파일 위치 (지정하지 않으면 metrics 와 같은 폴더에 perf 이름으로 만든다)"},
             {"dbagent.security.key-file", "대상 DB 비밀번호 암호화 마스터 키 파일 (비우면 작업 디렉터리의 dbagent.key). 환경변수 DBAGENT_MASTER_KEY 가 우선"},
-            {"aidba.errors-db-path", "AI DBA 에러 사전 DB 위치"}
+            {"aidba.errors-db-path", "AI DBA 에러 사전 DB 위치"},
+            // 내부 저장소 엔진 선택(2026-10-13, Oracle 선택 지원 1단계). DB를 열기 전에 필요한 값이라 DB에 저장할 수 없다.
+            {"dbagent.store.type", "내부 저장소 엔진 (h2 또는 oracle). oracle 이면 위의 DB 파일 위치 4개는 쓰지 않는다"},
+            {"dbagent.store.oracle.url", "내부 저장소 Oracle 접속 주소 (dbagent.store.type=oracle 일 때)"},
+            {"dbagent.store.oracle.username", "내부 저장소 Oracle 계정"},
+            {"dbagent.store.oracle.password", "내부 저장소 Oracle 비밀번호 (값은 표시하지 않는다)"}
     };
+
+    /** 값을 화면에 내보내지 않는 부트스트랩 키. */
+    private static final String BOOTSTRAP_SECRET_KEY = "dbagent.store.oracle.password";
 
     private static final int HISTORY_DEFAULT_LIMIT = 100;
     private static final int HISTORY_MAX_LIMIT = 500;
@@ -361,10 +369,14 @@ public class AppSettingsController {
             if (ev == null) {
                 // 값이 없는 키의 의미를 화면에 그대로 적는다 ("(비어 있음)" 으로 보이면 설정 누락으로 오해한다).
                 m.put("value", "dbagent.perf.datasource.url".equals(b[0]) ? "(지정 안 함 - metrics 와 같은 폴더에 perf 이름으로 생성)"
-                        : "dbagent.security.key-file".equals(b[0]) ? "(지정 안 함 - 작업 디렉터리의 dbagent.key)" : null);
+                        : "dbagent.security.key-file".equals(b[0]) ? "(지정 안 함 - 작업 디렉터리의 dbagent.key)"
+                        : "dbagent.store.type".equals(b[0]) ? "(지정 안 함 - h2)" : null);
                 m.put("source_label", "코드 기본값");
             } else {
-                m.put("value", ev.value());
+                // 비밀번호는 암호문이든 평문이든 값을 내보내지 않는다 - 설정돼 있다는 사실만 보인다
+                // 접속 주소는 "thin:계정/비밀번호@..." 표기로 적혀 있을 수 있어 @ 앞의 계정 정보를 가린다(보통 주소는 그대로 나간다)
+                m.put("value", BOOTSTRAP_SECRET_KEY.equals(b[0]) ? "********"
+                        : "dbagent.store.oracle.url".equals(b[0]) ? com.dbagent.store.OracleStorePools.maskUrl(ev.value()) : ev.value());
                 m.put("source_label", ev.source().label());
             }
             out.add(m);

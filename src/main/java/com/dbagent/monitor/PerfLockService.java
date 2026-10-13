@@ -1,9 +1,9 @@
 package com.dbagent.monitor;
 
+import com.dbagent.store.StoreHandle;
 import com.dbagent.oracle.TargetDbConfig;
 import com.dbagent.settings.SettingKey;
 import com.dbagent.settings.SettingsService;
-import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
@@ -95,11 +95,13 @@ public class PerfLockService implements InitializingBean {
     /** DB별 v$lock TM 조회 서킷 브레이커: 실패·타임아웃이면 이 시각까지 건너뛴다("보유 모드 미상"으로 표시). */
     private final ConcurrentHashMap<String, Long> tmLockSkipUntil = new ConcurrentHashMap<String, Long>();
 
-    public PerfLockService(@Qualifier("perfJdbcTemplate") JdbcTemplate jdbc, @Qualifier("perfDataSource") HikariDataSource ds,
+    // 엔진 판정은 접속 URL 앞머리가 아니라 저장소 핸들의 방언으로 한다(2026-10-13, 내부 저장소 Oracle 선택 지원 1단계).
+    // SQL 문장은 아직 그대로다 - else 쪽(SQLite 문법)은 3b단계에서 방언 호출로 바꾼다.
+    public PerfLockService(@Qualifier("perfJdbcTemplate") JdbcTemplate jdbc, @Qualifier("perfStore") StoreHandle storeHandle,
                            LockRealtimeService lockRealtime, PerfStoreService store) {
         this.jdbc = jdbc;
         this.store = store;
-        this.h2 = ds.getJdbcUrl() != null && ds.getJdbcUrl().startsWith("jdbc:h2:");
+        this.h2 = storeHandle.dialect().isH2();
         this.lockRealtime = lockRealtime;
     }
 
